@@ -1,9 +1,11 @@
 {
-  "name": "hello-world",
+  "name": "benpage",
   "version": "1.0.0",
-  "description": "Simple Hello World web page",
+  "description": "Ben Yan personal website",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "prod": "node server.js 2>&1",
+    "dev": "PORT=3000 node server.js"
   }
 }
