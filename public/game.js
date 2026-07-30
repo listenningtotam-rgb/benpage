@@ -2,18 +2,33 @@
 const canvas = document.getElementById('game-canvas');
 const ctx = canvas.getContext('2d');
 
-// ─── Responsive sizing ───────────────────────────────────
+// ─── Responsive sizing (uniform scale to prevent stretching) ──
 const LOGICAL_W = 800;
 const LOGICAL_H = 450;
 
-let scaleX = 1;
-let scaleY = 1;
+let scale = 1;
+let offsetX = 0;
+let offsetY = 0;
 
 function resizeCanvas() {
-  canvas.width = window.innerWidth;
-  canvas.height = window.innerHeight;
-  scaleX = canvas.width / LOGICAL_W;
-  scaleY = canvas.height / LOGICAL_H;
+  const aspect = LOGICAL_W / LOGICAL_H;
+  let w = window.innerWidth;
+  let h = window.innerHeight;
+
+  if (w / h > aspect) {
+    // window is wider than needed → height constrained
+    scale = h / LOGICAL_H;
+    w = h * aspect;
+  } else {
+    // window is taller than needed → width constrained
+    scale = w / LOGICAL_W;
+    h = w / aspect;
+  }
+
+  canvas.width = Math.round(w);
+  canvas.height = Math.round(h);
+  offsetX = (window.innerWidth - canvas.width) / 2;
+  offsetY = (window.innerHeight - canvas.height) / 2;
 }
 
 resizeCanvas();
@@ -356,7 +371,11 @@ function update() {
 // ─── Render ──────────────────────────────────────────────
 function render() {
   ctx.save();
-  ctx.setTransform(scaleX, 0, 0, scaleY, 0, 0);
+  // Clear entire canvas (including letterbox areas)
+  ctx.fillStyle = '#0d1117';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  // Apply uniform scale and center offset
+  ctx.setTransform(scale, 0, 0, scale, offsetX, offsetY);
 
   drawBackground();
   drawClouds();

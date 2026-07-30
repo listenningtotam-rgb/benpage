@@ -21,12 +21,10 @@ body {
 /* ── Full-Screen Background Canvas (fixed) ─────────────── */
 #game-canvas {
   position: fixed;
-  top: 0;
-  left: 0;
-  width: 100vw;
-  height: 100vh;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
   display: block;
-  object-fit: cover;
   z-index: 0;
   pointer-events: none; /* don't block scrolling */
 }
