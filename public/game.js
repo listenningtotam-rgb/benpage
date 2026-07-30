@@ -11,24 +11,28 @@ let offsetX = 0;
 let offsetY = 0;
 
 function resizeCanvas() {
-  const aspect = LOGICAL_W / LOGICAL_H;
-  let w = window.innerWidth;
-  let h = window.innerHeight;
+  // Canvas always fills the full viewport in actual pixels
+  const dpr = window.devicePixelRatio || 1;
+  canvas.width = window.innerWidth * dpr;
+  canvas.height = window.innerHeight * dpr;
+  canvas.style.width = window.innerWidth + 'px';
+  canvas.style.height = window.innerHeight + 'px';
 
-  if (w / h > aspect) {
-    // window is wider than needed → height constrained
-    scale = h / LOGICAL_H;
-    w = h * aspect;
+  // Scale factor to map LOGICAL_W x LOGICAL_H into the viewport uniformly
+  const viewAspect = window.innerWidth / window.innerHeight;
+  const logicalAspect = LOGICAL_W / LOGICAL_H;
+
+  if (viewAspect > logicalAspect) {
+    // viewport is wider → height constrained
+    scale = (window.innerHeight * dpr) / LOGICAL_H;
+    offsetX = ((window.innerWidth * dpr) - (LOGICAL_W * scale)) / 2;
+    offsetY = 0;
   } else {
-    // window is taller than needed → width constrained
-    scale = w / LOGICAL_W;
-    h = w / aspect;
+    // viewport is taller → width constrained
+    scale = (window.innerWidth * dpr) / LOGICAL_W;
+    offsetX = 0;
+    offsetY = ((window.innerHeight * dpr) - (LOGICAL_H * scale)) / 2;
   }
-
-  canvas.width = Math.round(w);
-  canvas.height = Math.round(h);
-  offsetX = (window.innerWidth - canvas.width) / 2;
-  offsetY = (window.innerHeight - canvas.height) / 2;
 }
 
 resizeCanvas();
