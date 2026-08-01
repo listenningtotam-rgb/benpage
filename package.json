@@ -6,7 +6,11 @@
   "scripts": {
     "start": "node server.js",
     "prod": "node server.js 2>&1",
-    "dev": "PORT=3000 node server.js"
+    "dev": "PORT=3000 node server.js",
+    "check": "node check.js"
+  },
+  "engines": {
+    "node": ">=22"
   },
   "dependencies": {
     "better-sqlite3": "^13.0.2",

@@ -3,3 +3,8 @@ node_modules/
 .DS_Store
 *.log
 .vscode/
+
+# Runtime SQLite database (WAL mode — never commit)
+data/benpage.db
+data/benpage.db-shm
+data/benpage.db-wal

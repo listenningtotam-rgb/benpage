@@ -1,5 +1,37 @@
 /* ── SQLite Database Layer (better-sqlite3) ────────────── */
 const path = require("path");
+
+/* Fail-fast guard: better-sqlite3 is a NATIVE addon.  If the Node
+ * runtime is older than the version it was built for, requiring it
+ * crashes the process with SIGSEGV (status=11 / core-dump) BEFORE
+ * any JS can run or be caught.  Check the version first so we can
+ * print a clear message instead of a core dump. */
+function assertNodeVersion() {
+  const nodeMajor = parseInt(process.versions.node.split(".")[0], 10);
+  const required = 22; // better-sqlite3 v13 supports node >= 22
+  if (nodeMajor < required) {
+    console.error(
+      "\n==============================================================\n" +
+      `  Node.js v${process.versions.node} is TOO OLD for the installed\n` +
+      "  better-sqlite3 native addon.\n" +
+      "\n" +
+      "  The server would crash with SIGSEGV (maybe a core dump).\n" +
+      "  This is the exact crash you get when starting via systemd:\n" +
+      "    Main process exited, code=dumped, status=11/SEGV\n" +
+      "\n" +
+      "  FIX:  Install Node v22 or newer, then reinstall deps:\n" +
+      `    sudo apt-get install -y nodejs  # must be >= v${required}\n` +
+      "    rm -rf node_modules package-lock.json && npm install\n" +
+      "  Or use NodeSource LTS v22:\n" +
+      "    curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -\n" +
+      "    sudo apt-get install -y nodejs\n" +
+      "==============================================================\n"
+    );
+    process.exit(1);
+  }
+}
+assertNodeVersion();
+
 const Database = require("better-sqlite3");
 
 const DB_PATH = path.join(__dirname, "data", "benpage.db");
