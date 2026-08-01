@@ -21,6 +21,7 @@
 
       <nav id="nav-links">
         <a href="#music" class="nav-link">Music</a>
+        <a href="#blog" class="nav-link">Blog</a>
         <a href="#apps" class="nav-link">Apps</a>
         <a href="#contact" class="nav-link">Contact</a>
       </nav>
@@ -47,44 +48,21 @@
     <!-- Music Section -->
     <section id="music" class="section">
       <h2 class="section-title">Music</h2>
-      <div class="track-list">
-        <div class="track-card">
-          <div class="track-info">
-            <span class="track-number">01</span>
-            <div class="track-meta">
-              <h3 class="track-title">Midnight Dreams</h3>
-              <span class="track-duration">3:42</span>
-            </div>
-          </div>
-          <audio class="track-audio" controls preload="none">
-            <source src="https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3" type="audio/mpeg" />
-          </audio>
-        </div>
+      <div class="track-list" id="track-list"></div>
+    </section>
 
-        <div class="track-card">
-          <div class="track-info">
-            <span class="track-number">02</span>
-            <div class="track-meta">
-              <h3 class="track-title">Ocean Waves</h3>
-              <span class="track-duration">4:15</span>
-            </div>
-          </div>
-          <audio class="track-audio" controls preload="none">
-            <source src="https://www.soundhelix.com/examples/mp3/SoundHelix-Song-2.mp3" type="audio/mpeg" />
-          </audio>
-        </div>
+    <!-- Blog Section -->
+    <section id="blog" class="section">
+      <div class="section-title-row"><h2 class="section-title">Blog</h2></div>
+      <p class="blog-caption">Notes, stories & releases — words, pictures and video.</p>
 
-        <div class="track-card">
-          <div class="track-info">
-            <span class="track-number">03</span>
-            <div class="track-meta">
-              <h3 class="track-title">Neon Lights</h3>
-              <span class="track-duration">5:08</span>
-            </div>
-          </div>
-          <audio class="track-audio" controls preload="none">
-            <source src="https://www.soundhelix.com/examples/mp3/SoundHelix-Song-3.mp3" type="audio/mpeg" />
-          </audio>
+      <div id="blog-grid" class="blog-grid"></div>
+
+      <!-- Blog Post Detail Overlay -->
+      <div id="blog-detail" class="blog-detail" hidden>
+        <div class="blog-detail-inner">
+          <button type="button" id="blog-detail-close" class="blog-detail-close" aria-label="Close">&times;</button>
+          <div id="blog-detail-content"></div>
         </div>
       </div>
     </section>
@@ -176,5 +154,7 @@
 
   <script src="game.js"></script>
   <script src="apps.js"></script>
+  <script src="music.js"></script>
+  <script src="blog.js"></script>
 </body>
 </html>
