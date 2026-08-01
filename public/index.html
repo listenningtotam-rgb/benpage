@@ -21,8 +21,7 @@
 
       <nav id="nav-links">
         <a href="#music" class="nav-link">Music</a>
-        <a href="#vinyl" class="nav-link">Vinyl</a>
-        <a href="#video" class="nav-link">Video</a>
+        <a href="#apps" class="nav-link">Apps</a>
         <a href="#contact" class="nav-link">Contact</a>
       </nav>
 
@@ -90,23 +89,81 @@
       </div>
     </section>
 
-    <!-- Vinyl Section (record wall) -->
-    <section id="vinyl" class="section">
-      <h2 class="section-title">Vinyl</h2>
-      <div class="vinyl-wall" id="vinylWall">
-        <!-- 16 vinyl records dynamically rendered -->
-      </div>
-    </section>
+    <!-- Apps Section -->
+    <section id="apps" class="section">
+      <div class="section-title-row"><h2 class="section-title">Apps</h2></div>
+      <p class="apps-caption">Tools we build — every app we create, ready to use. More coming soon.</p>
 
-    <!-- Video Section -->
-    <section id="video" class="section">
-      <h2 class="section-title">Video</h2>
-      <div class="video-container">
-        <video class="video-player" controls preload="metadata" poster="https://picsum.photos/seed/videoposter/800/450">
-          <source src="https://www.w3schools.com/html/mov_bbb.mp4" type="video/mp4" />
-          Your browser does not support video playback.
-        </video>
-        <p class="video-caption">Latest Release — Coming Soon</p>
+      <div id="apps-gallery">
+        <article class="app-card">
+          <div class="app-thumb"><div id="thumb-worldtime" class="thumb-widget thumb-clock"><div class="thumb-clock-time">--:--:--</div><div class="thumb-clock-tz">UTC+00:00</div></div></div>
+          <div class="app-body">
+            <h3 class="app-title">Global Time</h3>
+            <p class="app-desc">World clock & timezone converter — live local time for cities, regions & major financial hubs, with instant timezone conversion.</p>
+            <button type="button" class="app-open" data-target="worldtime">Open App</button>
+          </div>
+        </article>
+        <article class="app-card">
+          <div class="app-thumb"><div id="thumb-fx" class="thumb-widget thumb-fx"><div class="thumb-fx-pair">EUR/USD</div><div class="thumb-fx-price">– / –</div></div></div>
+          <div class="app-body">
+            <h3 class="app-title">FX Market Watch</h3>
+            <p class="app-desc">Global currency exchange — live bid & ask prices from the main market makers, with spread & trend for every major pair.</p>
+            <button type="button" class="app-open" data-target="fx">Open App</button>
+          </div>
+        </article>
+      </div>
+
+      <div id="app-detail" hidden>
+        <button type="button" id="app-detail-close" class="app-close" aria-label="Close">&times;</button>
+
+        <div id="app-worldtime" class="app-panel" hidden>
+          <h3 class="app-panel-title">Global Time</h3>
+          <div class="wt-layout">
+            <div class="wt-clock">
+              <div id="wt-city" class="wt-city">—</div>
+              <div id="wt-time" class="wt-time">--:--:--</div>
+              <div id="wt-date" class="wt-date">—</div>
+              <div id="wt-offset" class="wt-offset">UTC+00:00</div>
+            </div>
+            <div class="wt-converter">
+              <div class="wt-row">
+                <div class="wt-field"><label for="wt-from">From</label><select id="wt-from"></select></div>
+                <div class="wt-arrow">&rarr;</div>
+                <div class="wt-field"><label for="wt-to">To</label><select id="wt-to"></select></div>
+              </div>
+              <div id="wt-result" class="wt-result">Select two cities to compare local times.</div>
+            </div>
+          </div>
+        </div>
+
+        <div id="app-fx" class="app-panel" hidden>
+          <h3 class="app-panel-title">FX Market Watch</h3>
+          <div class="fx-controls">
+            <label for="fx-base">Base Currency
+              <select id="fx-base">
+                <option value="USD" selected>USD — US Dollar</option>
+                <option value="EUR">EUR — Euro</option>
+                <option value="GBP">GBP — British Pound</option>
+                <option value="JPY">JPY — Japanese Yen</option>
+                <option value="CNY">CNY — Chinese Yuan</option>
+                <option value="AUD">AUD — Australian Dollar</option>
+                <option value="CAD">CAD — Canadian Dollar</option>
+                <option value="CHF">CHF — Swiss Franc</option>
+              </select>
+            </label>
+            <span id="fx-status" class="fx-status live">&#9679; LIVE</span>
+          </div>
+          <div class="fx-table-wrap">
+            <table class="fx-table">
+              <thead><tr><th>Pair</th><th>Bid</th><th>Ask</th><th>Spread</th><th>Trend</th></tr></thead>
+              <tbody id="fx-body"></tbody>
+            </table>
+          </div>
+          <div class="fx-note">
+            <p>Price source: <a href="https://open.er-api.com" target="_blank" rel="noopener">ExchangeRate-API (open.er-api.com)</a> — an independent FX data provider aggregating rates from central banks and major financial data feeds (not Bloomberg or Reuters terminals).</p>
+            <p>Mid rates streamed from ExchangeRate-API, refreshed each minute · bid/ask derived around the live mid with a market-style pip spread. If offline, a snapshot marked accordingly.</p>
+          </div>
+        </div>
       </div>
     </section>
 
@@ -117,89 +174,7 @@
     </section>
   </div>
 
-  <!-- Vinyl Detail Popup -->
-  <div id="vinylPopup" class="popup-overlay hidden">
-    <div class="popup-card">
-      <button class="popup-close" id="popupClose">&times;</button>
-      <img id="popupImage" src="" alt="" class="popup-image" />
-      <div class="popup-info">
-        <h3 id="popupTitle"></h3>
-        <p id="popupArtist"></p>
-        <p id="popupYear"></p>
-      </div>
-    </div>
-  </div>
-
   <script src="game.js"></script>
-  <script>
-    // ─── Vinyl Records Data ───────────────────────────────
-    const vinylRecords = [
-      { id: 1,  title: "Abbey Road",        artist: "The Beatles",        year: 1969, img: "https://picsum.photos/seed/vinyl1/400/400" },
-      { id: 2,  title: "Thriller",           artist: "Michael Jackson",    year: 1982, img: "https://picsum.photos/seed/vinyl2/400/400" },
-      { id: 3,  title: "The Dark Side of the Moon", artist: "Pink Floyd", year: 1973, img: "https://picsum.photos/seed/vinyl3/400/400" },
-      { id: 4,  title: "Rumours",            artist: "Fleetwood Mac",      year: 1977, img: "https://picsum.photos/seed/vinyl4/400/400" },
-      { id: 5,  title: "Back to Black",      artist: "Amy Winehouse",      year: 2006, img: "https://picsum.photos/seed/vinyl5/400/400" },
-      { id: 6,  title: "Random Access Memories", artist: "Daft Punk",      year: 2013, img: "https://picsum.photos/seed/vinyl6/400/400" },
-      { id: 7,  title: "Kind of Blue",       artist: "Miles Davis",        year: 1959, img: "https://picsum.photos/seed/vinyl7/400/400" },
-      { id: 8,  title: "Nevermind",          artist: "Nirvana",            year: 1991, img: "https://picsum.photos/seed/vinyl8/400/400" },
-      { id: 9,  title: "Hotel California",   artist: "Eagles",             year: 1976, img: "https://picsum.photos/seed/vinyl9/400/400" },
-    ];
-
-    // ─── Render Vinyl Wall ───────────────────────────────
-    const wall = document.getElementById('vinylWall');
-
-    vinylRecords.forEach(record => {
-      const item = document.createElement('div');
-      item.className = 'vinyl-item';
-      item.dataset.id = record.id;
-
-      const img = document.createElement('img');
-      img.className = 'vinyl-cover';
-      img.src = record.img;
-      img.alt = record.title;
-      img.loading = 'lazy';
-
-      const label = document.createElement('div');
-      label.className = 'vinyl-label';
-      label.textContent = record.title;
-
-      item.appendChild(img);
-      item.appendChild(label);
-
-      item.addEventListener('click', () => showVinylDetail(record));
-      wall.appendChild(item);
-    });
-
-    // ─── Popup Logic ─────────────────────────────────────
-    const popup        = document.getElementById('vinylPopup');
-    const popupImage   = document.getElementById('popupImage');
-    const popupTitle   = document.getElementById('popupTitle');
-    const popupArtist  = document.getElementById('popupArtist');
-    const popupYear    = document.getElementById('popupYear');
-    const popupClose   = document.getElementById('popupClose');
-
-    function showVinylDetail(record) {
-      popupImage.src   = record.img;
-      popupImage.alt   = record.title;
-      popupTitle.textContent  = record.title;
-      popupArtist.textContent = record.artist;
-      popupYear.textContent   = record.year;
-      popup.classList.remove('hidden');
-      document.body.style.overflow = 'hidden';
-    }
-
-    function hideVinylDetail() {
-      popup.classList.add('hidden');
-      document.body.style.overflow = '';
-    }
-
-    popupClose.addEventListener('click', hideVinylDetail);
-    popup.addEventListener('click', (e) => {
-      if (e.target === popup) hideVinylDetail();
-    });
-    document.addEventListener('keydown', (e) => {
-      if (e.key === 'Escape') hideVinylDetail();
-    });
-  </script>
+  <script src="apps.js"></script>
 </body>
 </html>
