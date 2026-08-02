@@ -1,44 +1,312 @@
 /* ── Music Section ─────────────────────────────────────── */
-/* Tracks are loaded from the SQLite database via /api/music. */
+/* SoundCloud-style waveform player. Tracks come from /api/music. */
 
-/* ── DOM helpers ────────────────────────────────────────── */
-const trackList = document.getElementById("track-list");
+const trackListEl = document.getElementById("track-list");
+const SC_ORANGE = "#ff5500";
+const BAR_GREY = "rgba(255,255,255,0.20)";
 
-function escapeHTML(str) {
+/* A single shared audio element → only one track plays at a time. */
+const musicState = {
+  audio: null,
+  player: null,    // current { el, url, title, bars, canvas, timeEl, playBtn }
+  pending: false,
+};
+
+/* ── Helpers ───────────────────────────────────────────── */
+/* scEscapeHTML is prefixed to avoid clashing with blog.js's escapeHTML */
+function scEscapeHTML(str) {
   return String(str)
-    .replace(/&/g, "&" + "amp;")
-    .replace(/</g, "&" + "lt;")
-    .replace(/>/g, "&" + "gt;")
-    .replace(/"/g, "&" + "quot;")
-    .replace(/'/g, "&" + "#39;");
+    .replace(/\u0026/g, "\u0026amp;")
+    .replace(/\u003C/g, "\u0026lt;")
+    .replace(/\u003E/g, "\u0026gt;")
+    .replace(/\u0022/g, "\u0026quot;")
+    .replace(/\u0027/g, "\u0026#39;");
 }
 
-function renderTracks(tracks) {
-  if (!trackList) return;
-  if (!tracks || tracks.length === 0) {
-    trackList.innerHTML = `<p class="empty-note">No tracks yet.</p>`;
+function fmtTime(sec) {
+  if (!isFinite(sec) || sec < 0) return "0:00";
+  const m = Math.floor(sec / 60);
+  const s = Math.floor(sec % 60);
+  return `${m}:${String(s).padStart(2, "0")}`;
+}
+
+/* ── Deterministic per-track waveform ──────────────────── */
+function hashString(str) {
+  let h = 5381;
+  for (let i = 0; i < str.length; i++) {
+    h = ((h << 5) + h + str.charCodeAt(i)) >>> 0;
+  }
+  return h;
+}
+
+function mulberry32(seed) {
+  let a = seed >>> 0;
+  return function () {
+    a |= 0;
+    a = (a + 0x6d2b79f5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+function buildWaveform(seed, count = 110) {
+  const rand = mulberry32(seed);
+  const bars = new Array(count);
+  for (let i = 0; i < count; i++) {
+    const x = i / count;
+    const intro = x < 0.12 ? x / 0.12 : 1;                       // quiet fade-in
+    const outro = x > 0.85 ? Math.max(0, (1 - x) / 0.15) : 1;    // fade-out tail
+    const level = 0.35 + 0.65 * rand();                          // random section level
+    const pulse = 0.75 + 0.25 * Math.sin(x * Math.PI * 9);       // natural fluctuation
+    bars[i] = Math.max(0.06, Math.min(1, level * pulse * (0.35 + 0.65 * intro * outro)));
+  }
+  return bars;
+}
+
+/* ── Waveform canvas rendering ─────────────────────────── */
+function roundedRectPath(ctx, x, y, w, h, r) {
+  const rr = Math.min(r, w / 2, h / 2);
+  ctx.moveTo(x + rr, y);
+  ctx.arcTo(x + w, y, x + w, y + h, rr);
+  ctx.arcTo(x + w, y + h, x, y + h, rr);
+  ctx.arcTo(x, y + h, x, y, rr);
+  ctx.arcTo(x, y, x + w, y, rr);
+  ctx.closePath();
+}
+
+function drawWaveform(canvas, bars, progressPct) {
+  const rect = canvas.getBoundingClientRect();
+  if (rect.width === 0 || rect.height === 0) return;
+
+  const dpr = window.devicePixelRatio || 1;
+  const w = rect.width;
+  const h = rect.height;
+  const pw = Math.round(w * dpr);
+  const ph = Math.round(h * dpr);
+  if (canvas.width !== pw || canvas.height !== ph) {
+    canvas.width = pw;
+    canvas.height = ph;
+  }
+
+  const ctx = canvas.getContext("2d");
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, w, h);
+
+  const played = w * Math.min(1, Math.max(0, progressPct));
+  const n = bars.length;
+  const gap = Math.max(1, Math.round(w / 340));
+  const bw = (w - gap * (n - 1)) / n;
+  const radius = Math.max(1, bw * 0.45);
+
+  ctx.beginPath();
+  for (let i = 0; i < n; i++) {
+    const x = i * (bw + gap);
+    // Solid orange for bars fully before the playhead; gradient for the bar under it.
+    let color = BAR_GREY;
+    if (x + bw <= played) {
+      color = SC_ORANGE;
+    } else if (x < played) {
+      // Partially played bar — draw a clipped orange segment under the playhead.
+      ctx.save();
+      ctx.fillStyle = SC_ORANGE;
+      const partialW = played - x;
+      const bh = Math.max(2.5, bars[i] * h * 0.92);
+      const y = (h - bh) / 2;
+      roundedRectPath(ctx, x, y, partialW, bh, radius);
+      ctx.fill();
+      ctx.restore();
+      color = BAR_GREY;
+    }
+
+    const bh = Math.max(2.5, bars[i] * h * 0.92);
+    const y = (h - bh) / 2;
+    ctx.fillStyle = color;
+    roundedRectPath(ctx, x, y, bw, bh, radius);
+    ctx.fill();
+  }
+}
+
+function redrawCurrent() {
+  if (!musicState.player) return;
+  const p = musicState.player;
+  const a = musicState.audio;
+  const progress = isFinite(a.duration) && a.duration > 0 ? a.currentTime / a.duration : 0;
+  drawWaveform(p.canvas, p.bars, progress);
+
+  const left = isFinite(a.duration) && a.duration > 0 ? fmtTime(a.currentTime) : "0:00";
+  const right = isFinite(a.duration) && a.duration > 0 ? fmtTime(a.duration) : "0:00";
+  p.timeEl.textContent = `${left} / ${right}`;
+}
+
+function requestDraw() {
+  if (musicState.pending) return;
+  musicState.pending = true;
+  requestAnimationFrame(() => {
+    musicState.pending = false;
+    redrawCurrent();
+  });
+}
+
+/* ── Seeking ───────────────────────────────────────────── */
+function attachSeek(canvas) {
+  let dragging = false;
+  function seekFromEvent(e) {
+    const rect = canvas.getBoundingClientRect();
+    if (rect.width === 0) return;
+    const x = Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width));
+    if (!musicState.audio || !isFinite(musicState.audio.duration) || musicState.audio.duration <= 0) return;
+    musicState.audio.currentTime = x * musicState.audio.duration;
+  }
+  canvas.addEventListener("pointerdown", (e) => {
+    dragging = true;
+    try { canvas.setPointerCapture(e.pointerId); } catch (_) {}
+    seekFromEvent(e);
+  });
+  canvas.addEventListener("pointermove", (e) => {
+    if (dragging) seekFromEvent(e);
+  });
+  const stop = () => { dragging = false; };
+  canvas.addEventListener("pointerup", stop);
+  canvas.addEventListener("pointercancel", stop);
+}
+
+/* ── Playback control ──────────────────────────────────── */
+function getAudio() {
+  if (!musicState.audio) {
+    musicState.audio = new Audio();
+    musicState.audio.preload = "metadata";
+
+    musicState.audio.addEventListener("timeupdate", requestDraw);
+    musicState.audio.addEventListener("loadedmetadata", requestDraw);
+    musicState.audio.addEventListener("play", () => {
+      if (musicState.player) {
+        musicState.player.el.classList.add("playing");
+        musicState.player.playBtn.setAttribute("aria-label", `Pause ${musicState.player.title}`);
+      }
+    });
+    musicState.audio.addEventListener("pause", () => {
+      if (musicState.player) {
+        musicState.player.el.classList.remove("playing");
+        musicState.player.playBtn.setAttribute("aria-label", `Play ${musicState.player.title}`);
+      }
+    });
+    musicState.audio.addEventListener("ended", () => {
+      if (musicState.player) {
+        musicState.player.el.classList.remove("playing");
+        musicState.player.playBtn.setAttribute("aria-label", `Play ${musicState.player.title}`);
+        musicState.player.timeEl.textContent = "0:00 / " + fmtTime(musicState.audio.duration);
+        drawWaveform(musicState.player.canvas, musicState.player.bars, 0);
+      }
+    });
+    musicState.audio.addEventListener("error", () => {
+      if (musicState.player) {
+        musicState.player.el.classList.add("has-error");
+        musicState.player.timeEl.textContent = "Not available";
+      }
+    });
+  }
+  return musicState.audio;
+}
+
+function setActive(player) {
+  if (musicState.player && musicState.player !== player) {
+    musicState.player.el.classList.remove("playing");
+    musicState.player.playBtn.setAttribute("aria-label", `Play ${musicState.player.title}`);
+  }
+  musicState.player = player;
+}
+
+function togglePlay(player) {
+  const audio = getAudio();
+  const same = musicState.player === player;
+
+  if (same && !audio.paused) {
+    audio.pause();
     return;
   }
 
-  trackList.innerHTML = tracks
-    .map((track, i) => {
-      const num = String(i + 1).padStart(2, "0");
-      return (
-        `<div class="track-card">
-          <div class="track-info">
-            <span class="track-number">${num}</span>
-            <div class="track-meta">
-              <h3 class="track-title">${escapeHTML(track.title)}</h3>
-            </div>
-          </div>
-          <audio class="track-audio" controls preload="none">
-            <source src="${escapeHTML(track.url)}" />
-            Your browser does not support audio playback.
-          </audio>
-        </div>`
-      );
-    })
-    .join("");
+  if (same) {
+    // Just resume the paused track (don't restart it).
+    audio.play().catch(() => {});
+    return;
+  }
+
+  setActive(player);
+  audio.src = player.url;
+  audio.play().catch(() => {
+    player.el.classList.add("has-error");
+    player.timeEl.textContent = "Not available";
+  });
+}
+
+function resetAllWaveforms() {
+  document.querySelectorAll(".sc-track").forEach((el) => {
+    const p = musicState.player;
+    if (p && p.el === el) {
+      redrawCurrent();
+    } else {
+      const canvas = el.querySelector(".sc-wave-canvas");
+      const bars = el._bars;
+      if (canvas && bars) drawWaveform(canvas, bars, 0);
+    }
+  });
+}
+
+/* ── Rendering ─────────────────────────────────────────── */
+function renderTracks(tracks) {
+  if (!trackListEl) return;
+  if (!tracks || tracks.length === 0) {
+    trackListEl.innerHTML = `<p class="empty-note">No tracks yet.</p>`;
+    return;
+  }
+
+  trackListEl.innerHTML = "";
+  const frag = document.createDocumentFragment();
+
+  tracks.forEach((track) => {
+    const url = String(track.url || "");
+    const title = String(track.title || "Untitled");
+    const seed = hashString((track.id != null ? track.id + ":" : "") + url + title);
+    const bars = buildWaveform(seed);
+
+    const el = document.createElement("div");
+    el.className = "sc-track";
+    el.innerHTML = `
+      <button type="button" class="sc-play" aria-label="Play ${scEscapeHTML(title)}">
+        <svg class="sc-ico-play" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>
+        <svg class="sc-ico-pause" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 5h4v14H6zm8 0h4v14h-4z"/></svg>
+      </button>
+      <div class="sc-body">
+        <div class="sc-top">
+          <span class="sc-title" title="${scEscapeHTML(title)}">${scEscapeHTML(title)}</span>
+          <span class="sc-time">0:00 / 0:00</span>
+        </div>
+        <div class="sc-wave">
+          <canvas class="sc-wave-canvas"></canvas>
+        </div>
+      </div>
+    `;
+
+    const player = {
+      el,
+      url,
+      title,
+      bars,
+      canvas: el.querySelector(".sc-wave-canvas"),
+      timeEl: el.querySelector(".sc-time"),
+      playBtn: el.querySelector(".sc-play"),
+    };
+    el._bars = bars; // used by resetAllWaveforms
+
+    player.playBtn.addEventListener("click", () => togglePlay(player));
+    attachSeek(player.canvas);
+
+    frag.appendChild(el);
+  });
+
+  trackListEl.appendChild(frag);
+  resetAllWaveforms();
 }
 
 async function loadTracks() {
@@ -47,13 +315,24 @@ async function loadTracks() {
     const data = await res.json();
     renderTracks(data.tracks);
   } catch (err) {
-    if (trackList) {
-      trackList.innerHTML = `<p class="empty-note">Failed to load tracks.</p>`;
+    if (trackListEl) {
+      trackListEl.innerHTML = `<p class="empty-note">Failed to load tracks.</p>`;
     }
   }
 }
 
+/* Redraw on resize (debounced) so canvases stay crisp at any width. */
+let resizeTimer = null;
+window.addEventListener("resize", () => {
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(resetAllWaveforms, 120);
+});
+if (trackListEl && typeof ResizeObserver !== "undefined") {
+  const ro = new ResizeObserver(() => resetAllWaveforms());
+  ro.observe(trackListEl);
+}
+
 /* ── Init ───────────────────────────────────────────────── */
-if (trackList) {
+if (trackListEl) {
   loadTracks();
 }
