@@ -18,7 +18,7 @@
 #        curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
 #        sudo apt-get install -y nodejs
 #   3) Reinstall deps (native addon must match the NEW Node):
-#        cd /var/www/benpage
+#        cd /home/www/benpage
 #        rm -rf node_modules package-lock.json && npm install
 #   4) Verify before starting:
 #        npm run check
@@ -45,16 +45,16 @@ After=network.target
 
 [Service]
 # ── Critical: use the FULL PATH of a Node v22+ binary ──────────────
-# Find it with:  which node     (must print /usr/bin/node or /usr/local/bin/node)
-# If you installed via NodeSource it stays at /usr/bin/node.
-# DO NOT rely on a modified PATH from your shell — systemd strips it.
+# Check with:  which node     (must print /usr/bin/node or /usr/local/bin/node)
+# better-sqlite3 v13 needs Node >= 22 — an older Node (18/20) segfaults
+# on startup: status=11/SEGV.  See the notes at the top of this file.
 Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 # Optionally: Environment=NODE_ENV=production
 
 Type=simple
 # Use npm start so the package.json "start" script runs (no hardcoded port issue)
-ExecStart=/usr/bin/npm start --prefix /var/www/benpage
-WorkingDirectory=/var/www/benpage
+ExecStart=/usr/bin/npm start --prefix /home/www/benpage
+WorkingDirectory=/home/www/benpage
 Restart=on-failure
 RestartSec=3
 
@@ -63,7 +63,5 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=full
 ProtectHome=true
-ReadWritePaths=/var/www/benpage/data
-
-[Install]
-WantedBy=multi-user.target
+# App data + uploaded photos must be writable by the service user
+ReadWritePaths=/home/www/benpage/data /var/www/static/photo

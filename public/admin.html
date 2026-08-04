@@ -98,16 +98,28 @@
             <label class="field">Cover image URL
               <input type="url" id="blog-cover" placeholder="https://... (optional)" />
             </label>
+            <div class="upload-row">
+              <button type="button" class="btn btn-ghost btn-sm" id="cover-upload-btn">⬆ Upload Cover</button>
+              <input type="file" id="cover-file" accept="image/*" hidden />
+              <span class="upload-status" id="cover-upload-status" hidden></span>
+            </div>
           </div>
 
           <div class="field">
-            <span class="field-label">Content blocks</span>
-            <div id="blog-blocks"></div>
-            <div class="block-add-row">
-              <button type="button" class="btn btn-ghost btn-sm" data-add-block="text">+ Text</button>
-              <button type="button" class="btn btn-ghost btn-sm" data-add-block="image">+ Image</button>
-              <button type="button" class="btn btn-ghost btn-sm" data-add-block="video">+ Video</button>
+            <span class="field-label">Content <span class="field-hint">(Blogger-style — type, paste photos (Ctrl/⌘+V), or use the toolbar. Photos are uploaded automatically and shown right in the text.)</span></span>
+            <div class="wysiwyg-toolbar" id="blog-toolbar">
+              <button type="button" class="tb-btn" data-cmd="bold" title="Bold"><b>B</b></button>
+              <button type="button" class="tb-btn" data-cmd="italic" title="Italic"><i>I</i></button>
+              <button type="button" class="tb-btn" data-cmd="formatBlock" data-value="H3" title="Heading">H</button>
+              <button type="button" class="tb-btn" data-cmd="formatBlock" data-value="P" title="Paragraph">¶</button>
+              <span class="tb-sep"></span>
+              <button type="button" class="tb-btn" data-cmd="createLink" title="Insert link">🔗</button>
+              <button type="button" class="tb-btn" data-cmd="insertImage" id="wysiwyg-img-btn" title="Insert image (upload)">🖼</button>
+              <button type="button" class="tb-btn" data-cmd="insertVideo" id="wysiwyg-video-btn" title="Insert video (mp4 URL)">🎬</button>
+              <input type="file" id="wysiwyg-file" accept="image/*" hidden />
+              <span class="upload-status" id="wysiwyg-upload-status" hidden></span>
             </div>
+            <div id="blog-editor" class="wysiwyg-editor" contenteditable="true" data-placeholder="Write your post… paste (Ctrl/⌘+V) or click 🖼 to insert a photo — it will appear right here in the text."></div>
           </div>
 
           <div class="form-actions">

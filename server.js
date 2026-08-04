@@ -6,6 +6,24 @@ const jwt = require("jsonwebtoken");
 
 const PORT = process.env.PORT || 3000;
 const publicDir = path.join(__dirname, "public");
+// Where uploaded blog photos are stored.
+// Production: /var/www/static/photo/ (served at https://<host>/photo/...)
+// Local dev:  ./data/photos/        (served at http://localhost:3000/photo/...)
+function isWritableDir(dir) {
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+    fs.accessSync(dir, fs.constants.W_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+const PHOTO_DIR =
+  process.env.PHOTO_DIR ||
+  (isWritableDir("/var/www/static/photo")
+    ? "/var/www/static/photo"
+    : path.join(__dirname, "data", "photos"));
+const PHOTO_URL_PREFIX = "/photo/";
 const JWT_SECRET = process.env.JWT_SECRET || "benpage-dev-secret-change-me";
 
 const db = require("./db");
@@ -16,6 +34,9 @@ const mimeTypes = {
   ".js": "text/javascript",
   ".png": "image/png",
   ".jpg": "image/jpeg",
+  ".gif": "image/gif",
+  ".webp": "image/webp",
+  ".bmp": "image/bmp",
   ".svg": "image/svg+xml",
 };
 
@@ -48,6 +69,51 @@ function readBody(req) {
     });
     req.on("error", reject);
   });
+}
+
+function readBuffer(req, maxBytes) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    let size = 0;
+    let aborted = false;
+    req.on("data", (c) => {
+      if (aborted) return;
+      size += c.length;
+      if (size > maxBytes) {
+        aborted = true;
+        reject(new Error("File too large (max 10MB)"));
+        req.destroy();
+        return;
+      }
+      chunks.push(c);
+    });
+    req.on("end", () => {
+      if (!aborted) resolve(Buffer.concat(chunks));
+    });
+    req.on("error", reject);
+  });
+}
+
+// ─── Image upload (raw binary body) ─────────────────────────────────────
+const ALLOWED_IMAGE_EXT = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"]);
+const MAX_UPLOAD_BYTES = 10 * 1024 * 1024; // 10 MB
+
+function sniffImageExt(buf) {
+  if (!buf || buf.length < 12) return null;
+  // PNG
+  if (buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47) return ".png";
+  // JPEG
+  if (buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) return ".jpg";
+  // GIF
+  if (buf[0] === 0x47 && buf[1] === 0x49 && buf[2] === 0x46 && buf[3] === 0x38) return ".gif";
+  // WEBP
+  if (
+    buf[0] === 0x52 && buf[1] === 0x49 && buf[2] === 0x46 && buf[3] === 0x46 &&
+    buf[8] === 0x57 && buf[9] === 0x45 && buf[10] === 0x42 && buf[11] === 0x50
+  ) return ".webp";
+  // BMP
+  if (buf[0] === 0x42 && buf[1] === 0x4d) return ".bmp";
+  return null;
 }
 
 // ─── JWT Auth ──────────────────────────────────────────────────────────
@@ -109,6 +175,45 @@ async function handleApi(req, res, urlPath) {
     }
     return true;
   };
+
+  // ── Photo upload (raw binary image body) ─────────────
+  if (urlPath === "/api/upload" && req.method === "POST") {
+    if (!requireAuth()) return;
+    const buf = await readBuffer(req, MAX_UPLOAD_BYTES);
+    if (!buf.length) {
+      return json(res, 400, { error: "Empty file" });
+    }
+    const ext = sniffImageExt(buf);
+    if (!ext) {
+      return json(res, 400, { error: "Unsupported image type. Send PNG, JPG, GIF, WEBP or BMP bytes." });
+    }
+
+    fs.mkdirSync(PHOTO_DIR, { recursive: true });
+    const stamp = new Date()
+      .toISOString()
+      .replace(/[-:]/g, "")
+      .replace(/\.\d{3}Z$/, "Z");
+    const rand = Math.random().toString(36).slice(2, 7);
+    const filename = `benpage_${stamp}_${rand}${ext}`;
+    const fullPath = path.join(PHOTO_DIR, filename);
+
+    // Safety: ensure resolved path stays inside PHOTO_DIR
+    if (!fullPath.startsWith(path.resolve(PHOTO_DIR) + path.sep)) {
+      return json(res, 400, { error: "Invalid path" });
+    }
+
+    fs.writeFile(fullPath, buf, (err) => {
+      if (err) {
+        console.error("upload write error:", err.message);
+        return json(res, 500, { error: "Failed to save image" });
+      }
+      return json(res, 201, {
+        url: PHOTO_URL_PREFIX + filename,
+        size: buf.length,
+      });
+    });
+    return;
+  }
 
   // ── Music API ─────────────────────────────────────────
   if (urlPath === "/api/music" && req.method === "GET") {
@@ -298,6 +403,27 @@ const server = http.createServer((req, res) => {
     if (urlPath.startsWith(prefix + "/") || urlPath === prefix) {
       return proxyRequest(req, res, API_PROXIES[prefix]);
     }
+  }
+
+  // Uploaded photos (served from PHOTO_DIR, outside publicDir)
+  if (urlPath.startsWith(PHOTO_URL_PREFIX)) {
+    const photoPath = path.join(PHOTO_DIR, path.normalize(urlPath.slice(PHOTO_URL_PREFIX.length)));
+    if (!photoPath.startsWith(path.resolve(PHOTO_DIR) + path.sep)) {
+      res.writeHead(403);
+      res.end("Forbidden");
+      return;
+    }
+    fs.readFile(photoPath, (err, data) => {
+      if (err) {
+        res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
+        res.end("Not Found");
+        return;
+      }
+      const ext = path.extname(photoPath).toLowerCase();
+      res.writeHead(200, { "Content-Type": mimeTypes[ext] || "application/octet-stream" });
+      res.end(data);
+    });
+    return;
   }
 
   // Static files

@@ -159,94 +159,249 @@ $("#music-form").addEventListener("submit", async (e) => {
 
 document.querySelector('[data-cancel="music"]').addEventListener("click", hideMusicForm);
 
-/* ── Blog CRUD ─────────────────────────────────────────── */
-let blogBlocks = [];
-
-function blockEditorHTML(block, index) {
-  if (block.type === "image") {
-    return `
-      <div class="block-editor" data-index="${index}">
-        <div class="block-editor-head">
-          <span class="block-type">Image</span>
-          <button type="button" class="block-remove" data-remove-block="${index}" aria-label="Remove block">&times;</button>
-        </div>
-        <label>Image URL
-          <input type="url" data-blk-field="src" value="${escapeHTML(block.src || "")}" placeholder="https://..." />
-        </label>
-        <label>Alt text
-          <input type="text" data-blk-field="alt" value="${escapeHTML(block.alt || "")}" />
-        </label>
-        <label>Caption
-          <input type="text" data-blk-field="caption" value="${escapeHTML(block.caption || "")}" />
-        </label>
-      </div>`;
+/* ── Image upload helpers ─────────────────────────────── */
+async function uploadImageBlob(blob, statusEl) {
+  const token = localStorage.getItem(TOKEN_KEY);
+  const res = await fetch("/api/upload", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}` },
+    body: blob,
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error(data.error || `Upload failed (${res.status})`);
   }
-  if (block.type === "video") {
-    return `
-      <div class="block-editor" data-index="${index}">
-        <div class="block-editor-head">
-          <span class="block-type">Video</span>
-          <button type="button" class="block-remove" data-remove-block="${index}" aria-label="Remove block">&times;</button>
-        </div>
-        <label>Video URL (mp4)
-          <input type="url" data-blk-field="src" value="${escapeHTML(block.src || "")}" placeholder="https://.../video.mp4" />
-        </label>
-        <label>Poster image URL
-          <input type="url" data-blk-field="poster" value="${escapeHTML(block.poster || "")}" placeholder="https://... (optional)" />
-        </label>
-        <label>Caption
-          <input type="text" data-blk-field="caption" value="${escapeHTML(block.caption || "")}" />
-        </label>
-      </div>`;
-  }
-  // default text block
-  return `
-    <div class="block-editor" data-index="${index}">
-      <div class="block-editor-head">
-        <span class="block-type">Text</span>
-        <button type="button" class="block-remove" data-remove-block="${index}" aria-label="Remove block">&times;</button>
-      </div>
-      <label>HTML content
-        <textarea data-blk-field="html">${escapeHTML(block.html || "")}</textarea>
-      </label>
-    </div>`;
+  return data.url;
 }
 
-function renderBlockEditors() {
-  const container = $("#blog-blocks");
-  container.innerHTML = blogBlocks.map(blockEditorHTML).join("");
+function resizeImage(file, maxDim = 1920, quality = 0.85) {
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => {
+      URL.revokeObjectURL(url);
+      const scale = Math.min(1, maxDim / Math.max(img.width, img.height));
+      const w = Math.max(1, Math.round(img.width * scale));
+      const h = Math.max(1, Math.round(img.height * scale));
+      const canvas = document.createElement("canvas");
+      canvas.width = w;
+      canvas.height = h;
+      const ctx = canvas.getContext("2d");
+      ctx.drawImage(img, 0, 0, w, h);
+      canvas.toBlob(
+        (blob) => (blob ? resolve(blob) : reject(new Error("Image compression failed"))),
+        "image/jpeg",
+        quality
+      );
+    };
+    img.onerror = () => {
+      URL.revokeObjectURL(url);
+      reject(new Error("Could not read image"));
+    };
+    img.src = url;
+  });
 }
 
-function addBlock(type) {
-  const base =
-    type === "image"
-      ? { type: "image", src: "", alt: "", caption: "" }
-      : type === "video"
-        ? { type: "video", src: "", poster: "", caption: "" }
-        : { type: "text", html: "" };
-  blogBlocks.push(base);
-  renderBlockEditors();
-}
-
-// Add block buttons (event delegation)
-$("#blog-blocks").addEventListener("click", (e) => {
-  const btn = e.target.closest("[data-remove-block]");
-  if (!btn) return;
-  blogBlocks.splice(Number(btn.dataset.removeBlock), 1);
-  renderBlockEditors();
-});
-
-document.querySelectorAll("[data-add-block]").forEach((btn) => {
-  btn.addEventListener("click", () => addBlock(btn.dataset.addBlock));
-});
-
-// Sync edited fields back into blogBlocks on change
-$("#blog-blocks").addEventListener("input", (e) => {
-  const el = e.target.closest("[data-blk-field]");
+function setUploadStatus(el, state, text) {
   if (!el) return;
-  const editor = el.closest(".block-editor");
-  const index = Number(editor.dataset.index);
-  blogBlocks[index][el.dataset.blkField] = el.value;
+  if (!state) {
+    el.hidden = true;
+    return;
+  }
+  el.hidden = false;
+  el.className = "upload-status " + state;
+  el.textContent = text;
+}
+
+/* ── Blogger-style WYSIWYG editor ──────────────────────── */
+/* One big editable area — text and photos mix inline.      */
+/* Photos are uploaded to /photo/... and shown right in the */
+/* content, exactly like blogspot.com/blog/post/edit/.      */
+
+const blogEditor = $("#blog-editor");
+
+/* Blocks (DB format) -> editable HTML */
+function blocksToHTML(blocks) {
+  return (blocks || [])
+    .map((b) => {
+      if (b.type === "image") {
+        const alt = escapeHTML(b.alt || b.caption || "");
+        const cap = b.caption
+          ? `<div class="wysiwyg-caption">${escapeHTML(b.caption)}</div>`
+          : "";
+        return `<p class="wysiwyg-img-wrap"><img src="${escapeHTML(b.src)}" alt="${alt}" />${cap}</p>`;
+      }
+      if (b.type === "video") {
+        const poster = b.poster ? ` poster="${escapeHTML(b.poster)}"` : "";
+        const cap = b.caption
+          ? `<div class="wysiwyg-caption">${escapeHTML(b.caption)}</div>`
+          : "";
+        return `<p class="wysiwyg-video-wrap"><video controls preload="metadata"${poster}><source src="${escapeHTML(b.src)}" type="video/mp4" /></video>${cap}</p>`;
+      }
+      return b.html || "";
+    })
+    .join("\n");
+}
+
+/* Editable HTML -> Blocks (DB format, for save) */
+function htmlToBlocks(html) {
+  const template = document.createElement("template");
+  template.innerHTML = html;
+  const blocks = [];
+  const childNodes = Array.from(template.content.childNodes);
+
+  for (const node of childNodes) {
+    if (node.nodeType === Node.TEXT_NODE) {
+      const text = node.textContent.trim();
+      if (text) blocks.push({ type: "text", html: `<p>${escapeHTML(text)}</p>` });
+      continue;
+    }
+    if (node.nodeType !== Node.ELEMENT_NODE) continue;
+
+    const el = node;
+    const img = el.querySelector("img");
+    const video = el.querySelector("video");
+
+    if (img && !video) {
+      const capEl = el.querySelector(".wysiwyg-caption");
+      const src = img.getAttribute("src") || "";
+      let alt = img.getAttribute("alt") || "";
+      let caption = "";
+      if (capEl) {
+        caption = capEl.textContent.trim();
+        alt = alt || caption;
+      } else if (img.title) {
+        caption = img.title;
+        alt = alt || caption;
+      }
+      if (src) blocks.push({ type: "image", src, alt, caption });
+      continue;
+    }
+
+    if (video) {
+      const sourceEl = video.querySelector("source");
+      const src = (sourceEl && sourceEl.getAttribute("src")) || video.getAttribute("src") || "";
+      const capEl = el.querySelector(".wysiwyg-caption");
+      const caption = capEl ? capEl.textContent.trim() : "";
+      if (src) {
+        blocks.push({
+          type: "video",
+          src,
+          poster: video.getAttribute("poster") || "",
+          caption,
+        });
+      }
+      continue;
+    }
+
+    const inner = el.innerHTML.trim();
+    if (inner) blocks.push({ type: "text", html: el.outerHTML });
+  }
+
+  return blocks;
+}
+
+/* Insert an image at the current caret, in a paragraph */
+function insertImageAtCursor(src, alt) {
+  blogEditor.focus();
+  const html =
+    `<p class="wysiwyg-img-wrap"><img src="${escapeHTML(src)}" alt="${escapeHTML(alt || "")}" /></p>` +
+    `<p><br /></p>`;
+  document.execCommand("insertHTML", false, html);
+}
+
+/* Toolbar */
+$("#blog-toolbar").addEventListener("mousedown", (e) => {
+  const btn = e.target.closest(".tb-btn");
+  if (!btn) return;
+  e.preventDefault(); // keep the text selection
+
+  const cmd = btn.dataset.cmd;
+
+  if (cmd === "insertImage") {
+    $("#wysiwyg-file").click();
+    return;
+  }
+  if (cmd === "insertVideo") {
+    const url = prompt("Video URL (mp4):");
+    if (!url) return;
+    const poster = prompt("Poster image URL (optional, Enter to skip):", "") || "";
+    blogEditor.focus();
+    const html =
+      `<p class="wysiwyg-video-wrap"><video controls preload="metadata"${poster ? ` poster="${escapeHTML(poster)}"` : ""}><source src="${escapeHTML(url)}" type="video/mp4" /></video></p>` +
+      `<p><br /></p>`;
+    document.execCommand("insertHTML", false, html);
+    return;
+  }
+  if (cmd === "createLink") {
+    const url = prompt("Link URL:");
+    if (!url) return;
+    blogEditor.focus();
+    document.execCommand("createLink", false, url);
+    return;
+  }
+
+  blogEditor.focus();
+  document.execCommand(cmd, false, btn.dataset.value || null);
+});
+
+/* Insert photo via toolbar button — upload then inline */
+$("#wysiwyg-file").addEventListener("change", async (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+  e.target.value = "";
+  const statusEl = $("#wysiwyg-upload-status");
+  setUploadStatus(statusEl, "uploading", "Uploading…");
+  try {
+    const blob = await resizeImage(file);
+    const url = await uploadImageBlob(blob, statusEl);
+    insertImageAtCursor(url, "");
+    setUploadStatus(statusEl, "ok", "✓ Uploaded");
+    setTimeout(() => setUploadStatus(statusEl, null), 2500);
+  } catch (err) {
+    setUploadStatus(statusEl, "err", "✗ " + err.message);
+  }
+});
+
+/* Paste a photo anywhere in the editor → auto upload + insert (Blogger behavior) */
+blogEditor.addEventListener("paste", async (e) => {
+  const items = (e.clipboardData && e.clipboardData.items) || [];
+  const imageItem = Array.from(items).find((it) => it.type && it.type.startsWith("image/"));
+  if (!imageItem) return;
+  e.preventDefault();
+
+  const file = imageItem.getAsFile();
+  const statusEl = $("#wysiwyg-upload-status");
+  setUploadStatus(statusEl, "uploading", "Uploading…");
+  try {
+    const blob = await resizeImage(file);
+    const url = await uploadImageBlob(blob, statusEl);
+    insertImageAtCursor(url, "");
+    setUploadStatus(statusEl, "ok", "✓ Uploaded");
+    setTimeout(() => setUploadStatus(statusEl, null), 2500);
+  } catch (err) {
+    setUploadStatus(statusEl, "err", "✗ " + err.message);
+  }
+});
+
+/* ── Cover image upload ───────────────────────────────── */
+$("#cover-upload-btn").addEventListener("click", () => $("#cover-file").click());
+
+$("#cover-file").addEventListener("change", async (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+  e.target.value = "";
+  const statusEl = $("#cover-upload-status");
+  setUploadStatus(statusEl, "uploading", "Uploading…");
+  try {
+    const blob = await resizeImage(file);
+    const url = await uploadImageBlob(blob, statusEl);
+    $("#blog-cover").value = url;
+    setUploadStatus(statusEl, "ok", "✓ Uploaded");
+    setTimeout(() => setUploadStatus(statusEl, null), 2500);
+  } catch (err) {
+    setUploadStatus(statusEl, "err", "✗ " + err.message);
+  }
 });
 
 async function loadBlog() {
@@ -283,15 +438,13 @@ function showBlogForm(post = null) {
   $("#blog-tag").value = post ? post.tag || "" : "";
   $("#blog-date").value = post ? post.date : new Date().toISOString().slice(0, 10);
   $("#blog-cover").value = post ? post.cover || "" : "";
-  blogBlocks = post ? JSON.parse(JSON.stringify(post.blocks || [])) : [];
-  renderBlockEditors();
+  blogEditor.innerHTML = post ? blocksToHTML(post.blocks || []) : "";
   $("#blog-title").focus();
 }
 
 function hideBlogForm() {
   $("#blog-form-wrap").hidden = true;
-  blogBlocks = [];
-  renderBlockEditors();
+  blogEditor.innerHTML = "";
 }
 
 $("#blog-add-btn").addEventListener("click", () => showBlogForm());
@@ -304,10 +457,7 @@ $("#blog-form").addEventListener("submit", async (e) => {
     tag: $("#blog-tag").value.trim(),
     date: $("#blog-date").value,
     cover: $("#blog-cover").value.trim(),
-    blocks: blogBlocks.filter((b) => {
-      if (b.type === "text") return b.html && b.html.trim();
-      return b.src && b.src.trim();
-    }),
+    blocks: htmlToBlocks(blogEditor.innerHTML),
   };
   try {
     if (id) {
