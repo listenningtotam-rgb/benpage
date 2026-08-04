@@ -1,11 +1,8 @@
 node_modules/
 .env
 .DS_Store
-data/photos/
 *.log
 .vscode/
 
-# Runtime SQLite database (WAL mode — never commit)
-data/benpage.db
-data/benpage.db-shm
-data/benpage.db-wal
+# Ignore everything under the data directory
+data/
