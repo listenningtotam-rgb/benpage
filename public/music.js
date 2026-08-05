@@ -3,7 +3,8 @@
 
 const trackListEl = document.getElementById("track-list");
 const SC_ORANGE = "#ff5500";
-const BAR_GREY = "rgba(255,255,255,0.20)";
+/* Semi-transparent gray layer that covers the unplayed part of the waveform. */
+const PROGRESS_LAYER = "rgba(18, 22, 44, 0.85)";
 
 /* A single shared audio element → only one track plays at a time. */
 const musicState = {
@@ -99,31 +100,21 @@ function drawWaveform(canvas, bars, progressPct) {
   const bw = (w - gap * (n - 1)) / n;
   const radius = Math.max(1, bw * 0.45);
 
+  // Draw the full waveform in the bright base color.
+  ctx.fillStyle = SC_ORANGE;
   ctx.beginPath();
   for (let i = 0; i < n; i++) {
     const x = i * (bw + gap);
-    // Solid orange for bars fully before the playhead; gradient for the bar under it.
-    let color = BAR_GREY;
-    if (x + bw <= played) {
-      color = SC_ORANGE;
-    } else if (x < played) {
-      // Partially played bar — draw a clipped orange segment under the playhead.
-      ctx.save();
-      ctx.fillStyle = SC_ORANGE;
-      const partialW = played - x;
-      const bh = Math.max(2.5, bars[i] * h * 0.92);
-      const y = (h - bh) / 2;
-      roundedRectPath(ctx, x, y, partialW, bh, radius);
-      ctx.fill();
-      ctx.restore();
-      color = BAR_GREY;
-    }
-
     const bh = Math.max(2.5, bars[i] * h * 0.92);
     const y = (h - bh) / 2;
-    ctx.fillStyle = color;
     roundedRectPath(ctx, x, y, bw, bh, radius);
-    ctx.fill();
+  }
+  ctx.fill();
+
+  // Gray layer over the unplayed portion — it shrinks away as the track plays.
+  if (played < w - 0.5) {
+    ctx.fillStyle = PROGRESS_LAYER;
+    ctx.fillRect(played, 0, w - played, h);
   }
 }
 

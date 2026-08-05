@@ -57,9 +57,15 @@
           <label class="field">Title
             <input type="text" id="music-title" required placeholder="e.g. Midnight Dreams" />
           </label>
-          <label class="field">URL
-            <input type="url" id="music-url" required placeholder="https://..." />
-          </label>
+          <div class="field">
+            <span class="field-label">Audio File <span class="field-hint">(MP3, WAV, OGG, FLAC, M4A, AAC, WebM — max 100MB)</span></span>
+            <div class="upload-row">
+              <button type="button" class="btn btn-ghost btn-sm" id="music-upload-btn">⬆ Upload Audio</button>
+              <input type="file" id="music-file" accept="audio/*,.mp3,.wav,.ogg,.oga,.flac,.m4a,.aac,.opus,.webm" hidden />
+              <span class="upload-status" id="music-upload-status" hidden></span>
+            </div>
+            <input type="hidden" id="music-url" />
+          </div>
           <label class="field">Order (lower = higher on list)
             <input type="number" id="music-sort" value="0" />
           </label>

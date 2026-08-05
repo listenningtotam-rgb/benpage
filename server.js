@@ -24,6 +24,15 @@ const PHOTO_DIR =
     ? "/var/www/static/photo"
     : path.join(__dirname, "data", "photos"));
 const PHOTO_URL_PREFIX = "/photo/";
+// Where uploaded recordings (music tracks) are stored.
+// Production: /home/www/static/recordings (served at https://<host>/recordings/...)
+// Local dev:  ./data/recordings           (served at http://localhost:3000/recordings/...)
+const RECORDING_DIR =
+  process.env.RECORDING_DIR ||
+  (isWritableDir("/home/www/static/recordings")
+    ? "/home/www/static/recordings"
+    : path.join(__dirname, "data", "recordings"));
+const RECORDING_URL_PREFIX = "/recordings/";
 const JWT_SECRET = process.env.JWT_SECRET || "benpage-dev-secret-change-me";
 
 const db = require("./db");
@@ -38,6 +47,15 @@ const mimeTypes = {
   ".webp": "image/webp",
   ".bmp": "image/bmp",
   ".svg": "image/svg+xml",
+  ".mp3": "audio/mpeg",
+  ".wav": "audio/wav",
+  ".ogg": "audio/ogg",
+  ".oga": "audio/ogg",
+  ".m4a": "audio/mp4",
+  ".aac": "audio/aac",
+  ".flac": "audio/flac",
+  ".opus": "audio/ogg",
+  ".webm": "audio/webm",
 };
 
 // ─── API Proxies (CORS-free server-side fetch) ─────────────────────────
@@ -81,7 +99,7 @@ function readBuffer(req, maxBytes) {
       size += c.length;
       if (size > maxBytes) {
         aborted = true;
-        reject(new Error("File too large (max 10MB)"));
+        reject(new Error(`File too large (max ${Math.round(maxBytes / (1024 * 1024))}MB)`));
         req.destroy();
         return;
       }
@@ -113,6 +131,32 @@ function sniffImageExt(buf) {
   ) return ".webp";
   // BMP
   if (buf[0] === 0x42 && buf[1] === 0x4d) return ".bmp";
+  return null;
+}
+
+// ─── Audio upload (raw binary body) ────────────────────────────────────
+const MAX_AUDIO_UPLOAD_BYTES = 100 * 1024 * 1024; // 100 MB
+
+function sniffAudioExt(buf) {
+  if (!buf || buf.length < 12) return null;
+  // MP3 — ID3 tag, or MPEG audio frame sync (0xFFEx)
+  if (
+    (buf[0] === 0x49 && buf[1] === 0x44 && buf[2] === 0x33) ||
+    (buf[0] === 0xff && (buf[1] & 0xe0) === 0xe0)
+  ) return ".mp3";
+  // WAV — "RIFF" .... "WAVE"
+  if (
+    buf[0] === 0x52 && buf[1] === 0x49 && buf[2] === 0x46 && buf[3] === 0x46 &&
+    buf[8] === 0x57 && buf[9] === 0x41 && buf[10] === 0x56 && buf[11] === 0x45
+  ) return ".wav";
+  // OGG / Opus — "OggS"
+  if (buf[0] === 0x4f && buf[1] === 0x67 && buf[2] === 0x67 && buf[3] === 0x53) return ".ogg";
+  // FLAC — "fLaC"
+  if (buf[0] === 0x66 && buf[1] === 0x4c && buf[2] === 0x61 && buf[3] === 0x43) return ".flac";
+  // M4A / AAC — MP4 container "....ftyp"
+  if (buf[4] === 0x66 && buf[5] === 0x74 && buf[6] === 0x79 && buf[7] === 0x70) return ".m4a";
+  // WebM / Opus — EBML magic
+  if (buf[0] === 0x1a && buf[1] === 0x45 && buf[2] === 0xdf && buf[3] === 0xa3) return ".webm";
   return null;
 }
 
@@ -209,6 +253,47 @@ async function handleApi(req, res, urlPath) {
       }
       return json(res, 201, {
         url: PHOTO_URL_PREFIX + filename,
+        size: buf.length,
+      });
+    });
+    return;
+  }
+
+  // ── Music audio upload (raw binary audio body) ───────
+  if (urlPath === "/api/music/upload" && req.method === "POST") {
+    if (!requireAuth()) return;
+    const buf = await readBuffer(req, MAX_AUDIO_UPLOAD_BYTES);
+    if (!buf.length) {
+      return json(res, 400, { error: "Empty file" });
+    }
+    const ext = sniffAudioExt(buf);
+    if (!ext) {
+      return json(res, 400, {
+        error: "Unsupported audio type. Send MP3, WAV, OGG, FLAC, M4A, AAC or WebM bytes.",
+      });
+    }
+
+    fs.mkdirSync(RECORDING_DIR, { recursive: true });
+    const stamp = new Date()
+      .toISOString()
+      .replace(/[-:]/g, "")
+      .replace(/\.\d{3}Z$/, "Z");
+    const rand = Math.random().toString(36).slice(2, 7);
+    const filename = `music_${stamp}_${rand}${ext}`;
+    const fullPath = path.join(RECORDING_DIR, filename);
+
+    // Safety: ensure resolved path stays inside RECORDING_DIR
+    if (!fullPath.startsWith(path.resolve(RECORDING_DIR) + path.sep)) {
+      return json(res, 400, { error: "Invalid path" });
+    }
+
+    fs.writeFile(fullPath, buf, (err) => {
+      if (err) {
+        console.error("recording upload write error:", err.message);
+        return json(res, 500, { error: "Failed to save recording" });
+      }
+      return json(res, 201, {
+        url: RECORDING_URL_PREFIX + filename,
         size: buf.length,
       });
     });
@@ -422,6 +507,52 @@ const server = http.createServer((req, res) => {
       const ext = path.extname(photoPath).toLowerCase();
       res.writeHead(200, { "Content-Type": mimeTypes[ext] || "application/octet-stream" });
       res.end(data);
+    });
+    return;
+  }
+
+  // Uploaded recordings (served from RECORDING_DIR, outside publicDir).
+  // Streamed with HTTP Range support so <audio> can seek on larger files.
+  if (urlPath.startsWith(RECORDING_URL_PREFIX)) {
+    const recPath = path.join(RECORDING_DIR, path.normalize(urlPath.slice(RECORDING_URL_PREFIX.length)));
+    if (!recPath.startsWith(path.resolve(RECORDING_DIR) + path.sep)) {
+      res.writeHead(403);
+      res.end("Forbidden");
+      return;
+    }
+    fs.stat(recPath, (err, stat) => {
+      if (err || !stat.isFile()) {
+        res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
+        res.end("Not Found");
+        return;
+      }
+      const ext = path.extname(recPath).toLowerCase();
+      const mime = mimeTypes[ext] || "application/octet-stream";
+
+      const range = req.headers.range;
+      const rng = range && /^bytes=(\d*)-(\d*)$/.exec(range.trim());
+      if (rng) {
+        const start = rng[1] ? parseInt(rng[1], 10) : 0;
+        const end = rng[2] ? parseInt(rng[2], 10) : stat.size - 1;
+        const endClamped = Math.min(end, stat.size - 1);
+        if (start >= 0 && start <= endClamped && start < stat.size) {
+          res.writeHead(206, {
+            "Content-Type": mime,
+            "Accept-Ranges": "bytes",
+            "Content-Range": `bytes ${start}-${endClamped}/${stat.size}`,
+            "Content-Length": endClamped - start + 1,
+          });
+          fs.createReadStream(recPath, { start, end: endClamped }).pipe(res);
+          return;
+        }
+      }
+
+      res.writeHead(200, {
+        "Content-Type": mime,
+        "Accept-Ranges": "bytes",
+        "Content-Length": stat.size,
+      });
+      fs.createReadStream(recPath).pipe(res);
     });
     return;
   }

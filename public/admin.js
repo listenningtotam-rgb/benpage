@@ -127,21 +127,68 @@ function showMusicForm(track = null) {
   $("#music-title").value = track ? track.title : "";
   $("#music-url").value = track ? track.url : "";
   $("#music-sort").value = track ? track.sort_order : 0;
+  $("#music-file").value = "";
+  const statusEl = $("#music-upload-status");
+  if (track && track.url) {
+    setUploadStatus(statusEl, "ok", "✓ " + track.url);
+  } else {
+    setUploadStatus(statusEl, null);
+  }
   $("#music-title").focus();
 }
 
 function hideMusicForm() {
   $("#music-form-wrap").hidden = true;
+  $("#music-url").value = "";
+  $("#music-file").value = "";
+  setUploadStatus($("#music-upload-status"), null);
 }
 
 $("#music-add-btn").addEventListener("click", () => showMusicForm());
 
+/* ── Audio upload (music) ─────────────────────────────── */
+async function uploadAudioBlob(blob, statusEl) {
+  setUploadStatus(statusEl, "uploading", "Uploading…");
+  const token = localStorage.getItem(TOKEN_KEY);
+  const res = await fetch("/api/music/upload", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}` },
+    body: blob,
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error(data.error || `Upload failed (${res.status})`);
+  }
+  return data.url;
+}
+
+$("#music-upload-btn").addEventListener("click", () => $("#music-file").click());
+
+$("#music-file").addEventListener("change", async (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+  e.target.value = "";
+  const statusEl = $("#music-upload-status");
+  try {
+    const url = await uploadAudioBlob(file, statusEl);
+    $("#music-url").value = url;
+    setUploadStatus(statusEl, "ok", "✓ " + url);
+  } catch (err) {
+    setUploadStatus(statusEl, "err", "✗ " + err.message);
+  }
+});
+
 $("#music-form").addEventListener("submit", async (e) => {
   e.preventDefault();
   const id = $("#music-id").value;
+  const url = $("#music-url").value.trim();
+  if (!url) {
+    alert("Please upload an audio file first.");
+    return;
+  }
   const payload = {
     title: $("#music-title").value.trim(),
-    url: $("#music-url").value.trim(),
+    url,
     sort_order: parseInt($("#music-sort").value, 10) || 0,
   };
   try {
