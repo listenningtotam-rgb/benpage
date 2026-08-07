@@ -59,11 +59,11 @@
 
       <div id="apps-gallery">
         <article class="app-card">
-          <div class="app-thumb"><div id="thumb-worldtime" class="thumb-widget thumb-clock"><div class="thumb-clock-time">--:--:--</div><div class="thumb-clock-tz">UTC+00:00</div></div></div>
+          <div class="app-thumb"><div id="thumb-calendar" class="thumb-widget thumb-cal"><div class="thumb-cal-month">———</div><div class="thumb-cal-grid"><span>&bull;</span><span>&bull;</span><span>&bull;</span><span>&bull;</span><span>&bull;</span><span>&bull;</span><span>&bull;</span></div></div></div>
           <div class="app-body">
-            <h3 class="app-title">Global Time</h3>
-            <p class="app-desc">World clock & timezone converter — live local time for cities, regions & major financial hubs, with instant timezone conversion.</p>
-            <button type="button" class="app-open" data-target="worldtime">Open App</button>
+            <h3 class="app-title">FX Holiday Calendar</h3>
+            <p class="app-desc">Global currency market calendar — every major currency market, when it's open and when it closes for holidays. Tap a day to see which currencies are not trading.</p>
+            <button type="button" class="app-open" data-target="calendar">Open App</button>
           </div>
         </article>
         <article class="app-card">
@@ -79,23 +79,30 @@
       <div id="app-detail" hidden>
         <button type="button" id="app-detail-close" class="app-close" aria-label="Close">&times;</button>
 
-        <div id="app-worldtime" class="app-panel" hidden>
-          <h3 class="app-panel-title">Global Time</h3>
-          <div class="wt-layout">
-            <div class="wt-clock">
-              <div id="wt-city" class="wt-city">—</div>
-              <div id="wt-time" class="wt-time">--:--:--</div>
-              <div id="wt-date" class="wt-date">—</div>
-              <div id="wt-offset" class="wt-offset">UTC+00:00</div>
-            </div>
-            <div class="wt-converter">
-              <div class="wt-row">
-                <div class="wt-field"><label for="wt-from">From</label><select id="wt-from"></select></div>
-                <div class="wt-arrow">&rarr;</div>
-                <div class="wt-field"><label for="wt-to">To</label><select id="wt-to"></select></div>
-              </div>
-              <div id="wt-result" class="wt-result">Select two cities to compare local times.</div>
-            </div>
+        <div id="app-calendar" class="app-panel" hidden>
+          <h3 class="app-panel-title">FX Holiday Calendar</h3>
+          <p class="cal-caption">Major currency markets around the world — red days are FX holidays when one or more currencies are not trading. Tap a red day for details.</p>
+
+          <div class="cal-toolbar">
+            <button type="button" id="cal-prev" class="cal-nav" aria-label="Previous month">&lsaquo;</button>
+            <div id="cal-month-label" class="cal-month-label">—</div>
+            <button type="button" id="cal-next" class="cal-nav" aria-label="Next month">&rsaquo;</button>
+            <button type="button" id="cal-today" class="cal-today-btn">Today</button>
+          </div>
+
+          <div class="cal-week-head">
+            <span>Sun</span><span>Mon</span><span>Tue</span><span>Wed</span><span>Thu</span><span>Fri</span><span>Sat</span>
+          </div>
+          <div id="cal-grid" class="cal-grid"></div>
+
+          <div class="cal-legend">
+            <span class="cal-leg"><span class="leg-dot leg-green"></span>All markets open</span>
+            <span class="cal-leg"><span class="leg-dot leg-red"></span>FX holiday &mdash; market closed</span>
+          </div>
+
+          <div id="cal-detail" class="cal-detail" hidden>
+            <div id="cal-detail-date" class="cal-detail-date"></div>
+            <div id="cal-detail-currencies" class="cal-detail-currencies"></div>
           </div>
         </div>
 

@@ -820,6 +820,43 @@ body {
   letter-spacing: 0.02em;
 }
 
+.thumb-cal {
+  gap: 0.3rem;
+  padding: 0.6rem;
+}
+
+.thumb-cal-month {
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: rgba(255,255,255,0.6);
+}
+
+.thumb-cal-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 0.3rem;
+}
+
+.thumb-cal-grid span {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+}
+
+.thumb-cal-grid .dot-green {
+  background: #4caf7d;
+  box-shadow: 0 0 6px rgba(76,175,125,0.5);
+  color: transparent;
+}
+
+.thumb-cal-grid .dot-red {
+  background: #ff5f56;
+  box-shadow: 0 0 6px rgba(255,95,86,0.5);
+  color: transparent;
+}
+
 .app-body {
   padding: 1.1rem 1.25rem 1.3rem;
   display: flex;
@@ -905,118 +942,217 @@ body {
   margin-bottom: 1.4rem;
 }
 
-/* World Time */
-.wt-layout {
-  display: grid;
-  grid-template-columns: 1.1fr 1fr;
-  gap: 1.5rem;
-}
-
-.wt-clock {
-  background: rgba(2,6,16,0.6);
-  border: 1px solid rgba(126,200,227,0.2);
-  border-radius: 14px;
-  padding: 1.5rem;
-  text-align: center;
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-  gap: 0.5rem;
-  box-shadow: inset 0 0 30px rgba(126,200,227,0.05);
-}
-
-.wt-city {
+/* FX Holiday Calendar */
+.cal-caption {
   font-size: 0.85rem;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-  color: rgba(126,200,227,0.8);
+  line-height: 1.6;
+  color: rgba(255,255,255,0.55);
+  margin: -0.8rem 0 1.2rem;
 }
 
-.wt-time {
-  font-size: clamp(2.2rem, 6vw, 3.2rem);
-  font-weight: 800;
-  font-family: "SF Mono", "Menlo", monospace;
-  color: #7ec8e3;
-  text-shadow: 0 0 24px rgba(126,200,227,0.45);
-  letter-spacing: 0.02em;
-}
-
-.wt-date {
-  font-size: 0.9rem;
-  color: rgba(255,255,255,0.6);
-}
-
-.wt-offset {
-  font-size: 0.78rem;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
-  color: rgba(255,255,255,0.45);
-}
-
-.wt-converter { display: flex; flex-direction: column; gap: 1rem; justify-content: center; }
-
-.wt-row {
+.cal-toolbar {
   display: flex;
-  align-items: flex-end;
+  align-items: center;
+  justify-content: center;
   gap: 0.75rem;
+  margin-bottom: 1rem;
 }
 
-.wt-field { flex: 1; display: flex; flex-direction: column; gap: 0.35rem; }
-
-.wt-field label {
-  font-size: 0.72rem;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-  color: rgba(255,255,255,0.5);
-}
-
-.wt-field select {
-  width: 100%;
+.cal-nav {
   background: rgba(255,255,255,0.05);
   border: 1px solid rgba(255,255,255,0.14);
   border-radius: 8px;
   color: #fff;
-  font-size: 0.88rem;
-  padding: 0.5rem 0.6rem;
-  outline: none;
+  font-size: 1.2rem;
+  line-height: 1;
+  width: 38px;
+  height: 38px;
   cursor: pointer;
-  transition: border-color 0.2s ease, background 0.2s ease;
+  transition: background 0.2s ease, border-color 0.2s ease, transform 0.1s ease;
 }
 
-.wt-field select:hover { background: rgba(255,255,255,0.08); border-color: rgba(126,200,227,0.5); }
-.wt-field select:focus { border-color: #7ec8e3; }
-.wt-field select option { background: #0b1033; color: #fff; }
+.cal-nav:hover { background: rgba(126,200,227,0.15); border-color: rgba(126,200,227,0.5); }
+.cal-nav:active { transform: scale(0.94); }
 
-.wt-arrow {
-  font-size: 1.4rem;
-  color: rgba(126,200,227,0.7);
-  padding-bottom: 0.4rem;
+.cal-month-label {
+  min-width: 170px;
+  text-align: center;
+  font-size: 1.05rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
 }
 
-.wt-result {
-  display: flex;
-  flex-direction: column;
-  gap: 0.55rem;
-  font-size: 0.92rem;
-  line-height: 1.6;
-  color: rgba(255,255,255,0.75);
-  background: rgba(255,255,255,0.04);
-  border-radius: 10px;
-  padding: 0.8rem 1rem;
-}
-
-.wt-result strong { color: #7ec8e3; }
-
-.wt-gap {
+.cal-today-btn {
+  background: rgba(126,200,227,0.12);
+  border: 1px solid rgba(126,200,227,0.45);
+  color: #7ec8e3;
   font-size: 0.72rem;
   font-weight: 700;
-  letter-spacing: 0.12em;
+  letter-spacing: 0.08em;
   text-transform: uppercase;
-  color: #ffd479;
-  border-top: 1px dashed rgba(255,212,121,0.25);
-  border-bottom: 1px dashed rgba(255,212,121,0.25);
-  padding: 0.2rem 0;
-  align-self: flex-start;
+  padding: 0.45rem 0.9rem;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: background 0.2s ease, box-shadow 0.2s ease;
+}
+
+.cal-today-btn:hover {
+  background: rgba(126,200,227,0.22);
+  box-shadow: 0 0 14px rgba(126,200,227,0.25);
+}
+
+.cal-week-head {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 5px;
+  margin-bottom: 5px;
+}
+
+.cal-week-head span {
+  text-align: center;
+  font-size: 0.66rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: rgba(255,255,255,0.4);
+  padding: 0.35rem 0;
+}
+
+.cal-grid {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 5px;
+}
+
+.cal-cell {
+  aspect-ratio: 1;
+  border: none;
+  border-radius: 10px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  font-family: "SF Mono", "Menlo", monospace;
+  cursor: pointer;
+  transition: transform 0.1s ease, box-shadow 0.15s ease, background 0.2s ease;
+  color: rgba(255,255,255,0.75);
+}
+
+.cal-cell:active { transform: scale(0.94); }
+
+.cal-blank {
+  cursor: default;
+  background: transparent;
+  border-radius: 0;
+}
+
+.cal-open {
+  background: rgba(76,175,125,0.14);
+  border: 1px solid rgba(76,175,125,0.35);
+  color: #9be29b;
+}
+
+.cal-open:hover {
+  background: rgba(76,175,125,0.22);
+  box-shadow: 0 0 12px rgba(76,175,125,0.25);
+}
+
+.cal-holiday {
+  background: rgba(255,95,86,0.16);
+  border: 1px solid rgba(255,95,86,0.45);
+  color: #ff8a7d;
+}
+
+.cal-holiday:hover {
+  background: rgba(255,95,86,0.26);
+  box-shadow: 0 0 12px rgba(255,95,86,0.3);
+}
+
+.cal-cell.selected {
+  outline: 2px solid #7ec8e3;
+  outline-offset: 1px;
+  box-shadow: 0 0 14px rgba(126,200,227,0.35);
+}
+
+.cal-today {
+  position: relative;
+}
+
+.cal-today::after {
+  content: "";
+  position: absolute;
+  top: 5px;
+  right: 5px;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: #7ec8e3;
+  box-shadow: 0 0 6px rgba(126,200,227,0.8);
+}
+
+.cal-legend {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 1.2rem;
+  margin-top: 1.1rem;
+  font-size: 0.76rem;
+  color: rgba(255,255,255,0.5);
+}
+
+.cal-leg {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+}
+
+.leg-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  display: inline-block;
+}
+
+.leg-green { background: #4caf7d; box-shadow: 0 0 6px rgba(76,175,125,0.5); }
+.leg-red   { background: #ff5f56; box-shadow: 0 0 6px rgba(255,95,86,0.5); }
+
+.cal-detail {
+  margin-top: 1.2rem;
+  background: rgba(255,95,86,0.08);
+  border: 1px solid rgba(255,95,86,0.3);
+  border-radius: 12px;
+  padding: 1rem 1.1rem;
+  animation: panelIn 0.2s ease;
+}
+
+.cal-detail-date {
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: #ff8a7d;
+  margin-bottom: 0.6rem;
+}
+
+.cal-detail-currencies {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.cal-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  background: rgba(255,95,86,0.12);
+  border: 1px solid rgba(255,95,86,0.35);
+  border-radius: 999px;
+  padding: 0.35rem 0.8rem;
+  font-size: 0.82rem;
+  color: rgba(255,255,255,0.85);
+}
+
+.cal-chip strong {
+  color: #ff8a7d;
+  font-family: "SF Mono", "Menlo", monospace;
+  font-size: 0.9rem;
 }
 
 /* FX */
@@ -1202,13 +1338,46 @@ body {
     padding: 1.2rem 1.1rem 1.5rem;
   }
 
-  .wt-layout {
-    grid-template-columns: 1fr;
-    gap: 1rem;
+  .cal-toolbar {
+    gap: 0.5rem;
   }
 
-  .wt-result {
-    font-size: 0.85rem;
+  .cal-month-label {
+    min-width: 130px;
+    font-size: 0.92rem;
+  }
+
+  .cal-nav {
+    width: 34px;
+    height: 34px;
+  }
+
+  .cal-today-btn {
+    font-size: 0.66rem;
+    padding: 0.4rem 0.7rem;
+  }
+
+  .cal-grid {
+    gap: 3px;
+  }
+
+  .cal-week-head {
+    gap: 3px;
+  }
+
+  .cal-cell {
+    border-radius: 7px;
+    font-size: 0.76rem;
+  }
+
+  .cal-legend {
+    gap: 0.7rem;
+    font-size: 0.7rem;
+  }
+
+  .cal-chip {
+    font-size: 0.76rem;
+    padding: 0.3rem 0.65rem;
   }
 
   .fx-controls {
