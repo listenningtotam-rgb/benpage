@@ -6,3 +6,8 @@ node_modules/
 
 # Ignore everything under the data directory
 data/
+
+# SQLite database + WAL files (runtime data — never commit)
+*.db
+*.db-shm
+*.db-wal
