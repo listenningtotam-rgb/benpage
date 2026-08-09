@@ -26,6 +26,30 @@
     </div>
   </div>
 
+  <!-- Forced Password Change View (first login / after default rotation) -->
+  <div id="change-view" class="auth-view" hidden>
+    <div class="auth-card">
+      <h1 class="auth-title">Set a New Password</h1>
+      <p class="auth-note">Your current password is temporary. Create a new one before continuing.</p>
+      <form id="change-form">
+        <label class="auth-label">
+          Current password
+          <input type="password" id="change-current" autocomplete="current-password" required />
+        </label>
+        <label class="auth-label">
+          New password
+          <input type="password" id="change-password" autocomplete="new-password" required minlength="10" />
+        </label>
+        <label class="auth-label">
+          Confirm new password
+          <input type="password" id="change-password2" autocomplete="new-password" required minlength="10" />
+        </label>
+        <p id="change-error" class="auth-error" hidden></p>
+        <button type="submit" class="auth-submit">Save New Password</button>
+      </form>
+    </div>
+  </div>
+
   <!-- Dashboard View -->
   <div id="dash-view" class="dash" hidden>
     <header class="dash-header">
@@ -40,6 +64,7 @@
     <nav class="dash-tabs">
       <button type="button" class="dash-tab active" data-tab="music">Music</button>
       <button type="button" class="dash-tab" data-tab="blog">Blog</button>
+      <button type="button" class="dash-tab" data-tab="settings">Settings</button>
     </nav>
 
     <!-- Music Tab -->
@@ -136,6 +161,29 @@
       </div>
 
       <div id="blog-list" class="list"></div>
+    </section>
+
+    <!-- Settings Tab -->
+    <section id="tab-settings" class="dash-panel" hidden>
+      <div class="panel-head">
+        <h2>Change Password</h2>
+      </div>
+      <form id="settings-password-form" class="form-wrap">
+        <label class="field">Current password
+          <input type="password" id="settings-current" autocomplete="current-password" required />
+        </label>
+        <label class="field">New password
+          <input type="password" id="settings-new" autocomplete="new-password" required minlength="10" />
+        </label>
+        <label class="field">Confirm new password
+          <input type="password" id="settings-new2" autocomplete="new-password" required minlength="10" />
+        </label>
+        <p class="field-hint">At least 10 characters, must contain letters and numbers, and must not contain your username.</p>
+        <p id="settings-password-status" class="upload-status" hidden></p>
+        <div class="form-actions">
+          <button type="submit" class="btn btn-primary">Update Password</button>
+        </div>
+      </form>
     </section>
   </div>
 

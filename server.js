@@ -2,10 +2,31 @@ const http = require("http");
 const https = require("https");
 const fs = require("fs");
 const path = require("path");
+const crypto = require("crypto");
 const jwt = require("jsonwebtoken");
 
 const PORT = process.env.PORT || 3000;
 const publicDir = path.join(__dirname, "public");
+
+// Hosts/domain that are allowed to call the API.
+// - localhost / 127.0.0.1 / ::1 are always allowed (local dev, curl on the box).
+// - ALLOWED_HOSTS: comma-separated hostnames, e.g. "example.com,www.example.com"
+// - PUBLIC_URL:    e.g. "https://example.com" (its hostname is added to the allowlist)
+const ALLOWED_HOSTS = new Set(
+  (process.env.ALLOWED_HOSTS || "")
+    .split(",")
+    .map((s) => s.trim().toLowerCase())
+    .filter(Boolean)
+);
+const PUBLIC_URL = process.env.PUBLIC_URL || "";
+function hostnameOfHost(h) {
+  return String(h || "")
+    .toLowerCase()
+    .replace(/^\[|\]$/g, "")
+    .split(":")[0];
+}
+const PUBLIC_HOST = PUBLIC_URL ? hostnameOfHost(new URL(PUBLIC_URL).host) : "";
+
 // Where uploaded blog photos are stored.
 // Production: /var/www/static/photo/ (served at https://<host>/photo/...)
 // Local dev:  ./data/photos/        (served at http://localhost:3000/photo/...)
@@ -33,7 +54,37 @@ const RECORDING_DIR =
     ? "/home/www/static/recordings"
     : path.join(__dirname, "data", "recordings"));
 const RECORDING_URL_PREFIX = "/recordings/";
-const JWT_SECRET = process.env.JWT_SECRET || "benpage-dev-secret-change-me";
+
+// ─── JWT secret ─────────────────────────────────────────────────────
+// Production requires an explicit JWT_SECRET (>= 32 chars) — fail closed
+// instead of silently using a known, forgeable fallback secret.
+// In dev, a random secret is generated once and persisted to data/.jwt-secret
+// so tokens survive restarts without logging the admin out.
+const dataDir = path.join(__dirname, "data");
+const JWT_SECRET_FILE = path.join(dataDir, ".jwt-secret");
+function loadJwtSecret() {
+  const fromEnv = process.env.JWT_SECRET;
+  if (fromEnv && fromEnv.length >= 32) return fromEnv;
+  if (process.env.NODE_ENV === "production") {
+    console.error(
+      "[security] FATAL: JWT_SECRET env var (>= 32 chars) is required in production."
+    );
+    process.exit(1);
+  }
+  try {
+    if (fs.existsSync(JWT_SECRET_FILE)) {
+      return fs.readFileSync(JWT_SECRET_FILE, "utf8").trim();
+    }
+    const secret = crypto.randomBytes(48).toString("hex");
+    fs.mkdirSync(dataDir, { recursive: true });
+    fs.writeFileSync(JWT_SECRET_FILE, secret, { mode: 0o600 });
+    return secret;
+  } catch (e) {
+    console.warn("[security] Could not persist JWT secret:", e.message);
+    return crypto.randomBytes(48).toString("hex"); // ephemeral last resort (dev only)
+  }
+}
+const JWT_SECRET = loadJwtSecret();
 
 const db = require("./db");
 
@@ -68,16 +119,65 @@ const API_PROXIES = {
   },
 };
 
+// ─── Security headers ─────────────────────────────────────────────────
+// Website JS is all external (no inline script/style), so a strict CSP works.
+// The FX app fetches https://open.er-api.com directly from the browser.
+// frame-ancestors 'none' + X-Frame-Options: DENY blocks clickjacking of the
+// admin login page.
+const CSP = [
+  "default-src 'self'",
+  "script-src 'self'",
+  "style-src 'self'",
+  "img-src 'self' data: https:",
+  "media-src 'self' https:",
+  "connect-src 'self' https://open.er-api.com",
+  "frame-ancestors 'none'",
+  "base-uri 'self'",
+  "form-action 'self'",
+].join("; ");
+
+function setSecurityHeaders(res) {
+  res.setHeader("Content-Security-Policy", CSP);
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  res.setHeader("X-Frame-Options", "DENY");
+  res.setHeader("Referrer-Policy", "no-referrer");
+  res.setHeader("X-XSS-Protection", "0");
+}
+
 function json(res, code, obj) {
-  res.writeHead(code, { "Content-Type": "application/json; charset=utf-8" });
+  res.setHeader("Content-Type", "application/json; charset=utf-8");
+  res.setHeader("Cache-Control", "no-store");
+  res.writeHead(code);
   res.end(JSON.stringify(obj));
 }
 
-function readBody(req) {
+// ─── Request body helpers ─────────────────────────────────────────────
+const MAX_JSON_BYTES = 1024 * 1024; // 1 MB
+
+function readBody(req, maxBytes = MAX_JSON_BYTES) {
   return new Promise((resolve, reject) => {
+    const headerLen = parseInt(req.headers["content-length"] || "0", 10);
+    if (headerLen > maxBytes) {
+      req.destroy();
+      reject(new Error("Request body too large"));
+      return;
+    }
     const chunks = [];
-    req.on("data", (c) => chunks.push(c));
+    let size = 0;
+    let aborted = false;
+    req.on("data", (c) => {
+      if (aborted) return;
+      size += c.length;
+      if (size > maxBytes) {
+        aborted = true;
+        req.destroy();
+        reject(new Error("Request body too large"));
+        return;
+      }
+      chunks.push(c);
+    });
     req.on("end", () => {
+      if (aborted) return;
       try {
         const raw = Buffer.concat(chunks).toString("utf8");
         resolve(raw ? JSON.parse(raw) : {});
@@ -160,6 +260,227 @@ function sniffAudioExt(buf) {
   return null;
 }
 
+// ─── Login brute-force limiter (in-memory) ─────────────────────────────
+const LOGIN_MAX_ATTEMPTS = 10; // per username+IP per 15 min
+const LOGIN_WINDOW_MS = 15 * 60 * 1000;
+const loginAttempts = new Map(); // key "ip:username" -> { count, resetAt }
+
+function loginKey(req, username) {
+  return `${req.socket.remoteAddress || "?"}:${String(username).toLowerCase()}`;
+}
+
+function checkLoginRate(key) {
+  const now = Date.now();
+  const rec = loginAttempts.get(key);
+  if (!rec || now - rec.resetAt > LOGIN_WINDOW_MS) {
+    loginAttempts.set(key, { count: 1, resetAt: now });
+    return { ok: true };
+  }
+  if (rec.count >= LOGIN_MAX_ATTEMPTS) {
+    const retryAfter = Math.ceil((rec.resetAt + LOGIN_WINDOW_MS - now) / 1000);
+    return { ok: false, retryAfter };
+  }
+  rec.count += 1;
+  return { ok: true };
+}
+
+function recordLoginFailure(key) {
+  const rec = loginAttempts.get(key);
+  if (rec) rec.count += 1;
+}
+
+// Keep the map bounded.
+setInterval(() => {
+  const now = Date.now();
+  for (const [k, v] of loginAttempts) {
+    if (now - v.resetAt > LOGIN_WINDOW_MS) loginAttempts.delete(k);
+  }
+}, 10 * 60 * 1000).unref();
+
+// ─── Proxy rate limiter ───────────────────────────────────────────────
+const PROXY_MAX_REQ = 30; // per IP per minute
+const PROXY_WINDOW_MS = 60 * 1000;
+const proxyHits = new Map();
+
+function checkProxyRate(req) {
+  const key = req.socket.remoteAddress || "?";
+  const now = Date.now();
+  const rec = proxyHits.get(key);
+  if (!rec || now - rec.resetAt > PROXY_WINDOW_MS) {
+    proxyHits.set(key, { count: 1, resetAt: now });
+    return true;
+  }
+  if (rec.count >= PROXY_MAX_REQ) return false;
+  rec.count += 1;
+  return true;
+}
+
+// ─── Blog content sanitizer (defense-in-depth against stored XSS) ──────
+function cleanText(v, max = 500) {
+  return String(v || "")
+    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, "")
+    .trim()
+    .slice(0, max);
+}
+
+function safeUrl(u) {
+  const s = String(u || "").trim();
+  if (!s) return s;
+  if (/^(https?:|mailto:|#|\/)/i.test(s)) return s;
+  if (/^data:image\/(png|jpe?g|gif|webp);base64,/i.test(s)) return s;
+  return "#";
+}
+
+const ALLOWED_BLOG_TAGS = new Set([
+  "p", "br", "b", "strong", "i", "em", "u", "s", "h3", "h4",
+  "ul", "ol", "li", "blockquote", "a", "span", "div",
+  "figure", "figcaption", "img", "video", "source",
+]);
+
+function sanitizeHtmlFragment(html) {
+  let out = String(html || "");
+  // Fully remove dangerous elements (including their content).
+  out = out.replace(/<(script|style|iframe|object|embed|form|input|textarea|select|button)[\s\S]*?<\/\1>/gi, "");
+  out = out.replace(/<!--[\s\S]*?-->/g, "");
+  // Rewrite every tag: drop tags not in the allowlist, drop event handler /
+  // style / srcdoc attrs, and validate URL-valued attrs (href/src/poster).
+  out = out.replace(/<\/?([a-zA-Z][a-zA-Z0-9]*)((?:\s[^<>]*)?)\/?>/g, (m, tagName, attrs) => {
+    const tag = tagName.toLowerCase();
+    if (!ALLOWED_BLOG_TAGS.has(tag)) return "";
+    const closing = m.startsWith("</");
+    if (closing) return "</" + tag + ">";
+
+    const safeAttrs = [];
+    const attrRe = /([a-zA-Z-]+)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/g;
+    let am;
+    while ((am = attrRe.exec(attrs))) {
+      const name = am[1].toLowerCase();
+      if (name.startsWith("on") || name === "style" || name === "srcdoc") continue;
+      let value = am[2] !== undefined ? am[2] : am[3] !== undefined ? am[3] : (am[4] || "");
+      if (name === "href" || name === "src" || name === "poster") {
+        const u = safeUrl(value);
+        if (u === "#") continue; // drop javascript:/data:/vbscript: URLs
+        value = u;
+      }
+      safeAttrs.push(name + '="' + value.replace(/"/g, "&" + "quot;") + '"');
+    }
+    const attrsStr = safeAttrs.length ? " " + safeAttrs.join(" ") : "";
+    return "<" + tag + attrsStr + ">";
+  });
+  return out;
+}
+
+function sanitizeBlocks(blocks) {
+  if (!Array.isArray(blocks)) return [];
+  const out = [];
+  for (const b of blocks) {
+    const block = b || {};
+    if (block.type === "image") {
+      const src = safeUrl(block.src);
+      if (src === "#" || !src) continue;
+      out.push({
+        type: "image",
+        src,
+        alt: cleanText(block.alt, 300),
+        caption: cleanText(block.caption, 300),
+      });
+      continue;
+    }
+    if (block.type === "video") {
+      const src = safeUrl(block.src);
+      if (src === "#" || !src) continue;
+      out.push({
+        type: "video",
+        src,
+        poster: safeUrl(block.poster),
+        caption: cleanText(block.caption, 300),
+      });
+      continue;
+    }
+    // text
+    const html = sanitizeHtmlFragment(block.html);
+    const text = String(block.html || "").replace(/<[^>]*>/g, "").trim();
+    if (html && text) {
+      out.push({ type: "text", html });
+    }
+  }
+  return out;
+}
+
+// ─── Password policy ───────────────────────────────────────────────────
+function validateNewPassword(pw, username) {
+  if (typeof pw !== "string" || pw.length < 10) {
+    return "Password must be at least 10 characters";
+  }
+  if (pw.length > 128) return "Password is too long";
+  if (pw.toLowerCase().includes(String(username || "").toLowerCase())) {
+    return "Password must not contain the username";
+  }
+  if (pw === "admin123" || pw === "password" || pw === "1234567890") {
+    return "That password is too weak";
+  }
+  if (!/[A-Za-z]/.test(pw) || !/\d/.test(pw)) {
+    return "Password must contain both letters and numbers";
+  }
+  return null;
+}
+
+// ─── API origin gate ───────────────────────────────────────────────────
+// Restricts every /api/* call to:
+//   - localhost (the box itself, local dev, curl on the server), and
+//   - the site's own domain (same-origin requests from the site's pages).
+// Blocks cross-site pages (DNS-rebinding, malicious websites, CSRF) and
+// remote non-browser clients hitting the API from other hosts.
+const SAFE_SEC_FETCH_SITE = new Set(["same-origin", "same-site", "none"]);
+
+function isAllowedHostname(h) {
+  const host = hostnameOfHost(h);
+  if (host === "localhost" || host === "127.0.0.1" || host === "::1" || host === "0.0.0.0") {
+    return true;
+  }
+  if (ALLOWED_HOSTS.has(host)) return true;
+  if (PUBLIC_HOST && host === PUBLIC_HOST) return true;
+  return false;
+}
+
+function apiGate(req, res) {
+  const host = req.headers.host || "";
+  if (!isAllowedHostname(host)) {
+    json(res, 403, { error: "Host not allowed" });
+    return false;
+  }
+
+  const origin = req.headers.origin;
+  if (origin) {
+    let originHost = "";
+    try {
+      originHost = hostnameOfHost(new URL(origin).host);
+    } catch (e) {
+      json(res, 403, { error: "Origin not allowed" });
+      return false;
+    }
+    if (!isAllowedHostname(originHost)) {
+      json(res, 403, { error: "Origin not allowed" });
+      return false;
+    }
+  }
+
+  const sf = String(req.headers["sec-fetch-site"] || "").toLowerCase();
+  if (sf && !SAFE_SEC_FETCH_SITE.has(sf)) {
+    json(res, 403, { error: "Request origin not allowed" });
+    return false;
+  }
+
+  // Non-browser clients (no Origin / Sec-Fetch-Site headers) must come from
+  // localhost or an explicitly allowed host.
+  if (!origin && !sf && !isAllowedHostname(host)) {
+    json(res, 403, { error: "Host not allowed" });
+    return false;
+  }
+
+  return true;
+}
+
 // ─── JWT Auth ──────────────────────────────────────────────────────────
 function signToken(user) {
   return jwt.sign(
@@ -182,8 +503,8 @@ function getAuthUser(req) {
   const token = header.startsWith("Bearer ") ? header.slice(7) : null;
   if (!token) return null;
   const payload = verifyToken(token);
-  if (!payload) return null;
-  return { id: payload.sub, username: payload.username };
+  if (!payload || !payload.sub) return null;
+  return db.getUserAuth(payload.sub);
 }
 
 // ─── API Router ────────────────────────────────────────────────────────
@@ -191,16 +512,29 @@ async function handleApi(req, res, urlPath) {
   // Auth
   if (urlPath === "/api/auth/login" && req.method === "POST") {
     const body = await readBody(req);
-    const username = String(body.username || "").trim();
+    const username = cleanText(body.username, 100);
     const password = String(body.password || "");
     if (!username || !password) {
       return json(res, 400, { error: "Username and password are required" });
     }
+    const key = loginKey(req, username);
+    const lim = checkLoginRate(key);
+    if (!lim.ok) {
+      const minutes = Math.ceil(lim.retryAfter / 60) || 1;
+      return json(res, 429, {
+        error: `Too many login attempts. Try again in ${minutes} minute(s).`,
+      });
+    }
     const user = db.authUser(username, password);
     if (!user) {
+      recordLoginFailure(key);
       return json(res, 401, { error: "Invalid credentials" });
     }
-    return json(res, 200, { token: signToken(user), user });
+    return json(res, 200, {
+      token: signToken(user),
+      user,
+      must_change_password: !!user.must_change_password,
+    });
   }
 
   if (urlPath === "/api/auth/me" && req.method === "GET") {
@@ -209,12 +543,31 @@ async function handleApi(req, res, urlPath) {
     return json(res, 200, { user });
   }
 
+  if (urlPath === "/api/auth/password" && req.method === "POST") {
+    const authUser = getAuthUser(req);
+    if (!authUser) return json(res, 401, { error: "Unauthorized" });
+    const body = await readBody(req);
+    const current = String(body.current_password || "");
+    const next = String(body.new_password || "");
+    if (!db.verifyUserPassword(authUser.id, current)) {
+      return json(res, 400, { error: "Current password is incorrect" });
+    }
+    const err = validateNewPassword(next, authUser.username);
+    if (err) return json(res, 400, { error: err });
+    db.changePassword(authUser.id, next);
+    return json(res, 200, { ok: true });
+  }
+
   // Protected routes below — require valid JWT
   const authUser = getAuthUser(req);
 
-  const requireAuth = () => {
+  const requireAuth = (opts = {}) => {
     if (!authUser) {
       json(res, 401, { error: "Unauthorized" });
+      return false;
+    }
+    if (authUser.must_change_password && !opts.allowPasswordChange) {
+      json(res, 403, { error: "Password change required", code: "PASSWORD_CHANGE_REQUIRED" });
       return false;
     }
     return true;
@@ -308,8 +661,8 @@ async function handleApi(req, res, urlPath) {
   if (urlPath === "/api/music" && req.method === "POST") {
     if (!requireAuth()) return;
     const body = await readBody(req);
-    const title = String(body.title || "").trim();
-    const url = String(body.url || "").trim();
+    const title = cleanText(body.title, 300);
+    const url = cleanText(body.url, 1000);
     if (!title || !url) {
       return json(res, 400, { error: "Title and URL are required" });
     }
@@ -323,8 +676,8 @@ async function handleApi(req, res, urlPath) {
     if (req.method === "PUT") {
       if (!requireAuth()) return;
       const body = await readBody(req);
-      const title = String(body.title || "").trim();
-      const url = String(body.url || "").trim();
+      const title = cleanText(body.title, 300);
+      const url = cleanText(body.url, 1000);
       if (!title || !url) {
         return json(res, 400, { error: "Title and URL are required" });
       }
@@ -354,16 +707,16 @@ async function handleApi(req, res, urlPath) {
   if (urlPath === "/api/blog" && req.method === "POST") {
     if (!requireAuth()) return;
     const body = await readBody(req);
-    const title = String(body.title || "").trim();
+    const title = cleanText(body.title, 300);
     if (!title) {
       return json(res, 400, { error: "Title is required" });
     }
     const post = db.createBlogPost({
       title,
-      tag: body.tag,
-      date: body.date,
-      cover: body.cover,
-      blocks: Array.isArray(body.blocks) ? body.blocks : [],
+      tag: cleanText(body.tag, 100),
+      date: cleanText(body.date, 20),
+      cover: safeUrl(body.cover),
+      blocks: sanitizeBlocks(body.blocks),
     });
     return json(res, 201, { post: { ...post, blocks: JSON.parse(post.blocks) } });
   }
@@ -375,7 +728,7 @@ async function handleApi(req, res, urlPath) {
     if (req.method === "PUT") {
       if (!requireAuth()) return;
       const body = await readBody(req);
-      const title = String(body.title || "").trim();
+      const title = cleanText(body.title, 300);
       if (!title) {
         return json(res, 400, { error: "Title is required" });
       }
@@ -383,10 +736,10 @@ async function handleApi(req, res, urlPath) {
       if (!existing) return json(res, 404, { error: "Post not found" });
       const post = db.updateBlogPost(id, {
         title,
-        tag: body.tag,
-        date: body.date,
-        cover: body.cover,
-        blocks: Array.isArray(body.blocks) ? body.blocks : [],
+        tag: cleanText(body.tag, 100),
+        date: cleanText(body.date, 20),
+        cover: safeUrl(body.cover),
+        blocks: sanitizeBlocks(body.blocks),
       });
       return json(res, 200, { post: { ...post, blocks: JSON.parse(post.blocks) } });
     }
@@ -415,7 +768,7 @@ function proxyRequest(req, res, target, hops = 0) {
   const outbound = https.request(
     url,
     {
-      method: req.method || "GET",
+      method: "GET", // proxies are GET-only (open-proxy abuse prevention)
       headers: {
         ...target.headers,
         Accept: "application/json",
@@ -460,22 +813,39 @@ function proxyRequest(req, res, target, hops = 0) {
 }
 
 // ─── Main Server ───────────────────────────────────────────────────────
-const server = http.createServer((req, res) => {
-  res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+const defaultHost = process.env.PUBLIC_URL || ALLOWED_HOSTS.size ? "0.0.0.0" : "127.0.0.1";
+const HOST = process.env.HOST || defaultHost;
 
-  if (req.method === "OPTIONS") {
-    res.writeHead(204);
-    res.end();
-    return;
-  }
+const server = http.createServer((req, res) => {
+  setSecurityHeaders(res);
 
   const raw = new URL(req.url, "http://localhost");
   const urlPath = raw.pathname;
 
-  // API routes
-  if (urlPath.startsWith("/api/") && !urlPath.startsWith("/api/gitee")) {
+  // All /api/* paths (including the gitee proxy) are gated: only localhost
+  // and the site's own host/domain may call them.
+  if (urlPath.startsWith("/api/")) {
+    if (!apiGate(req, res)) return;
+
+    if (req.method === "OPTIONS") {
+      res.writeHead(204);
+      res.end();
+      return;
+    }
+
+    // API proxies
+    for (const prefix of Object.keys(API_PROXIES)) {
+      if (urlPath.startsWith(prefix + "/") || urlPath === prefix) {
+        if (req.method !== "GET") {
+          return json(res, 405, { error: "Method not allowed" });
+        }
+        if (!checkProxyRate(req)) {
+          return json(res, 429, { error: "Rate limit exceeded" });
+        }
+        return proxyRequest(req, res, API_PROXIES[prefix]);
+      }
+    }
+
     handleApi(req, res, urlPath).catch((err) => {
       console.error("API error:", err.message);
       json(res, 400, { error: err.message });
@@ -483,11 +853,10 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // API proxies
-  for (const prefix of Object.keys(API_PROXIES)) {
-    if (urlPath.startsWith(prefix + "/") || urlPath === prefix) {
-      return proxyRequest(req, res, API_PROXIES[prefix]);
-    }
+  if (req.method === "OPTIONS") {
+    res.writeHead(204);
+    res.end();
+    return;
   }
 
   // Uploaded photos (served from PHOTO_DIR, outside publicDir)
@@ -579,6 +948,20 @@ const server = http.createServer((req, res) => {
   });
 });
 
-server.listen(PORT, () => {
-  console.log(`Server running at http://localhost:${PORT}`);
+server.listen(PORT, HOST, () => {
+  const allowed =
+    "localhost" +
+    (PUBLIC_HOST ? ", " + PUBLIC_HOST : "") +
+    ([...ALLOWED_HOSTS].length ? ", " + [...ALLOWED_HOSTS].join(", ") : "");
+  console.log(`Server running at http://${HOST}:${PORT}`);
+  console.log(`API restricted to: ${allowed}`);
+  if (!process.env.PUBLIC_URL && !ALLOWED_HOSTS.size) {
+    console.log(
+      "  → To expose the site publicly, set PUBLIC_URL=https://your.domain (or ALLOWED_HOSTS=your.domain)."
+    );
+    console.log("  → The server currently binds 127.0.0.1 only (localhost).");
+  }
+  if (!process.env.JWT_SECRET && process.env.NODE_ENV !== "production") {
+    console.log(`  → Dev JWT secret persisted at ${JWT_SECRET_FILE}`);
+  }
 });

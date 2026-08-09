@@ -45,11 +45,22 @@ function clearSession() {
 
 function showLoginView() {
   $("#login-view").hidden = false;
+  $("#change-view").hidden = true;
   $("#dash-view").hidden = true;
+}
+
+function showChangeView() {
+  $("#login-view").hidden = true;
+  $("#change-view").hidden = false;
+  $("#dash-view").hidden = true;
+  $("#change-form").reset();
+  $("#change-error").hidden = true;
+  $("#change-password").focus();
 }
 
 function showDashView(username) {
   $("#login-view").hidden = true;
+  $("#change-view").hidden = true;
   $("#dash-view").hidden = false;
   $("#dash-username").textContent = username || "";
 }
@@ -70,11 +81,68 @@ $("#login-form").addEventListener("submit", async (e) => {
     });
     setSession(data.token, data.user);
     $("#login-password").value = "";
-    showDashView(data.user.username);
+    if (data.must_change_password) {
+      showChangeView();
+    } else {
+      showDashView(data.user.username);
+      await loadAll();
+    }
+  } catch (err) {
+    errorEl.textContent = err.message;
+    errorEl.hidden = false;
+  }
+});
+
+/* ── Forced password change (first login) ─────────────── */
+$("#change-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const errorEl = $("#change-error");
+  errorEl.hidden = true;
+  const pw = $("#change-password").value;
+  if (pw !== $("#change-password2").value) {
+    errorEl.textContent = "Passwords do not match.";
+    errorEl.hidden = false;
+    return;
+  }
+  try {
+    await api("/api/auth/password", {
+      method: "POST",
+      body: JSON.stringify({
+        current_password: $("#change-current").value,
+        new_password: pw,
+      }),
+    });
+    showDashView(JSON.parse(localStorage.getItem(USER_KEY) || "{}").username || "");
     await loadAll();
   } catch (err) {
     errorEl.textContent = err.message;
     errorEl.hidden = false;
+  }
+});
+
+/* ── Settings: change password ────────────────────────── */
+$("#settings-password-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const statusEl = $("#settings-password-status");
+  const pw = $("#settings-new").value;
+  if (pw !== $("#settings-new2").value) {
+    setUploadStatus(statusEl, "err", "✗ Passwords do not match.");
+    return;
+  }
+  setUploadStatus(statusEl, "uploading", "Updating…");
+  try {
+    await api("/api/auth/password", {
+      method: "POST",
+      body: JSON.stringify({
+        current_password: $("#settings-current").value,
+        new_password: pw,
+      }),
+    });
+    $("#settings-password-form").reset();
+    setUploadStatus(statusEl, "ok", "✓ Password updated.");
+    setTimeout(() => setUploadStatus(statusEl, null), 3000);
+  } catch (err) {
+    setUploadStatus(statusEl, "err", "✗ " + err.message);
   }
 });
 
@@ -586,8 +654,12 @@ function escapeHTML(str) {
   }
   try {
     const data = await api("/api/auth/me");
-    showDashView(data.user.username);
-    await loadAll();
+    if (data.user.must_change_password) {
+      showChangeView();
+    } else {
+      showDashView(data.user.username);
+      await loadAll();
+    }
   } catch (err) {
     clearSession();
     showLoginView();

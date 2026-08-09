@@ -48,7 +48,8 @@ db.exec(`
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     username   TEXT UNIQUE NOT NULL,
     pass_hash  TEXT NOT NULL,
-    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    must_change_password INTEGER NOT NULL DEFAULT 0
   );
 
   CREATE TABLE IF NOT EXISTS music (
@@ -71,18 +72,68 @@ db.exec(`
   );
 `);
 
-/* ── Seed: default admin (username: admin / password: admin123) ── */
+/* ── Retrofit: add must_change_password to existing databases ── */
+function ensureUsersColumn() {
+  const cols = db.prepare("PRAGMA table_info(users)").all();
+  if (!cols.some((c) => c.name === "must_change_password")) {
+    db.exec("ALTER TABLE users ADD COLUMN must_change_password INTEGER NOT NULL DEFAULT 0");
+  }
+}
+ensureUsersColumn();
+
+/* ── Seed default admin (random password, known default rotated) ── */
 const ADMIN_USERNAME = "admin";
-const ADMIN_PASSWORD = "admin123";
+const KNOWN_DEFAULT_PASSWORD = "admin123"; // old hardcoded default
+// Gitignored (data/), mode 0600 — where the generated password is written.
+const ADMIN_PASSWORD_FILE = path.join(path.dirname(DB_PATH), "admin-password.txt");
+
+function writeAdminPasswordFile(pw) {
+  try {
+    require("fs").writeFileSync(
+      ADMIN_PASSWORD_FILE,
+      `BEN 言 admin credentials (generated ${new Date().toISOString()})\n` +
+      `--------------------------------------------------------\n` +
+      `URL     : /admin.html\n` +
+      `Username: ${ADMIN_USERNAME}\n` +
+      `Password: ${pw}\n` +
+      `\nYou will be asked to set a new password on your first login.\n`,
+      { mode: 0o600 }
+    );
+  } catch (e) {
+    console.warn("[db] Could not write admin password file:", e.message);
+  }
+}
+
+function randomPassword() {
+  return crypto.randomBytes(18).toString("base64url"); // ~24 chars, letters + digits
+}
 
 function ensureAdmin() {
-  const row = db.prepare("SELECT id FROM users WHERE username = ?").get(ADMIN_USERNAME);
+  const row = db.prepare("SELECT * FROM users WHERE username = ?").get(ADMIN_USERNAME);
+
+  // New install — create the admin with a random, non-guessable password.
   if (!row) {
-    db.prepare("INSERT INTO users (username, pass_hash) VALUES (?, ?)").run(
-      ADMIN_USERNAME,
-      hashPassword(ADMIN_PASSWORD)
-    );
-    console.log(`[db] Created default admin user: ${ADMIN_USERNAME} / ${ADMIN_PASSWORD}`);
+    const pw = randomPassword();
+    db.prepare(
+      "INSERT INTO users (username, pass_hash, must_change_password) VALUES (?, ?, 1)"
+    ).run(ADMIN_USERNAME, hashPassword(pw));
+    writeAdminPasswordFile(pw);
+    console.log(`[db] Created default admin user '${ADMIN_USERNAME}'.`);
+    console.log(`[db] Initial password saved to ${ADMIN_PASSWORD_FILE} (data/ is gitignored).`);
+    console.log(`[db] Log in at /admin.html and change it — it MUST be changed on first login.`);
+    return;
+  }
+
+  // Existing install still on the old known default (admin123) → rotate
+  // it to a random password so the known credential stops working.
+  if (verifyPassword(KNOWN_DEFAULT_PASSWORD, row.pass_hash)) {
+    const pw = randomPassword();
+    db.prepare(
+      "UPDATE users SET pass_hash = ?, must_change_password = 1 WHERE id = ?"
+    ).run(hashPassword(pw), row.id);
+    writeAdminPasswordFile(pw);
+    console.log(`[db] Detected the old default admin password — it was ROTATED to a random one.`);
+    console.log(`[db] New password saved to ${ADMIN_PASSWORD_FILE}. Change it on first login.`);
   }
 }
 
@@ -111,7 +162,26 @@ function authUser(username, password) {
   const user = findUserByUsername(username);
   if (!user) return null;
   if (!verifyPassword(password, user.pass_hash)) return null;
-  return { id: user.id, username: user.username };
+  return { id: user.id, username: user.username, must_change_password: !!user.must_change_password };
+}
+
+function getUserAuth(id) {
+  const user = db.prepare("SELECT * FROM users WHERE id = ?").get(id);
+  if (!user) return null;
+  return { id: user.id, username: user.username, must_change_password: !!user.must_change_password };
+}
+
+function verifyUserPassword(id, password) {
+  const user = db.prepare("SELECT * FROM users WHERE id = ?").get(id);
+  if (!user) return false;
+  return verifyPassword(password, user.pass_hash);
+}
+
+function changePassword(id, newPassword) {
+  db.prepare("UPDATE users SET pass_hash = ?, must_change_password = 0 WHERE id = ?").run(
+    hashPassword(newPassword),
+    id
+  );
 }
 
 /* ── Music ─────────────────────────────────────────────── */
@@ -195,6 +265,9 @@ ensureAdmin();
 module.exports = {
   db,
   authUser,
+  getUserAuth,
+  verifyUserPassword,
+  changePassword,
   listMusic,
   getMusic,
   createMusic,
