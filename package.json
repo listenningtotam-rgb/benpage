@@ -7,7 +7,9 @@
     "start": "node server.js",
     "prod": "node server.js 2>&1",
     "dev": "PORT=3000 node server.js",
-    "check": "node check.js"
+    "check": "node check.js",
+    "migrate": "node migrate.js",
+    "migrate:dry": "node migrate.js --dry"
   },
   "engines": {
     "node": ">=22"

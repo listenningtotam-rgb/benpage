@@ -1,5 +1,6 @@
 /* ── SQLite Database Layer (better-sqlite3) ────────────── */
 const path = require("path");
+const fs = require("fs");
 
 /* Fail-fast guard: better-sqlite3 is a NATIVE addon.  If the Node
  * runtime is older than the version it was built for, requiring it
@@ -33,53 +34,64 @@ function assertNodeVersion() {
 assertNodeVersion();
 
 const Database = require("better-sqlite3");
+const schema = require("./db/schema");
 
 const DB_PATH = path.join(__dirname, "data", "benpage.db");
 
 // Ensure data directory exists
-require("fs").mkdirSync(path.dirname(DB_PATH), { recursive: true });
+fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
 
 const db = new Database(DB_PATH);
 db.pragma("journal_mode = WAL");
 
-/* ── Schema ────────────────────────────────────────────── */
-db.exec(`
-  CREATE TABLE IF NOT EXISTS users (
-    id         INTEGER PRIMARY KEY AUTOINCREMENT,
-    username   TEXT UNIQUE NOT NULL,
-    pass_hash  TEXT NOT NULL,
-    created_at TEXT NOT NULL DEFAULT (datetime('now')),
-    must_change_password INTEGER NOT NULL DEFAULT 0
-  );
+/* ── Schema ──────────────────────────────────────────────
+ * The schema is NOT defined here anymore. It lives in
+ * db/migrations/NNN_*.sql and is applied by:
+ *   - db.js       → automatically, but ONLY for a brand-new database
+ *   - migrate.js  → explicitly on EXISTING databases (e.g. the server)
+ *
+ * If an existing database has pending migrations the server REFUSES to
+ * start: run `npm run migrate` inside the deployment directory (the
+ * server) first. This guarantees a schema update never silently replaces
+ * or drops the live data file. */
+const schemaStatus = schema.check(db);
 
-  CREATE TABLE IF NOT EXISTS music (
-    id         INTEGER PRIMARY KEY AUTOINCREMENT,
-    title      TEXT NOT NULL,
-    url        TEXT NOT NULL,
-    sort_order INTEGER NOT NULL DEFAULT 0,
-    created_at TEXT NOT NULL DEFAULT (datetime('now'))
-  );
-
-  CREATE TABLE IF NOT EXISTS blog_posts (
-    id         INTEGER PRIMARY KEY AUTOINCREMENT,
-    title      TEXT NOT NULL,
-    tag        TEXT NOT NULL DEFAULT 'Note',
-    date       TEXT NOT NULL DEFAULT (date('now')),
-    cover      TEXT,
-    blocks     TEXT NOT NULL DEFAULT '[]',  -- JSON array of blocks
-    created_at TEXT NOT NULL DEFAULT (datetime('now')),
-    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-  );
-`);
-
-/* ── Retrofit: add must_change_password to existing databases ── */
-function ensureUsersColumn() {
-  const cols = db.prepare("PRAGMA table_info(users)").all();
-  if (!cols.some((c) => c.name === "must_change_password")) {
-    db.exec("ALTER TABLE users ADD COLUMN must_change_password INTEGER NOT NULL DEFAULT 0");
+if (schemaStatus.pending.length > 0) {
+  if (schemaStatus.fresh) {
+    // Brand-new install → safe to create the full schema now.
+    schema.prepareForMigration(db);
+    schema.applyPending(db);
+    console.log(`[db] Created schema (migrations up to version ${schema.LATEST_VERSION}).`);
+  } else {
+    // Existing database needs a schema update → do NOT touch it here.
+    // Close cleanly and tell the operator to run the migration script.
+    db.close();
+    console.error(
+      "\n==============================================================\n" +
+      `  The database at ${DB_PATH} is at schema version ` +
+      `${schemaStatus.currentVersion}, but this code needs version ` +
+      `${schema.LATEST_VERSION}.\n` +
+      "\n" +
+      `  Pending migration(s):\n` +
+      schemaStatus.pending.map((m) => `    ${m.file}`).join("\n") +
+      "\n" +
+      "\n" +
+      "  Schema updates are applied explicitly on the server — the DB\n" +
+      "  file is NEVER overwritten. Run, inside the deployment dir:\n" +
+      "\n" +
+      "    npm run migrate\n" +
+      "\n" +
+      "  then start the server again.\n" +
+      "==============================================================\n"
+    );
+    process.exit(1);
   }
+} else if (!schemaStatus.fresh) {
+  // Existing database, already at the latest schema. Only bookkeeping:
+  // record the baseline in schema_migrations so future `npm run migrate`
+  // runs are clean. No data or schema is modified.
+  schema.prepareForMigration(db);
 }
-ensureUsersColumn();
 
 /* ── Seed default admin (random password, known default rotated) ── */
 const ADMIN_USERNAME = "admin";
@@ -89,7 +101,7 @@ const ADMIN_PASSWORD_FILE = path.join(path.dirname(DB_PATH), "admin-password.txt
 
 function writeAdminPasswordFile(pw) {
   try {
-    require("fs").writeFileSync(
+    fs.writeFileSync(
       ADMIN_PASSWORD_FILE,
       `BEN 言 admin credentials (generated ${new Date().toISOString()})\n` +
       `--------------------------------------------------------\n` +
