@@ -56,25 +56,49 @@ const RECORDING_DIR =
 const RECORDING_URL_PREFIX = "/recordings/";
 
 // ─── JWT secret ─────────────────────────────────────────────────────
-// Production requires an explicit JWT_SECRET (>= 32 chars) — fail closed
-// instead of silently using a known, forgeable fallback secret.
+// The secret comes from (priority order):
+//   1. JWT_SECRET env var (>= 32 chars) — explicit, systemd/CI friendly
+//   2. a deployed data/.jwt-secret file (>= 32 chars) — valid in production
+//      too, so provisioning the key as a file on the server is supported
+// In production at least one of the two MUST provide a real secret — the
+// server fails closed instead of forging tokens with a known fallback.
 // In dev, a random secret is generated once and persisted to data/.jwt-secret
 // so tokens survive restarts without logging the admin out.
 const dataDir = path.join(__dirname, "data");
 const JWT_SECRET_FILE = path.join(dataDir, ".jwt-secret");
 function loadJwtSecret() {
+  // 1) Explicit env var wins.
   const fromEnv = process.env.JWT_SECRET;
   if (fromEnv && fromEnv.length >= 32) return fromEnv;
+
+  // 2) A deployed, explicit secret file is accepted in every environment,
+  //    including production.
+  try {
+    if (fs.existsSync(JWT_SECRET_FILE)) {
+      const fromFile = fs.readFileSync(JWT_SECRET_FILE, "utf8").trim();
+      if (fromFile && fromFile.length >= 32) return fromFile;
+      if (process.env.NODE_ENV === "production") {
+        console.error(
+          `[security] FATAL: ${JWT_SECRET_FILE} exists but is shorter than 32 chars.`
+        );
+        process.exit(1);
+      }
+    }
+  } catch (e) {
+    // Unreadable file — fall through to dev generation / production fatal.
+  }
+
+  // 3) Production fails closed: no usable secret → refuse to start.
   if (process.env.NODE_ENV === "production") {
     console.error(
-      "[security] FATAL: JWT_SECRET env var (>= 32 chars) is required in production."
+      "[security] FATAL: JWT_SECRET env var (>= 32 chars) is required in production " +
+        `(or deploy a secret file at ${JWT_SECRET_FILE}).`
     );
     process.exit(1);
   }
+
+  // 4) Dev convenience only: generate once and persist for token continuity.
   try {
-    if (fs.existsSync(JWT_SECRET_FILE)) {
-      return fs.readFileSync(JWT_SECRET_FILE, "utf8").trim();
-    }
     const secret = crypto.randomBytes(48).toString("hex");
     fs.mkdirSync(dataDir, { recursive: true });
     fs.writeFileSync(JWT_SECRET_FILE, secret, { mode: 0o600 });
@@ -1007,5 +1031,7 @@ server.listen(PORT, HOST, () => {
   }
   if (!process.env.JWT_SECRET && process.env.NODE_ENV !== "production") {
     console.log(`  → Dev JWT secret persisted at ${JWT_SECRET_FILE}`);
+  } else if (!process.env.JWT_SECRET) {
+    console.log(`  → JWT secret loaded from ${JWT_SECRET_FILE} (set JWT_SECRET env var to override)`);
   }
 });
