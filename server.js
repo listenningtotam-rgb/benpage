@@ -426,11 +426,15 @@ function validateNewPassword(pw, username) {
 }
 
 // ─── API origin gate ───────────────────────────────────────────────────
-// Restricts every /api/* call to:
-//   - localhost (the box itself, local dev, curl on the server), and
-//   - the site's own domain (same-origin requests from the site's pages).
-// Blocks cross-site pages (DNS-rebinding, malicious websites, CSRF) and
-// remote non-browser clients hitting the API from other hosts.
+// Restricts every /api/* call to the site itself (blocks CSRF, cross-site
+// browsers, and DNS-rebinding):
+//   - localhost / 127.0.0.1 / ::1 (the box itself, local dev, curl on server)
+//   - the explicitly configured public host(s) via PUBLIC_URL / ALLOWED_HOSTS
+//     ("strict mode" — full DNS-rebinding protection),
+//   - in "relaxed mode" (no PUBLIC_URL / ALLOWED_HOSTS configured), any
+//     genuine same-origin browser request — Host must match Origin — so a
+//     fresh deployment works out of the box via http://<server-ip>:3000 or
+//     any unconfigured domain, while cross-site requests stay blocked.
 const SAFE_SEC_FETCH_SITE = new Set(["same-origin", "same-site", "none"]);
 
 function isAllowedHostname(h) {
@@ -443,14 +447,42 @@ function isAllowedHostname(h) {
   return false;
 }
 
-function apiGate(req, res) {
-  const host = req.headers.host || "";
-  if (!isAllowedHostname(host)) {
-    json(res, 403, { error: "Host not allowed" });
+function hostMatchesOrigin(host, origin) {
+  if (!origin) return false;
+  try {
+    return hostnameOfHost(host) === hostnameOfHost(new URL(origin).host);
+  } catch (e) {
     return false;
   }
+}
 
+function isStrictHostAllowlist() {
+  return Boolean(PUBLIC_HOST) || ALLOWED_HOSTS.size > 0;
+}
+
+function apiGate(req, res) {
+  const host = req.headers.host || "";
   const origin = req.headers.origin;
+  const strict = isStrictHostAllowlist();
+
+  // 1) The Host header must be acceptable.
+  if (!isAllowedHostname(host)) {
+    // Relaxed mode only: a genuine same-origin browser request (Host matches
+    // Origin) is enough — this is how a fresh deployment served from a raw IP
+    // or an unconfigured domain can log in.
+    const sameOriginBrowser = !strict && hostMatchesOrigin(host, origin);
+    if (!sameOriginBrowser) {
+      json(res, 403, {
+        error: "Host not allowed",
+        hint: strict
+          ? `Allowed hosts: ${[...ALLOWED_HOSTS, PUBLIC_HOST].filter(Boolean).join(", ")} (or localhost). Make sure PUBLIC_URL/ALLOWED_HOSTS matches the domain you are accessing.`
+          : "Set PUBLIC_URL or ALLOWED_HOSTS to the domain you access the site on.",
+      });
+      return false;
+    }
+  }
+
+  // 2) Origin (if the browser sent one) must match what we allow.
   if (origin) {
     let originHost = "";
     try {
@@ -459,20 +491,27 @@ function apiGate(req, res) {
       json(res, 403, { error: "Origin not allowed" });
       return false;
     }
-    if (!isAllowedHostname(originHost)) {
+    if (strict) {
+      if (!isAllowedHostname(originHost)) {
+        json(res, 403, { error: "Origin not allowed" });
+        return false;
+      }
+    } else if (originHost !== hostnameOfHost(host)) {
+      // Relaxed mode: only true same-origin browser requests are allowed.
       json(res, 403, { error: "Origin not allowed" });
       return false;
     }
   }
 
+  // 3) Sec-Fetch-Site must never be cross-site.
   const sf = String(req.headers["sec-fetch-site"] || "").toLowerCase();
   if (sf && !SAFE_SEC_FETCH_SITE.has(sf)) {
     json(res, 403, { error: "Request origin not allowed" });
     return false;
   }
 
-  // Non-browser clients (no Origin / Sec-Fetch-Site headers) must come from
-  // localhost or an explicitly allowed host.
+  // 4) Non-browser clients (no Origin / Sec-Fetch-Site headers) must come from
+  //    localhost or an explicitly allowed host.
   if (!origin && !sf && !isAllowedHostname(host)) {
     json(res, 403, { error: "Host not allowed" });
     return false;
@@ -957,9 +996,14 @@ server.listen(PORT, HOST, () => {
   console.log(`API restricted to: ${allowed}`);
   if (!process.env.PUBLIC_URL && !ALLOWED_HOSTS.size) {
     console.log(
-      "  → To expose the site publicly, set PUBLIC_URL=https://your.domain (or ALLOWED_HOSTS=your.domain)."
+      "  → Relaxed mode: same-origin browser requests (any host/IP) + localhost may call /api/*."
+    );
+    console.log(
+      "  → For full DNS-rebinding protection, set PUBLIC_URL=https://your.domain (or ALLOWED_HOSTS=your.domain)."
     );
     console.log("  → The server currently binds 127.0.0.1 only (localhost).");
+  } else {
+    console.log("  → Strict mode: only the hosts above may call the API.");
   }
   if (!process.env.JWT_SECRET && process.env.NODE_ENV !== "production") {
     console.log(`  → Dev JWT secret persisted at ${JWT_SECRET_FILE}`);
