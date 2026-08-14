@@ -1,0 +1,188 @@
+/* ── Standalone share pages (/post/:id, /music/:id) ────────────────────
+ * Reading-page styling that matches the main site's dark theme.  These
+ * pages are fully server-rendered and work without JavaScript (audio
+ * uses native <audio controls>); share-count.js only adds the counters.
+ * --------------------------------------------------------------------- */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+    Helvetica, Arial, "PingFang SC", "Microsoft YaHei", sans-serif;
+  background: #0b1033;
+  background: radial-gradient(ellipse at 50% 0%, #121c4a 0%, #080c26 50%, #040712 100%);
+  color: #fff;
+  min-height: 100vh;
+  -webkit-text-size-adjust: 100%;
+}
+
+a {
+  color: #7ec8e3;
+  text-decoration: none;
+}
+
+a:hover {
+  text-decoration: underline;
+}
+
+.share-page {
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 2.2rem 1.4rem 3.5rem;
+}
+
+.share-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+  flex-wrap: wrap;
+  padding-bottom: 1rem;
+  margin-bottom: 2rem;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.share-brand {
+  font-size: 1.05rem;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  color: #7ec8e3;
+  text-shadow: 0 0 24px rgba(126, 200, 227, 0.35);
+}
+
+.share-meta {
+  font-size: 0.78rem;
+  letter-spacing: 0.08em;
+  color: rgba(255, 255, 255, 0.45);
+}
+
+.share-article {
+  animation: shareIn 0.3s ease;
+}
+
+.share-title {
+  font-size: clamp(1.6rem, 4.5vw, 2.3rem);
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  line-height: 1.35;
+  margin-bottom: 1.6rem;
+}
+
+.share-text {
+  font-size: 1.02rem;
+  line-height: 1.85;
+  color: rgba(255, 255, 255, 0.78);
+  margin-bottom: 1.4rem;
+}
+
+.share-text p {
+  margin: 0 0 1.1rem;
+}
+
+.share-text p:last-child {
+  margin-bottom: 0;
+}
+
+.share-text ul,
+.share-text ol {
+  margin: 0 0 1.1rem 1.4rem;
+}
+
+.share-text blockquote {
+  margin: 0 0 1.1rem;
+  padding: 0.7rem 1rem;
+  border-left: 3px solid #7ec8e3;
+  background: rgba(126, 200, 227, 0.08);
+  border-radius: 0 8px 8px 0;
+  color: rgba(255, 255, 255, 0.7);
+}
+
+.share-text img,
+.share-text video {
+  max-width: 100%;
+  border-radius: 10px;
+}
+
+.share-text a {
+  word-break: break-all;
+}
+
+.share-figure {
+  margin: 1.6rem 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.share-figure img,
+.share-figure video {
+  width: 100%;
+  border-radius: 12px;
+  display: block;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.4);
+}
+
+.share-figure figcaption {
+  font-size: 0.82rem;
+  color: rgba(255, 255, 255, 0.45);
+  text-align: center;
+}
+
+.share-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  flex-wrap: wrap;
+  margin-top: 2.5rem;
+  padding-top: 1.2rem;
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+  font-size: 0.85rem;
+  color: rgba(255, 255, 255, 0.5);
+}
+
+.share-foot a {
+  font-weight: 600;
+}
+
+.share-stat {
+  font-family: "SF Mono", "Menlo", monospace;
+  font-size: 0.8rem;
+  color: rgba(255, 255, 255, 0.45);
+}
+
+/* ── Music track share page ──────────────────────────── */
+.share-page-track .share-track {
+  display: flex;
+  flex-direction: column;
+  gap: 1.6rem;
+}
+
+.share-audio {
+  width: 100%;
+  max-width: 560px;
+  border-radius: 10px;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  @keyframes shareIn {
+    from {
+      opacity: 0;
+      transform: translateY(8px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+}

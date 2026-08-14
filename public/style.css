@@ -1442,3 +1442,260 @@ body {
   }
 
 }
+
+/* ── Share buttons ──────────────────────────────────────────────────── */
+/* Small ghost icon button on each music track row. */
+.sc-share {
+  flex: 0 0 auto;
+  width: 30px;
+  height: 30px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.05);
+  color: rgba(255, 255, 255, 0.55);
+  font-size: 0.95rem;
+  line-height: 1;
+  cursor: pointer;
+  transition: background 0.18s ease, color 0.18s ease, border-color 0.18s ease;
+}
+
+.sc-share:hover {
+  background: rgba(126, 200, 227, 0.16);
+  border-color: rgba(126, 200, 227, 0.45);
+  color: #7ec8e3;
+}
+
+/* Small share icon inside each blog card (does not open the post). */
+.card-share {
+  flex: 0 0 auto;
+  width: 26px;
+  height: 26px;
+  margin-left: auto;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.05);
+  color: rgba(255, 255, 255, 0.5);
+  font-size: 0.85rem;
+  line-height: 1;
+  cursor: pointer;
+  transition: background 0.18s ease, color 0.18s ease, border-color 0.18s ease;
+}
+
+.card-share:hover {
+  background: rgba(126, 200, 227, 0.16);
+  border-color: rgba(126, 200, 227, 0.45);
+  color: #7ec8e3;
+}
+
+/* Share button in the blog detail header. */
+.blog-share-btn {
+  align-self: flex-start;
+  border: 1px solid rgba(126, 200, 227, 0.4);
+  border-radius: 999px;
+  background: rgba(126, 200, 227, 0.1);
+  color: #7ec8e3;
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  padding: 0.4rem 0.9rem;
+  cursor: pointer;
+  transition: background 0.18s ease, color 0.18s ease, transform 0.12s ease;
+}
+
+.blog-share-btn:hover {
+  background: rgba(126, 200, 227, 0.22);
+  color: #9fdcf2;
+}
+
+.blog-share-btn:active {
+  transform: scale(0.96);
+}
+
+/* ── Share modal ────────────────────────────────────────────────────── */
+.share-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  background: rgba(3, 6, 18, 0.85);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  overflow-y: auto;
+  padding: 1.5rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.share-modal[hidden] {
+  display: none;
+}
+
+.share-modal-inner {
+  width: 100%;
+  max-width: 460px;
+  background: rgba(6, 10, 30, 0.96);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 16px;
+  padding: 2rem 1.8rem 1.8rem;
+  position: relative;
+  box-shadow: 0 12px 60px rgba(0, 0, 0, 0.6);
+  animation: sharePanelIn 0.25s ease;
+}
+
+@keyframes sharePanelIn {
+  from {
+    opacity: 0;
+    transform: translateY(10px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.share-modal-close {
+  position: absolute;
+  top: 0.55rem;
+  right: 0.9rem;
+  background: none;
+  border: none;
+  color: rgba(255, 255, 255, 0.5);
+  font-size: 1.7rem;
+  line-height: 1;
+  cursor: pointer;
+  transition: color 0.2s ease;
+}
+
+.share-modal-close:hover {
+  color: #fff;
+}
+
+.share-title {
+  font-size: 1.25rem;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+}
+
+.share-subtitle {
+  font-size: 0.78rem;
+  letter-spacing: 0.05em;
+  color: rgba(255, 255, 255, 0.45);
+  margin-top: 0.3rem;
+  margin-bottom: 1.3rem;
+}
+
+.share-body {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1.1rem;
+}
+
+.share-qr-wrap {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.share-qr {
+  width: 220px;
+  height: 220px;
+  border-radius: 12px;
+  background: #fff;
+  padding: 6px;
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.45);
+}
+
+.share-qr-hint {
+  font-size: 0.74rem;
+  line-height: 1.5;
+  color: rgba(255, 255, 255, 0.5);
+  text-align: center;
+  max-width: 250px;
+}
+
+.share-actions {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.share-row {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.share-input {
+  flex: 1;
+  min-width: 0;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 9px;
+  color: rgba(255, 255, 255, 0.85);
+  font-size: 0.78rem;
+  font-family: "SF Mono", "Menlo", monospace;
+  padding: 0.55rem 0.7rem;
+  outline: none;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.share-input:focus {
+  border-color: rgba(126, 200, 227, 0.5);
+}
+
+.share-btn {
+  flex: 0 0 auto;
+  border: 1px solid rgba(126, 200, 227, 0.4);
+  border-radius: 9px;
+  background: rgba(126, 200, 227, 0.1);
+  color: #7ec8e3;
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  padding: 0.55rem 0.9rem;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.18s ease, color 0.18s ease, opacity 0.18s ease;
+}
+
+.share-btn:hover {
+  background: rgba(126, 200, 227, 0.22);
+  color: #9fdcf2;
+}
+
+.share-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.share-btn-row {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.share-btn-row .share-btn {
+  flex: 1;
+}
+
+.share-status {
+  min-height: 1.1em;
+  font-size: 0.76rem;
+  color: rgba(255, 255, 255, 0.55);
+  text-align: center;
+}
+
+@media (max-width: 480px) {
+  .share-modal-inner {
+    padding: 1.7rem 1.2rem 1.4rem;
+  }
+
+  .share-qr {
+    width: 190px;
+    height: 190px;
+  }
+}
+

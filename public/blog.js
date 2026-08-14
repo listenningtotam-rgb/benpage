@@ -63,11 +63,21 @@ function renderBlogDetail(post) {
         <h3 class="blog-post-title">${escapeHTML(post.title)}</h3>
         <span class="blog-date">${fmtDate(post.date)}</span>
         <span class="blog-reads">👁 <span class="blog-reads-num">${Number(post.read_count) || 0}</span> reads</span>
+        <button type="button" class="blog-share-btn" title="Share as a web page (WeChat)">↗ 分享</button>
       </header>
       ${renderBlocks(post)}
     </article>`;
   blogDetail.hidden = false;
   document.body.style.overflow = "hidden"; // lock scroll while reading
+
+  const shareBtn = blogDetailContent.querySelector(".blog-share-btn");
+  if (shareBtn) {
+    shareBtn.addEventListener("click", () => {
+      if (typeof window.openShareDialog === "function") {
+        window.openShareDialog({ title: post.title, path: `/post/${post.id}` });
+      }
+    });
+  }
 }
 
 function closeBlogDetail() {
@@ -106,6 +116,7 @@ function renderBlogGrid() {
           <h3 class="blog-card-title">${escapeHTML(post.title)}</h3>
           <div class="blog-card-stats">
             <span class="blog-reads" title="Read count">👁 <span class="blog-reads-num">${readCount}</span> reads</span>
+            <button type="button" class="card-share" title="Share as a web page (WeChat)">↗</button>
           </div>
           ${mediaBadge}
         </div>
@@ -121,6 +132,18 @@ function renderBlogGrid() {
         countBlogRead(post);
       }
     });
+
+    // Share as a standalone web page without opening the post overlay.
+    const shareBtn = card.querySelector(".card-share");
+    if (shareBtn) {
+      shareBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const post = BLOG_POSTS.find((p) => String(p.id) === card.dataset.id);
+        if (post && typeof window.openShareDialog === "function") {
+          window.openShareDialog({ title: post.title, path: `/post/${post.id}` });
+        }
+      });
+    }
   });
 }
 

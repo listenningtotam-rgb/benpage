@@ -368,6 +368,34 @@ setInterval(() => {
   }
 }, 10 * 60 * 1000).unref();
 
+// ─── Short-link creation limiter ──────────────────────────────────────
+// Creating a short link is a public write (any visitor may shorten the
+// current page so it fits a WeChat message).  It is host-gated by apiGate,
+// restricted to same-site URLs, and rate limited per IP.
+const SHARE_MAX_REQ = 60; // per IP per minute
+const SHARE_WINDOW_MS = 60 * 1000;
+const shareHits = new Map();
+
+function checkShareRate(req) {
+  const key = req.socket.remoteAddress || "?";
+  const now = Date.now();
+  const rec = shareHits.get(key);
+  if (!rec || now - rec.resetAt > SHARE_WINDOW_MS) {
+    shareHits.set(key, { count: 1, resetAt: now });
+    return true;
+  }
+  if (rec.count >= SHARE_MAX_REQ) return false;
+  rec.count += 1;
+  return true;
+}
+
+setInterval(() => {
+  const now = Date.now();
+  for (const [k, v] of shareHits) {
+    if (now - v.resetAt > SHARE_WINDOW_MS) shareHits.delete(k);
+  }
+}, 10 * 60 * 1000).unref();
+
 // ─── Blog content sanitizer (defense-in-depth against stored XSS) ──────
 function cleanText(v, max = 500) {
   return String(v || "")
@@ -458,6 +486,198 @@ function sanitizeBlocks(blocks) {
     }
   }
   return out;
+}
+
+// ─── Share pages (WeChat-friendly, server-rendered) ────────────────────
+// Every blog post / music track gets a real HTML page at /post/:id and
+// /music/:id.  WeChat's crawler builds the forwarded preview card from the
+// og: meta tags below, and the page body renders fully without JavaScript,
+// so it reads perfectly inside WeChat's in-app browser.
+const SITE_NAME = "BEN 言";
+
+function escHtml(s) {
+  return String(s)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+/* Absolute (scheme + host) URL builder for og: tags and short links.
+   PUBLIC_URL wins; otherwise fall back to the request's Host header. */
+function siteBase(req) {
+  const base = PUBLIC_URL || `http://${req.headers.host || "localhost"}`;
+  return base.replace(/\/+$/, "");
+}
+
+function absUrl(req, p) {
+  const s = String(p || "").trim();
+  if (/^https?:\/\//i.test(s)) return s;
+  return siteBase(req) + (s.startsWith("/") ? s : "/" + s);
+}
+
+/* A short link may only ever point back at this site — never to a foreign
+   host.  Accepts a same-origin absolute URL or a plain "/..." path. */
+function isSameSiteUrl(u, req) {
+  const s = String(u || "").trim();
+  if (!s || s.length > 600) return false;
+  if (s.startsWith("/") && !s.startsWith("//")) return true;
+  try {
+    const parsed = new URL(s);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return false;
+    const h = hostnameOfHost(parsed.host);
+    const reqHost = hostnameOfHost(req.headers.host || "");
+    return h === reqHost || (!!PUBLIC_HOST && h === PUBLIC_HOST);
+  } catch (e) {
+    return false;
+  }
+}
+
+function postBlocks(post) {
+  try {
+    return JSON.parse(post.blocks || "[]");
+  } catch (e) {
+    return [];
+  }
+}
+
+function postSnippet(post) {
+  let text = "";
+  for (const b of postBlocks(post)) {
+    if (b.type === "text") {
+      text += " " + String(b.html || "").replace(/<[^>]*>/g, " ");
+      if (text.length > 220) break;
+    }
+  }
+  return text.replace(/\s+/g, " ").trim().slice(0, 220);
+}
+
+function postCover(post) {
+  if (post.cover) return post.cover;
+  for (const b of postBlocks(post)) {
+    if (b.type === "image") return b.src;
+  }
+  return "";
+}
+
+function renderSharePageHead(opts) {
+  const { req, kind, id, title, description, image, type, url } = opts;
+  const absolute = absUrl(req, url);
+  const img = image ? absUrl(req, image) : "";
+  return (
+    "<!DOCTYPE html>\n" +
+    `<html lang="zh-CN">\n` +
+    "<head>\n" +
+    '  <meta charset="UTF-8" />\n' +
+    '  <meta name="viewport" content="width=device-width, initial-scale=1.0" />\n' +
+    `  <title>${escHtml(title)} · ${SITE_NAME}</title>\n` +
+    `  <meta property="og:title" content="${escHtml(title)}" />\n` +
+    `  <meta property="og:type" content="${escHtml(type || "website")}" />\n` +
+    `  <meta property="og:url" content="${escHtml(absolute)}" />\n` +
+    `  <meta property="og:description" content="${escHtml(description || SITE_NAME)}" />\n` +
+    (img ? `  <meta property="og:image" content="${escHtml(img)}" />\n` : "") +
+    '  <meta name="twitter:card" content="summary_large_image" />\n' +
+    '  <link rel="stylesheet" href="/share.css" />\n' +
+    "</head>\n" +
+    `<body data-kind="${escHtml(kind)}" data-id="${escHtml(id)}">\n`
+  );
+}
+
+
+function renderBlogSharePage(req, post) {
+  const blocks = postBlocks(post);
+  const description = postSnippet(post);
+  const cover = postCover(post);
+  const urlPath = "/post/" + post.id;
+  const head = renderSharePageHead({
+    req,
+    kind: "blog",
+    id: post.id,
+    title: post.title,
+    description,
+    image: cover,
+    type: "article",
+    url: urlPath,
+  });
+
+  const body = blocks
+    .map((b) => {
+      if (b.type === "image") {
+        return (
+          `<figure class="share-figure">` +
+          `<img src="${escHtml(b.src)}" alt="${escHtml(b.alt || b.caption || "")}" loading="lazy" />` +
+          (b.caption ? `<figcaption>${escHtml(b.caption)}</figcaption>` : "") +
+          "</figure>"
+        );
+      }
+      if (b.type === "video") {
+        return (
+          `<figure class="share-figure">` +
+          `<video controls preload="metadata"${b.poster ? ` poster="${escHtml(b.poster)}"` : ""}>` +
+          `<source src="${escHtml(b.src)}" type="video/mp4" />` +
+          "Your browser does not support video playback." +
+          "</video>" +
+          (b.caption ? `<figcaption>${escHtml(b.caption)}</figcaption>` : "") +
+          "</figure>"
+        );
+      }
+      return `<div class="share-text">${sanitizeHtmlFragment(b.html || "")}</div>`;
+    })
+    .join("\n");
+
+  return (
+    head +
+    '  <div class="share-page">\n' +
+    "    <header class=\"share-head\">\n" +
+    `      <a class="share-brand" href="/">${SITE_NAME}</a>\n` +
+    `      <span class="share-meta">${escHtml(post.tag || "Note")} · ${escHtml(post.date || "")}</span>\n` +
+    "    </header>\n" +
+    '    <article class="share-article">\n' +
+    `      <h1 class="share-title">${escHtml(post.title)}</h1>\n` +
+    `      ${body}\n` +
+    "    </article>\n" +
+    "    <footer class=\"share-foot\">\n" +
+    `      <span class="share-stat">👁 ${Number(post.read_count) || 0} reads</span>\n` +
+    `      <a href="/">返回 ${SITE_NAME} →</a>\n` +
+    "    </footer>\n" +
+    "  </div>\n" +
+    '  <script src="/share-count.js"></script>\n' +
+    "</body>\n</html>\n"
+  );
+}
+
+function renderMusicSharePage(req, track) {
+  const urlPath = "/music/" + track.id;
+  const head = renderSharePageHead({
+    req,
+    kind: "music",
+    id: track.id,
+    title: track.title,
+    description: `${track.title} — a recording from ${SITE_NAME}.`,
+    image: "",
+    type: "music.song",
+    url: urlPath,
+  });
+
+  return (
+    head +
+    '  <div class="share-page share-page-track">\n' +
+    "    <header class=\"share-head\">\n" +
+    `      <a class="share-brand" href="/">${SITE_NAME}</a>\n` +
+    `      <span class="share-meta">Recording · ▶ ${Number(track.play_count) || 0} plays</span>\n` +
+    "    </header>\n" +
+    '    <section class="share-track">\n' +
+    `      <h1 class="share-title">${escHtml(track.title)}</h1>\n` +
+    `      <audio class="share-audio" controls preload="metadata" src="${escHtml(track.url)}"></audio>\n` +
+    "    </section>\n" +
+    "    <footer class=\"share-foot\">\n" +
+    `      <a href="/">返回 ${SITE_NAME} →</a>\n` +
+    "    </footer>\n" +
+    "  </div>\n" +
+    '  <script src="/share-count.js"></script>\n' +
+    "</body>\n</html>\n"
+  );
 }
 
 // ─── Password policy ───────────────────────────────────────────────────
@@ -841,6 +1061,25 @@ async function handleApi(req, res, urlPath) {
     return json(res, 200, { ok: true, read_count: post.read_count });
   }
 
+  // Short-link creation — public (visitors shorten the current page so it
+  // fits a WeChat message), host-gated by apiGate + rate limited + only
+  // ever shortened to same-site URLs (no open-redirect surface).
+  if (urlPath === "/api/share" && req.method === "POST") {
+    if (!checkShareRate(req)) return json(res, 429, { error: "Rate limit exceeded" });
+    const body = await readBody(req);
+    const url = cleanText(body.url, 600);
+    if (!url) return json(res, 400, { error: "url is required" });
+    if (!isSameSiteUrl(url, req)) {
+      return json(res, 400, { error: "Only links on this site can be shortened" });
+    }
+    const link = db.createShareLink(url);
+    return json(res, 201, {
+      code: link.code,
+      url: link.url,
+      short_url: `${siteBase(req)}/s/${link.code}`,
+    });
+  }
+
   if (urlPath === "/api/blog" && req.method === "POST") {
     if (!requireAuth()) return;
     const body = await readBody(req);
@@ -1074,6 +1313,52 @@ const server = http.createServer((req, res) => {
       });
       fs.createReadStream(recPath).pipe(res);
     });
+    return;
+  }
+
+  // ── Share pages (server-rendered, WeChat-friendly) ─────────────────
+  // Every blog post / music track is shareable as a real web page at
+  // /post/:id and /music/:id (og: meta tags included, no JS required).
+  const postShare = urlPath.match(/^\/post\/(\d+)$/);
+  if (postShare && req.method === "GET") {
+    const post = db.getBlogPost(Number(postShare[1]));
+    if (!post) {
+      res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
+      res.end("Not Found");
+      return;
+    }
+    res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+    res.end(renderBlogSharePage(req, post));
+    return;
+  }
+
+  const musicShare = urlPath.match(/^\/music\/(\d+)$/);
+  if (musicShare && req.method === "GET") {
+    const track = db.getMusic(Number(musicShare[1]));
+    if (!track) {
+      res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
+      res.end("Not Found");
+      return;
+    }
+    res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+    res.end(renderMusicSharePage(req, track));
+    return;
+  }
+
+  // ── Short-link redirects (share feature) ────────────────────────────
+  // Codes are 7 chars of an unambiguous alphabet (see db.js).  Stored URLs
+  // are always same-site, so this can never be an open redirect.
+  const shortLink = urlPath.match(/^\/s\/([A-Za-z0-9_-]{4,32})$/);
+  if (shortLink && req.method === "GET") {
+    const link = db.getShareLink(shortLink[1]);
+    if (!link) {
+      res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
+      res.end("Not Found");
+      return;
+    }
+    db.incrementShareLinkHit(link.code);
+    res.writeHead(302, { Location: link.url, "Cache-Control": "no-store" });
+    res.end();
     return;
   }
 

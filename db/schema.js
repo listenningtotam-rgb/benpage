@@ -107,6 +107,8 @@ function detectBaselineVersion(db) {
     const cols = db.prepare("PRAGMA table_info(music)").all().map((c) => c.name);
     if (cols.includes("play_count")) version = 3;
   }
+  // 004_add_share_links.sql → share_links
+  if (tableExists(db, "share_links")) version = 4;
   return version;
 }
 

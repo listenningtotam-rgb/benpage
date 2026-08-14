@@ -304,6 +304,7 @@ function renderTracks(tracks) {
             <span class="sc-time">0:00 / 0:00</span>
             <span class="sc-plays" title="Play count">▶ <span class="sc-plays-num">${playCount}</span> plays</span>
           </span>
+          <button type="button" class="sc-share" title="Share as a web page" aria-label="Share ${scEscapeHTML(title)}">↗</button>
         </div>
         <div class="sc-wave">
           <canvas class="sc-wave-canvas"></canvas>
@@ -326,6 +327,15 @@ function renderTracks(tracks) {
 
     player.playBtn.addEventListener("click", () => togglePlay(player));
     attachSeek(player.canvas);
+
+    // Share as a standalone web page (WeChat friends / Moments / short link).
+    const shareBtn = el.querySelector(".sc-share");
+    if (shareBtn) {
+      shareBtn.addEventListener("click", () => {
+        if (track.id == null || typeof window.openShareDialog !== "function") return;
+        window.openShareDialog({ title, path: `/music/${track.id}` });
+      });
+    }
 
     frag.appendChild(el);
   });

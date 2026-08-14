@@ -288,6 +288,38 @@ function incrementBlogRead(id) {
   return getBlogPost(id);
 }
 
+/* ── Short links (share feature) ──────────────────────── */
+/* Unambiguous alphabet: no 0/O/1/I/l so codes are easy to read and type. */
+const SHARE_ALPHABET =
+  "23456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+const SHARE_CODE_LEN = 7;
+
+function getShareLink(code) {
+  if (typeof code !== "string" || !code) return null;
+  return db.prepare("SELECT * FROM share_links WHERE code = ?").get(code) || null;
+}
+
+function createShareLink(url) {
+  for (let attempt = 0; attempt < 8; attempt++) {
+    let code = "";
+    for (let i = 0; i < SHARE_CODE_LEN; i++) {
+      code += SHARE_ALPHABET[crypto.randomInt(SHARE_ALPHABET.length)];
+    }
+    try {
+      db.prepare("INSERT INTO share_links (code, url) VALUES (?, ?)").run(code, url);
+      return getShareLink(code);
+    } catch (e) {
+      if (!String(e.message || "").includes("UNIQUE")) throw e;
+      /* collision — try a different random code */
+    }
+  }
+  throw new Error("Could not generate a unique short link code");
+}
+
+function incrementShareLinkHit(code) {
+  db.prepare("UPDATE share_links SET hits = hits + 1 WHERE code = ?").run(code);
+}
+
 /* ── Init ──────────────────────────────────────────────── */
 ensureAdmin();
 
@@ -309,4 +341,7 @@ module.exports = {
   deleteBlogPost,
   incrementMusicPlay,
   incrementBlogRead,
+  createShareLink,
+  getShareLink,
+  incrementShareLinkHit,
 };
