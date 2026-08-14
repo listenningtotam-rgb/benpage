@@ -177,7 +177,7 @@ async function loadMusic() {
       <div class="item-card">
         <div class="item-info">
           <div class="item-title">${escapeHTML(t.title)}</div>
-          <div class="item-sub">${escapeHTML(t.url)}</div>
+          <div class="item-sub">${escapeHTML(t.url)} · ${t.play_count || 0} plays</div>
         </div>
         <div class="item-actions">
           <button type="button" class="btn btn-ghost btn-sm" data-action="edit-music" data-id="${t.id}">Edit</button>
@@ -534,7 +534,7 @@ async function loadBlog() {
       <div class="item-card">
         <div class="item-info">
           <div class="item-title">${escapeHTML(p.title)}</div>
-          <div class="item-sub">${escapeHTML(p.date)} · ${escapeHTML(p.tag || "Note")} · ${p.blocks.length} block(s)</div>
+          <div class="item-sub">${escapeHTML(p.date)} · ${escapeHTML(p.tag || "Note")} · ${p.blocks.length} block(s) · ${p.read_count || 0} reads</div>
         </div>
         <div class="item-actions">
           <button type="button" class="btn btn-ghost btn-sm" data-action="edit-blog" data-id="${p.id}">Edit</button>

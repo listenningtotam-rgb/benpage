@@ -339,6 +339,35 @@ function checkProxyRate(req) {
   return true;
 }
 
+// ─── Play / read counter limiter ──────────────────────────────────────
+// Incrementing a play/read count is a public write (no JWT — visitors
+// must be able to bump it), so it is host-gated by apiGate AND limited
+// per IP to keep it from being hammered into fake popularity numbers.
+const COUNT_MAX_REQ = 30; // per IP per minute
+const COUNT_WINDOW_MS = 60 * 1000;
+const countHits = new Map();
+
+function checkCountRate(req) {
+  const key = req.socket.remoteAddress || "?";
+  const now = Date.now();
+  const rec = countHits.get(key);
+  if (!rec || now - rec.resetAt > COUNT_WINDOW_MS) {
+    countHits.set(key, { count: 1, resetAt: now });
+    return true;
+  }
+  if (rec.count >= COUNT_MAX_REQ) return false;
+  rec.count += 1;
+  return true;
+}
+
+// Keep the map bounded.
+setInterval(() => {
+  const now = Date.now();
+  for (const [k, v] of countHits) {
+    if (now - v.resetAt > COUNT_WINDOW_MS) countHits.delete(k);
+  }
+}, 10 * 60 * 1000).unref();
+
 // ─── Blog content sanitizer (defense-in-depth against stored XSS) ──────
 function cleanText(v, max = 500) {
   return String(v || "")
@@ -748,6 +777,15 @@ async function handleApi(req, res, urlPath) {
     return json(res, 200, { tracks: db.listMusic() });
   }
 
+  // Play-count increment — public (visitors bump it), host-gated + rate-limited.
+  const musicPlayMatch = urlPath.match(/^\/api\/music\/(\d+)\/play$/);
+  if (musicPlayMatch && req.method === "POST") {
+    if (!checkCountRate(req)) return json(res, 429, { error: "Rate limit exceeded" });
+    const track = db.incrementMusicPlay(Number(musicPlayMatch[1]));
+    if (!track) return json(res, 404, { error: "Track not found" });
+    return json(res, 200, { ok: true, play_count: track.play_count });
+  }
+
   if (urlPath === "/api/music" && req.method === "POST") {
     if (!requireAuth()) return;
     const body = await readBody(req);
@@ -792,6 +830,15 @@ async function handleApi(req, res, urlPath) {
       blocks: JSON.parse(p.blocks || "[]"),
     }));
     return json(res, 200, { posts });
+  }
+
+  // Read-count increment — public (visitors bump it), host-gated + rate-limited.
+  const blogReadMatch = urlPath.match(/^\/api\/blog\/(\d+)\/read$/);
+  if (blogReadMatch && req.method === "POST") {
+    if (!checkCountRate(req)) return json(res, 429, { error: "Rate limit exceeded" });
+    const post = db.incrementBlogRead(Number(blogReadMatch[1]));
+    if (!post) return json(res, 404, { error: "Post not found" });
+    return json(res, 200, { ok: true, read_count: post.read_count });
   }
 
   if (urlPath === "/api/blog" && req.method === "POST") {

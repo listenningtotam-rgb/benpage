@@ -6,6 +6,8 @@ const SC_ORANGE = "#ff5500";
 /* Semi-transparent gray layer that covers the unplayed part of the waveform. */
 const PROGRESS_LAYER = "rgba(18, 22, 44, 0.85)";
 
+let MUSIC_TRACKS = []; // loaded from /api/music (kept so counters update in place)
+
 /* A single shared audio element → only one track plays at a time. */
 const musicState = {
   audio: null,
@@ -175,6 +177,13 @@ function getAudio() {
         musicState.player.el.classList.add("playing");
         musicState.player.playBtn.setAttribute("aria-label", `Pause ${musicState.player.title}`);
       }
+      // Count a play when a NEW start happens (switch to another track, or
+      // replay after the track ended). Pause → resume is the same play.
+      const p = musicState.player;
+      if (p && p.id != null && p.id !== lastPlayCountId) {
+        lastPlayCountId = p.id;
+        countPlay(p);
+      }
     });
     musicState.audio.addEventListener("pause", () => {
       if (musicState.player) {
@@ -183,6 +192,7 @@ function getAudio() {
       }
     });
     musicState.audio.addEventListener("ended", () => {
+      lastPlayCountId = null; // replaying a finished track counts as a new play
       if (musicState.player) {
         musicState.player.el.classList.remove("playing");
         musicState.player.playBtn.setAttribute("aria-label", `Play ${musicState.player.title}`);
@@ -244,6 +254,24 @@ function resetAllWaveforms() {
   });
 }
 
+/* ── Play counter ─────────────────────────────────────── */
+/* A play is counted when a track starts. Pausing/resuming the same track
+   does not re-count; replaying after it ends (or switching tracks) does.
+   Counting is best-effort and never blocks playback. */
+let lastPlayCountId = null;
+
+function countPlay(player) {
+  if (player.id == null) return;
+  fetch(`/api/music/${player.id}/play`, { method: "POST" })
+    .then((res) => (res.ok ? res.json() : Promise.reject(new Error("HTTP " + res.status))))
+    .then((data) => {
+      const track = MUSIC_TRACKS.find((t) => String(t.id) === String(player.id));
+      if (track) track.play_count = data.play_count;
+      if (player.playsEl) player.playsEl.textContent = data.play_count;
+    })
+    .catch(() => {});
+}
+
 /* ── Rendering ─────────────────────────────────────────── */
 function renderTracks(tracks) {
   if (!trackListEl) return;
@@ -258,6 +286,7 @@ function renderTracks(tracks) {
   tracks.forEach((track) => {
     const url = String(track.url || "");
     const title = String(track.title || "Untitled");
+    const playCount = Number(track.play_count) || 0;
     const seed = hashString((track.id != null ? track.id + ":" : "") + url + title);
     const bars = buildWaveform(seed);
 
@@ -271,7 +300,10 @@ function renderTracks(tracks) {
       <div class="sc-body">
         <div class="sc-top">
           <span class="sc-title" title="${scEscapeHTML(title)}">${scEscapeHTML(title)}</span>
-          <span class="sc-time">0:00 / 0:00</span>
+          <span class="sc-side">
+            <span class="sc-time">0:00 / 0:00</span>
+            <span class="sc-plays" title="Play count">▶ <span class="sc-plays-num">${playCount}</span> plays</span>
+          </span>
         </div>
         <div class="sc-wave">
           <canvas class="sc-wave-canvas"></canvas>
@@ -281,11 +313,13 @@ function renderTracks(tracks) {
 
     const player = {
       el,
+      id: track.id != null ? track.id : null,
       url,
       title,
       bars,
       canvas: el.querySelector(".sc-wave-canvas"),
       timeEl: el.querySelector(".sc-time"),
+      playsEl: el.querySelector(".sc-plays-num"),
       playBtn: el.querySelector(".sc-play"),
     };
     el._bars = bars; // used by resetAllWaveforms
@@ -304,7 +338,8 @@ async function loadTracks() {
   try {
     const res = await fetch("/api/music");
     const data = await res.json();
-    renderTracks(data.tracks);
+    MUSIC_TRACKS = data.tracks || [];
+    renderTracks(MUSIC_TRACKS);
   } catch (err) {
     if (trackListEl) {
       trackListEl.innerHTML = `<p class="empty-note">Failed to load tracks.</p>`;

@@ -271,6 +271,23 @@ function deleteBlogPost(id) {
   db.prepare("DELETE FROM blog_posts WHERE id = ?").run(id);
 }
 
+/* ── Play / read counters ─────────────────────────────── */
+function incrementMusicPlay(id) {
+  const info = db
+    .prepare("UPDATE music SET play_count = play_count + 1 WHERE id = ?")
+    .run(id);
+  if (info.changes === 0) return null; // unknown id
+  return getMusic(id);
+}
+
+function incrementBlogRead(id) {
+  const info = db
+    .prepare("UPDATE blog_posts SET read_count = read_count + 1 WHERE id = ?")
+    .run(id);
+  if (info.changes === 0) return null; // unknown id
+  return getBlogPost(id);
+}
+
 /* ── Init ──────────────────────────────────────────────── */
 ensureAdmin();
 
@@ -290,4 +307,6 @@ module.exports = {
   createBlogPost,
   updateBlogPost,
   deleteBlogPost,
+  incrementMusicPlay,
+  incrementBlogRead,
 };

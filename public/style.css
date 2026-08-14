@@ -332,6 +332,27 @@ body {
   color: rgba(255,255,255,0.45);
 }
 
+/* Right column inside .sc-top: elapsed time + play count, stacked. */
+.sc-side {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 0.15rem;
+}
+
+.sc-plays {
+  font-size: 0.72rem;
+  letter-spacing: 0.06em;
+  color: rgba(255,255,255,0.38);
+  white-space: nowrap;
+}
+
+.sc-plays-num {
+  font-family: "SF Mono", "Menlo", monospace;
+  color: rgba(255,255,255,0.6);
+}
+
 .sc-wave {
   position: relative;
   width: 100%;
@@ -628,6 +649,28 @@ body {
   padding: 0.28rem 0.65rem;
   border-radius: 999px;
   margin-top: auto;
+}
+
+/* Read counter on blog cards + post detail. */
+.blog-card-stats {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.blog-reads {
+  font-size: 0.72rem;
+  letter-spacing: 0.06em;
+  color: rgba(255,255,255,0.42);
+}
+
+.blog-reads-num {
+  font-family: "SF Mono", "Menlo", monospace;
+  color: rgba(255,255,255,0.65);
+}
+
+.blog-post-header .blog-reads {
+  color: rgba(255,255,255,0.5);
 }
 
 /* ── Blog Post Detail ─────────────────────────────────── */

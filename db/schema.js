@@ -102,6 +102,11 @@ function detectBaselineVersion(db) {
     const cols = db.prepare("PRAGMA table_info(users)").all().map((c) => c.name);
     if (cols.includes("must_change_password")) version = 2;
   }
+  // 003_add_play_read_counts.sql → music.play_count / blog_posts.read_count
+  if (tableExists(db, "music")) {
+    const cols = db.prepare("PRAGMA table_info(music)").all().map((c) => c.name);
+    if (cols.includes("play_count")) version = 3;
+  }
   return version;
 }
 

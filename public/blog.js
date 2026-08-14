@@ -62,6 +62,7 @@ function renderBlogDetail(post) {
         <span class="blog-tag">${escapeHTML(post.tag || "Note")}</span>
         <h3 class="blog-post-title">${escapeHTML(post.title)}</h3>
         <span class="blog-date">${fmtDate(post.date)}</span>
+        <span class="blog-reads">👁 <span class="blog-reads-num">${Number(post.read_count) || 0}</span> reads</span>
       </header>
       ${renderBlocks(post)}
     </article>`;
@@ -92,6 +93,8 @@ function renderBlogGrid() {
       ? `<div class="blog-card-cover"><img src="${escapeHTML(cover)}" alt="${escapeHTML(post.title)}" loading="lazy" /></div>`
       : `<div class="blog-card-cover blog-card-cover-text">✎</div>`;
 
+    const readCount = Number(post.read_count) || 0;
+
     return (
       `<article class="blog-card" data-id="${escapeHTML(post.id)}">
         ${coverHtml}
@@ -101,6 +104,9 @@ function renderBlogGrid() {
             <span class="blog-date">${fmtDate(post.date)}</span>
           </div>
           <h3 class="blog-card-title">${escapeHTML(post.title)}</h3>
+          <div class="blog-card-stats">
+            <span class="blog-reads" title="Read count">👁 <span class="blog-reads-num">${readCount}</span> reads</span>
+          </div>
           ${mediaBadge}
         </div>
       </article>`
@@ -110,9 +116,29 @@ function renderBlogGrid() {
   blogGrid.querySelectorAll(".blog-card").forEach((card) => {
     card.addEventListener("click", () => {
       const post = BLOG_POSTS.find((p) => String(p.id) === card.dataset.id);
-      if (post) renderBlogDetail(post);
+      if (post) {
+        renderBlogDetail(post);
+        countBlogRead(post);
+      }
     });
   });
+}
+
+/* ── Read counter ─────────────────────────────────────── */
+/* Each time a post is opened its read count is bumped. Best-effort:
+   a network failure never blocks opening the post. */
+function countBlogRead(post) {
+  fetch(`/api/blog/${post.id}/read`, { method: "POST" })
+    .then((res) => (res.ok ? res.json() : Promise.reject(new Error("HTTP " + res.status))))
+    .then((data) => {
+      post.read_count = data.read_count;
+      document.querySelectorAll(`.blog-card[data-id="${post.id}"] .blog-reads-num`).forEach((el) => {
+        el.textContent = post.read_count;
+      });
+      const detailNum = blogDetailContent.querySelector(".blog-post-header .blog-reads-num");
+      if (detailNum) detailNum.textContent = post.read_count;
+    })
+    .catch(() => {});
 }
 
 async function loadBlog() {
