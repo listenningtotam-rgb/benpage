@@ -887,8 +887,22 @@ const server = http.createServer((req, res) => {
 
   // All /api/* paths (including the gitee proxy) are gated: only localhost
   // and the site's own host/domain may call them.
+  //
+  // Exception: a request bearing a VALID admin JWT (Authorization: Bearer)
+  // is allowed regardless of Host/Origin. The token is presented in an
+  // Authorization header from localStorage — browsers never attach it to
+  // cross-site requests automatically (unlike cookies), so this cannot be
+  // abused by CSRF/DNS-rebinding attackers. An attacker would need to know
+  // a valid session token, which is exactly the same requirement as for an
+  // authenticated request. Unauth'd traffic (login, public reads, proxies)
+  // still goes through the full host gate.
   if (urlPath.startsWith("/api/")) {
-    if (!apiGate(req, res)) return;
+    const authHeader = req.headers.authorization || "";
+    const hasValidJwt =
+      authHeader.startsWith("Bearer ") && verifyToken(authHeader.slice(7)) !== null;
+    if (!hasValidJwt) {
+      if (!apiGate(req, res)) return;
+    }
 
     if (req.method === "OPTIONS") {
       res.writeHead(204);
