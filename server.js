@@ -488,13 +488,28 @@ function apiGate(req, res) {
   const host = req.headers.host || "";
   const origin = req.headers.origin;
   const strict = isStrictHostAllowlist();
+  const sf = String(req.headers["sec-fetch-site"] || "").toLowerCase();
+  const ua = req.headers["user-agent"] || "";
+  // Browsers tag every request with Sec-Fetch-Site (same-origin / same-site /
+  // none for navigations). Crucially, they OMIT the Origin header on
+  // same-origin GET/HEAD requests — only state-changing and cross-origin
+  // requests carry it. Some browser builds (e.g. headless Chrome) omit even
+  // the Sec-Fetch-* headers, so we also accept a browser User-Agent as a
+  // "genuine browser page" signal. The UA check is spoofable, but in relaxed
+  // mode it only extends the trust already granted to any same-origin browser
+  // page — public reads are public and writes still require a valid JWT.
+  const isBrowserRequest =
+    (sf && SAFE_SEC_FETCH_SITE.has(sf)) || isBrowserUserAgent(ua);
 
   // 1) The Host header must be acceptable.
   if (!isAllowedHostname(host)) {
-    // Relaxed mode only: a genuine same-origin browser request (Host matches
-    // Origin) is enough — this is how a fresh deployment served from a raw IP
-    // or an unconfigured domain can log in.
-    const sameOriginBrowser = !strict && hostMatchesOrigin(host, origin);
+    // Relaxed mode only: a genuine browser request from the site's own page
+    // (Origin matches Host, or the browser tagged the request same-origin via
+    // Sec-Fetch-Site, or it carries a browser User-Agent) is enough — this is
+    // how a fresh deployment served from a raw IP or an unconfigured domain
+    // can log in AND read public content.
+    const sameOriginBrowser =
+      !strict && (hostMatchesOrigin(host, origin) || isBrowserRequest);
     if (!sameOriginBrowser) {
       json(res, 403, {
         error: "Host not allowed",
@@ -528,20 +543,32 @@ function apiGate(req, res) {
   }
 
   // 3) Sec-Fetch-Site must never be cross-site.
-  const sf = String(req.headers["sec-fetch-site"] || "").toLowerCase();
   if (sf && !SAFE_SEC_FETCH_SITE.has(sf)) {
     json(res, 403, { error: "Request origin not allowed" });
     return false;
   }
 
-  // 4) Non-browser clients (no Origin / Sec-Fetch-Site headers) must come from
-  //    localhost or an explicitly allowed host.
-  if (!origin && !sf && !isAllowedHostname(host)) {
+  // 4) Non-browser clients (no Origin / Sec-Fetch-Site headers, no browser UA)
+  //    must come from localhost or an explicitly allowed host.
+  if (!origin && !sf && !isBrowserUserAgent(ua) && !isAllowedHostname(host)) {
     json(res, 403, { error: "Host not allowed" });
     return false;
   }
 
   return true;
+}
+
+// Weak-but-useful signal for relaxed mode: real browsers identify themselves
+// with a Mozilla/ + (AppleWebKit|Gecko|Blink/Safari/Firefox|…) UA string.
+// Plain scripts (curl, axios, bots) don't look like that. Kept intentionally
+// conservative so a browser page is never blocked while raw HTTP clients still
+// need an allowlisted host.
+function isBrowserUserAgent(ua) {
+  if (typeof ua !== "string" || !ua) return false;
+  return (
+    /Mozilla\/[\d.]+/.test(ua) &&
+    /(?:AppleWebKit|Gecko|Chrome|Safari|Firefox|Edg|OPR)\/[\d.]+/.test(ua)
+  );
 }
 
 // ─── JWT Auth ──────────────────────────────────────────────────────────
