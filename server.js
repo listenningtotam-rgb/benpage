@@ -148,11 +148,16 @@ const API_PROXIES = {
 // The FX app fetches https://open.er-api.com directly from the browser.
 // frame-ancestors 'none' + X-Frame-Options: DENY blocks clickjacking of the
 // admin login page.
+// img-src needs blob: — the admin blog editor previews a picked/pasted image
+// via URL.createObjectURL() (a blob: URL) before resizing/uploading. Without
+// blob: the CSP blocks that preview and every upload fails with
+// "Could not read image". Old photos keep working because they are served
+// from /photo/... (same-origin 'self').
 const CSP = [
   "default-src 'self'",
   "script-src 'self'",
   "style-src 'self'",
-  "img-src 'self' data: https:",
+  "img-src 'self' data: https: blob:",
   "media-src 'self' https:",
   "connect-src 'self' https://open.er-api.com",
   "frame-ancestors 'none'",

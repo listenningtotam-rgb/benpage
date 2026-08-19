@@ -291,6 +291,10 @@ async function uploadImageBlob(blob, statusEl) {
 
 function resizeImage(file, maxDim = 1920, quality = 0.85) {
   return new Promise((resolve, reject) => {
+    if (!file) {
+      reject(new Error("No image received from the browser. Try picking the file again."));
+      return;
+    }
     const url = URL.createObjectURL(file);
     const img = new Image();
     img.onload = () => {
@@ -311,10 +315,27 @@ function resizeImage(file, maxDim = 1920, quality = 0.85) {
     };
     img.onerror = () => {
       URL.revokeObjectURL(url);
-      reject(new Error("Could not read image"));
+      reject(new Error(describeImageReadError(file)));
     };
     img.src = url;
   });
+}
+
+/* Turn a browser image-decode failure into an actionable message. */
+function describeImageReadError(file) {
+  const name = (file && file.name) || "";
+  const type = (file && file.type) || "";
+  const hint = "Convert it to JPG or PNG and try again.";
+  if (/heic|heif/i.test(type + name)) {
+    return `"${name}" is HEIC/HEIF (iPhone photo format) and this browser cannot read it. ${hint}`;
+  }
+  if (
+    /^image\/(avif|tiff|tif|vnd\.adobe\.photoshop|svg\+xml)/i.test(type) ||
+    /\.(avif|tif|tiff|psd|raw|nef|cr2|dng|svg)$/i.test(name)
+  ) {
+    return `"${name}" (${type || "unknown type"}) is not a supported image format. ${hint}`;
+  }
+  return `Could not read "${name}" (${type || "unknown type"}). The file may be corrupted or in an unsupported format. ${hint}`;
 }
 
 function setUploadStatus(el, state, text) {
