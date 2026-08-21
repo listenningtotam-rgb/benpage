@@ -1699,3 +1699,22 @@ body {
   }
 }
 
+/* ── ICP 备案号 ────────────────────────────────────────────────────── */
+/* 低调地显示在页面底部，满足工信部备案要求，不干扰页面内容。 */
+.site-icp {
+  text-align: center;
+  font-size: 12px;
+  color: #999;
+  padding: 20px 0 30px;
+}
+
+.site-icp a {
+  color: #999;
+  text-decoration: none;
+  transition: color 0.2s ease;
+}
+
+.site-icp a:hover {
+  color: rgba(126, 200, 227, 0.8);
+}
+
