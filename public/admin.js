@@ -8,6 +8,10 @@ const USER_KEY = "benpage_admin_user";
 // MAX_AUDIO_UPLOAD_BYTES) and nginx client_max_body_size (deploy/nginx-upload.conf).
 const MAX_UPLOAD_MB = 5;
 
+/* Admin lists (music + blog) show only this many rows by default, with a
+   "Show more" button to reveal the rest. */
+const INITIAL_ROWS = 5;
+
 const $ = (sel) => document.querySelector(sel);
 
 /* ── API helper ────────────────────────────────────────── */
@@ -166,6 +170,36 @@ document.querySelectorAll(".dash-tab").forEach((tab) => {
 });
 
 /* ── Music CRUD ────────────────────────────────────────── */
+/* Collapse an admin list (#music-list / #blog-list) to the first
+   INITIAL_ROWS rows and keep a "Show more (N)" button that reveals the rest. */
+function applyListPager(listEl, rowSelector) {
+  const rows = listEl.querySelectorAll(rowSelector);
+  const hidden = Math.max(0, rows.length - INITIAL_ROWS);
+  let moreWrap = listEl.querySelector(".list-more");
+
+  rows.forEach((el, i) => {
+    el.hidden = i >= INITIAL_ROWS; // admin.css honors [hidden]
+  });
+
+  if (hidden === 0) {
+    if (moreWrap) moreWrap.remove();
+    return;
+  }
+
+  if (!moreWrap) {
+    moreWrap = document.createElement("div");
+    moreWrap.className = "list-more";
+    listEl.appendChild(moreWrap);
+  }
+  moreWrap.innerHTML = `<button type="button" class="btn btn-ghost list-more-btn">Show more (${hidden})</button>`;
+  moreWrap.querySelector(".list-more-btn").addEventListener("click", () => {
+    rows.forEach((el, i) => {
+      if (i >= INITIAL_ROWS) el.hidden = false;
+    });
+    moreWrap.remove();
+  });
+}
+
 async function loadMusic() {
   const data = await api("/api/music");
   const list = $("#music-list");
@@ -190,6 +224,8 @@ async function loadMusic() {
       </div>`
     )
     .join("");
+
+  applyListPager(list, ".item-card");
 }
 
 function showMusicForm(track = null) {
@@ -583,6 +619,8 @@ async function loadBlog() {
       </div>`
     )
     .join("");
+
+  applyListPager(list, ".item-card");
 }
 
 function showBlogForm(post = null) {

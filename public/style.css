@@ -5,6 +5,12 @@
   padding: 0;
 }
 
+/* Always honor the hidden attribute, even on elements with a display rule
+   (e.g. .sc-track, .blog-card) — used by the "Show more" pager. */
+[hidden] {
+  display: none !important;
+}
+
 html {
   scroll-behavior: smooth;
 }
@@ -230,6 +236,36 @@ body {
   display: flex;
   flex-direction: column;
   gap: 0.75rem;
+}
+
+/* ── "Show more" pager (music list + blog grid) ────────── */
+.list-more {
+  display: flex;
+  justify-content: center;
+  width: 100%;
+  margin-top: 1.4rem;
+}
+
+.list-more-btn {
+  background: rgba(255,255,255,0.06);
+  border: 1px solid rgba(255,255,255,0.18);
+  color: #fff;
+  font-size: 0.85rem;
+  letter-spacing: 0.06em;
+  padding: 0.6rem 1.6rem;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: background 0.2s ease, border-color 0.2s ease, transform 0.12s ease;
+}
+
+.list-more-btn:hover {
+  background: rgba(255,255,255,0.12);
+  border-color: rgba(255,255,255,0.35);
+  transform: translateY(-1px);
+}
+
+.list-more-btn:active {
+  transform: scale(0.97);
 }
 
 .sc-track {

@@ -8,6 +8,10 @@
 
 let BLOG_POSTS = []; // loaded from /api/blog
 
+/* Show only this many posts by default; the rest are revealed by a
+   "Show more" button. Kept in sync with music.js's INITIAL_TRACKS. */
+const INITIAL_POSTS = 5;
+
 /* ── DOM helpers ────────────────────────────────────────── */
 const blogGrid = document.getElementById("blog-grid");
 const blogDetail = document.getElementById("blog-detail");
@@ -86,6 +90,37 @@ function closeBlogDetail() {
   blogDetailContent.innerHTML = "";
 }
 
+/* Collapse the blog grid to the first INITIAL_POSTS cards and keep a
+   "Show more (N)" button (placed right after the grid) that reveals the rest. */
+function applyBlogPager() {
+  const cards = blogGrid.querySelectorAll(".blog-card");
+  const hiddenCount = Math.max(0, cards.length - INITIAL_POSTS);
+  let moreWrap = document.getElementById("blog-more-wrap");
+
+  cards.forEach((el, i) => {
+    el.hidden = i >= INITIAL_POSTS; // style.css honors [hidden]
+  });
+
+  if (hiddenCount === 0) {
+    if (moreWrap) moreWrap.remove();
+    return;
+  }
+
+  if (!moreWrap) {
+    moreWrap = document.createElement("div");
+    moreWrap.id = "blog-more-wrap";
+    moreWrap.className = "list-more";
+    blogGrid.after(moreWrap);
+  }
+  moreWrap.innerHTML = `<button type="button" class="list-more-btn">Show more (${hiddenCount})</button>`;
+  moreWrap.querySelector(".list-more-btn").addEventListener("click", () => {
+    cards.forEach((el, i) => {
+      if (i >= INITIAL_POSTS) el.hidden = false;
+    });
+    moreWrap.remove();
+  });
+}
+
 function renderBlogGrid() {
   blogGrid.innerHTML = BLOG_POSTS.map((post) => {
     const cover = post.cover || (post.blocks.find((b) => b.type === "image") || {}).src || "";
@@ -145,6 +180,8 @@ function renderBlogGrid() {
       });
     }
   });
+
+  applyBlogPager();
 }
 
 /* ── Read counter ─────────────────────────────────────── */

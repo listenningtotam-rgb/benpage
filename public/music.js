@@ -8,6 +8,10 @@ const PROGRESS_LAYER = "rgba(18, 22, 44, 0.85)";
 
 let MUSIC_TRACKS = []; // loaded from /api/music (kept so counters update in place)
 
+/* Show only this many tracks by default; the rest are revealed by a
+   "Show more" button. Kept in sync with blog.js's INITIAL_POSTS. */
+const INITIAL_TRACKS = 5;
+
 /* A single shared audio element → only one track plays at a time. */
 const musicState = {
   audio: null,
@@ -273,6 +277,37 @@ function countPlay(player) {
 }
 
 /* ── Rendering ─────────────────────────────────────────── */
+/* Collapse the track list to the first INITIAL_TRACKS entries and keep a
+   "Show more (N)" button that reveals the rest. */
+function applyTrackPager() {
+  const items = trackListEl.querySelectorAll(".sc-track");
+  let moreWrap = trackListEl.querySelector(".list-more");
+
+  if (items.length <= INITIAL_TRACKS) {
+    if (moreWrap) moreWrap.remove();
+    return;
+  }
+
+  items.forEach((el, i) => {
+    el.hidden = i >= INITIAL_TRACKS; // style.css honors [hidden]
+  });
+
+  if (!moreWrap) {
+    moreWrap = document.createElement("div");
+    moreWrap.className = "list-more";
+    trackListEl.appendChild(moreWrap);
+  }
+  const hidden = items.length - INITIAL_TRACKS;
+  moreWrap.innerHTML = `<button type="button" class="list-more-btn">Show more (${hidden})</button>`;
+  moreWrap.querySelector(".list-more-btn").addEventListener("click", () => {
+    items.forEach((el, i) => {
+      if (i >= INITIAL_TRACKS) el.hidden = false;
+    });
+    moreWrap.remove();
+    resetAllWaveforms(); // hidden canvases had 0 width — draw them now
+  });
+}
+
 function renderTracks(tracks) {
   if (!trackListEl) return;
   if (!tracks || tracks.length === 0) {
@@ -341,6 +376,7 @@ function renderTracks(tracks) {
   });
 
   trackListEl.appendChild(frag);
+  applyTrackPager();
   resetAllWaveforms();
 }
 
