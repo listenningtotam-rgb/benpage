@@ -183,12 +183,24 @@ function json(res, code, obj) {
 // ─── Request body helpers ─────────────────────────────────────────────
 const MAX_JSON_BYTES = 1024 * 1024; // 1 MB
 
+// An error that carries an explicit HTTP status code so the API error
+// handler can respond with the right status (e.g. 413 for oversized bodies).
+class HttpError extends Error {
+  constructor(status, message) {
+    super(message);
+    this.name = "HttpError";
+    this.status = status;
+  }
+}
+
 function readBody(req, maxBytes = MAX_JSON_BYTES) {
   return new Promise((resolve, reject) => {
     const headerLen = parseInt(req.headers["content-length"] || "0", 10);
     if (headerLen > maxBytes) {
-      req.destroy();
-      reject(new Error("Request body too large"));
+      // Reject without destroying the socket: the catch handler responds
+      // with a proper JSON 413 first, then closes the connection.
+      req.pause();
+      reject(new HttpError(413, `Request body too large (max ${Math.round(maxBytes / 1024)}KB)`));
       return;
     }
     const chunks = [];
@@ -199,8 +211,8 @@ function readBody(req, maxBytes = MAX_JSON_BYTES) {
       size += c.length;
       if (size > maxBytes) {
         aborted = true;
-        req.destroy();
-        reject(new Error("Request body too large"));
+        req.pause();
+        reject(new HttpError(413, `Request body too large (max ${Math.round(maxBytes / 1024)}KB)`));
         return;
       }
       chunks.push(c);
@@ -228,8 +240,10 @@ function readBuffer(req, maxBytes) {
       size += c.length;
       if (size > maxBytes) {
         aborted = true;
-        reject(new Error(`File too large (max ${Math.round(maxBytes / (1024 * 1024))}MB)`));
-        req.destroy();
+        // Same as readBody: reject with a clean 413 so the client gets a
+        // JSON error instead of a torn-down connection.
+        req.pause();
+        reject(new HttpError(413, `File too large (max ${Math.round(maxBytes / (1024 * 1024))}MB)`));
         return;
       }
       chunks.push(c);
@@ -243,7 +257,9 @@ function readBuffer(req, maxBytes) {
 
 // ─── Image upload (raw binary body) ─────────────────────────────────────
 const ALLOWED_IMAGE_EXT = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"]);
-const MAX_UPLOAD_BYTES = 10 * 1024 * 1024; // 10 MB
+// 5 MB — keep in sync with nginx client_max_body_size (deploy/nginx-upload.conf)
+// and the client-side check in public/admin.js.
+const MAX_UPLOAD_BYTES = 5 * 1024 * 1024;
 
 function sniffImageExt(buf) {
   if (!buf || buf.length < 12) return null;
@@ -264,7 +280,9 @@ function sniffImageExt(buf) {
 }
 
 // ─── Audio upload (raw binary body) ────────────────────────────────────
-const MAX_AUDIO_UPLOAD_BYTES = 100 * 1024 * 1024; // 100 MB
+// 5 MB — keep in sync with nginx client_max_body_size (deploy/nginx-upload.conf)
+// and the client-side check in public/admin.js.
+const MAX_AUDIO_UPLOAD_BYTES = 5 * 1024 * 1024;
 
 function sniffAudioExt(buf) {
   if (!buf || buf.length < 12) return null;
@@ -1243,7 +1261,17 @@ const server = http.createServer((req, res) => {
 
     handleApi(req, res, urlPath).catch((err) => {
       console.error("API error:", err.message);
-      json(res, 400, { error: err.message });
+      const status = typeof err.status === "number" ? err.status : 400;
+      if (res.headersSent) {
+        res.end();
+        return;
+      }
+      json(res, status, { error: err.message });
+      // When a request body was rejected mid-stream (413), the connection
+      // can no longer be reused — close it once the response has flushed.
+      if (status === 413 && !req.readableEnded) {
+        res.on("finish", () => req.socket.destroy());
+      }
     });
     return;
   }

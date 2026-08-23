@@ -4,6 +4,10 @@
 const TOKEN_KEY = "benpage_admin_token";
 const USER_KEY = "benpage_admin_user";
 
+// Max upload size in MB — keep in sync with server.js (MAX_UPLOAD_BYTES /
+// MAX_AUDIO_UPLOAD_BYTES) and nginx client_max_body_size (deploy/nginx-upload.conf).
+const MAX_UPLOAD_MB = 5;
+
 const $ = (sel) => document.querySelector(sel);
 
 /* ── API helper ────────────────────────────────────────── */
@@ -215,6 +219,17 @@ function hideMusicForm() {
 $("#music-add-btn").addEventListener("click", () => showMusicForm());
 
 /* ── Audio upload (music) ─────────────────────────────── */
+/* Turn a failed upload response into an actionable message. */
+function uploadErrorMessage(res, data) {
+  if (res.status === 413) {
+    return (
+      `Upload failed (413): the file is larger than the ${MAX_UPLOAD_MB}MB server limit. ` +
+      "Ask the server admin to raise nginx client_max_body_size (see deploy/nginx-upload.conf)."
+    );
+  }
+  return (data && data.error) || `Upload failed (${res.status})`;
+}
+
 async function uploadAudioBlob(blob, statusEl) {
   setUploadStatus(statusEl, "uploading", "Uploading…");
   const token = localStorage.getItem(TOKEN_KEY);
@@ -225,7 +240,7 @@ async function uploadAudioBlob(blob, statusEl) {
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
-    throw new Error(data.error || `Upload failed (${res.status})`);
+    throw new Error(uploadErrorMessage(res, data));
   }
   return data.url;
 }
@@ -237,6 +252,10 @@ $("#music-file").addEventListener("change", async (e) => {
   if (!file) return;
   e.target.value = "";
   const statusEl = $("#music-upload-status");
+  if (file.size > MAX_UPLOAD_MB * 1024 * 1024) {
+    setUploadStatus(statusEl, "err", `✗ File is too large — max ${MAX_UPLOAD_MB}MB.`);
+    return;
+  }
   try {
     const url = await uploadAudioBlob(file, statusEl);
     $("#music-url").value = url;
@@ -284,7 +303,7 @@ async function uploadImageBlob(blob, statusEl) {
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
-    throw new Error(data.error || `Upload failed (${res.status})`);
+    throw new Error(uploadErrorMessage(res, data));
   }
   return data.url;
 }
