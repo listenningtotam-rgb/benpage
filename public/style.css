@@ -2328,6 +2328,18 @@ body {
   min-height: 1rem;
 }
 
+/* Visually-hidden file input. Keep it off-screen but NOT display:none —
+   display:none file inputs are flaky on mobile Safari (the picker opens but the
+   change event may never fire). The upload button triggers input.click(). */
+.rc-file-hidden {
+  position: absolute;
+  left: -9999px;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  overflow: hidden;
+}
+
 .rc-hint {
   font-size: 0.72rem;
   color: rgba(255, 255, 255, 0.35);

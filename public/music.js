@@ -1868,10 +1868,8 @@ function openNewRecording() {
       <input type="text" id="new-contributor" maxlength="60" placeholder="admin" value="${scEscapeHTML(contributorDefault)}" />
     </label>
     <div class="rc-source-row">
-      <label class="rc-upload">
-        <input type="file" id="new-file" accept=".wav,.mp3,.m4a,audio/wav,audio/mpeg,audio/mp4,audio/*" hidden />
-        <span class="rc-btn rc-btn-ghost" id="new-file-btn">⬆ Upload audio</span>
-      </label>
+      <button type="button" class="rc-btn rc-btn-ghost" id="new-file-btn">⬆ Upload audio</button>
+      <input type="file" id="new-file" accept=".wav,.mp3,.m4a,audio/wav,audio/mpeg,audio/mp4,audio/*" class="rc-file-hidden" />
       <button type="button" class="rc-btn rc-btn-ghost" id="new-record-btn">● Record from mic</button>
       <button type="button" class="rc-btn rc-btn-ghost" id="new-stop-btn" hidden>■ Stop</button>
     </div>
