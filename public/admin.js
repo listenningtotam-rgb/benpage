@@ -266,9 +266,10 @@ function uploadErrorMessage(res, data) {
   return (data && data.error) || `Upload failed (${res.status})`;
 }
 
-/* Reject known-bad containers (WebM/M4A/OGG/FLAC from before the WAV
-   migration) before they hit the server, with a clear message. Returns the
-   detected kind, or null/"unknown" if the server must be the judge. */
+/* Reject known-bad containers (WebM/OGG/FLAC from before the WAV migration)
+   before they hit the server, with a clear message. Returns the detected kind,
+   or null/"unknown" if the server must be the judge. M4A is allowed:
+   uploadAudioBlob transcodes it to WAV. */
 async function sniffAudioKind(blob) {
   try {
     const head = new Uint8Array(await blob.slice(0, 12).arrayBuffer());
@@ -291,11 +292,104 @@ async function sniffAudioKind(blob) {
   }
 }
 
+/* Convert an M4A upload to 22050 Hz mono 16-bit PCM WAV in the browser, so the
+   shared /api/music/upload endpoint (which only stores WAV/MP3 so every browser
+   can decodeAudioData them, including iOS Safari) keeps receiving exactly the
+   same bytes it always did. */
+async function transcodeM4aToWav(blob) {
+  const ab = await blob.arrayBuffer().catch(() => null);
+  if (!ab) throw new Error("Could not read the M4A file.");
+  let ctx = null;
+  try {
+    ctx = new (window.AudioContext || window.webkitAudioContext)();
+  } catch (_) { ctx = null; }
+  if (!ctx) throw new Error("This browser could not create an audio context to convert the M4A file.");
+  let buf;
+  try {
+    buf = await new Promise((resolve, reject) => {
+      const ok = (b) =>
+        b && typeof b.duration === "number"
+          ? resolve(b)
+          : reject(new Error("decodeAudioData returned no audio"));
+      const bad = (err) =>
+        reject(err instanceof Error ? err : new Error(String((err && err.message) || err || "decodeAudioData failed")));
+      try {
+        const p = ctx.decodeAudioData(ab, ok, bad);
+        if (p && typeof p.then === "function") p.then(ok, bad);
+      } catch (err) { bad(err); }
+    });
+  } catch (err) {
+    throw new Error("This browser could not decode the M4A file: " + (err.message || err));
+  } finally {
+    try { if (typeof ctx.close === "function") ctx.close(); } catch (_) {}
+  }
+  const ch0 = buf.getChannelData(0);
+  const ch1 = buf.numberOfChannels > 1 ? buf.getChannelData(1) : null;
+  const mono = new Float32Array(buf.length);
+  if (ch1) {
+    for (let i = 0; i < buf.length; i++) mono[i] = (ch0[i] + ch1[i]) / 2;
+  } else {
+    mono.set(ch0);
+  }
+  return encodePcmWav(mono, buf.sampleRate || 44100, 22050);
+}
+
+/* 16-bit PCM WAV writer (mono, resampling) — same output format as the
+   recording hub's encodeWav in public/music.js. Returns a Blob or null for
+   silent input. */
+function encodePcmWav(mono, inRate, outRate) {
+  const ratio = inRate / outRate;
+  const max = Math.max(1, Math.round(mono.length / ratio));
+  const out = new Int16Array(max);
+  let o = 0;
+  let acc = 0;
+  let cnt = 0;
+  let nextOut = 1;
+  const push = () => {
+    let s = (acc / cnt) * 32767;
+    out[o++] = s > 32767 ? 32767 : s < -32768 ? -32768 : s | 0;
+    acc = 0;
+    cnt = 0;
+  };
+  for (let i = 0; i < mono.length; i++) {
+    acc += mono[i];
+    cnt++;
+    if (i + 1 >= nextOut * ratio) { nextOut++; push(); }
+  }
+  if (cnt > 0 && o < max) push();
+  const n = o;
+  const dataBytes = n * 2;
+  const buf = new ArrayBuffer(44 + dataBytes);
+  const dv = new DataView(buf);
+  const ascii = (off, s) => { for (let i = 0; i < s.length; i++) dv.setUint8(off + i, s.charCodeAt(i)); };
+  ascii(0, "RIFF");
+  dv.setUint32(4, 36 + dataBytes, true);
+  ascii(8, "WAVE");
+  ascii(12, "fmt ");
+  dv.setUint32(16, 16, true);
+  dv.setUint16(20, 1, true);   // PCM
+  dv.setUint16(22, 1, true);   // mono
+  dv.setUint32(24, outRate, true);
+  dv.setUint32(28, outRate * 2, true);
+  dv.setUint16(32, 2, true);
+  dv.setUint16(34, 16, true);
+  ascii(36, "data");
+  dv.setUint32(40, dataBytes, true);
+  for (let i = 0; i < n; i++) dv.setInt16(44 + i * 2, out[i], true);
+  return new Blob([buf], { type: "audio/wav" });
+}
+
 async function uploadAudioBlob(blob, statusEl) {
   const kind = await sniffAudioKind(blob);
-  if (kind && kind !== "wav" && kind !== "mp3" && kind !== "unknown") {
+  let out = blob;
+  if (kind === "MP4/M4A") {
+    out = await transcodeM4aToWav(blob);
+    if (!out || out.size > MAX_UPLOAD_MB * 1024 * 1024) {
+      throw new Error(`The M4A is too long — converting it to WAV exceeds the ${MAX_UPLOAD_MB}MB upload limit.`);
+    }
+  } else if (kind && kind !== "wav" && kind !== "mp3" && kind !== "unknown") {
     throw new Error(
-      `Unsupported audio type: ${kind}. This site only accepts WAV (recordings) or MP3 (backing tracks).`
+      `Unsupported audio type: ${kind}. This site accepts WAV, MP3, or M4A (M4A is converted to WAV).`
     );
   }
   setUploadStatus(statusEl, "uploading", "Uploading…");
@@ -303,7 +397,7 @@ async function uploadAudioBlob(blob, statusEl) {
   const res = await fetch("/api/music/upload", {
     method: "POST",
     headers: { Authorization: `Bearer ${token}` },
-    body: blob,
+    body: out,
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {

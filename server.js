@@ -293,8 +293,10 @@ function sniffAudioExt(buf) {
   if (!buf || buf.length < 12) return null;
   // WAV and MP3 only — the two formats every browser's Web Audio
   // decodeAudioData accepts (including iOS Safari). Recorded takes are always
-  // WAV; backing tracks may be MP3. Everything else (webm/m4a/ogg/flac…)
-  // is rejected so no future iOS-unplayable recording can sneak in.
+  // WAV; backing tracks may be MP3. M4A uploads are converted to WAV in the
+  // browser before they reach this endpoint (uploadBlob in public/music.js and
+  // public/admin.js), so raw m4a/webm/ogg/flac… bytes hitting the server are
+  // still rejected — no future iOS-unplayable recording can sneak in.
   // MP3 — ID3 tag, or MPEG audio frame sync (0xFFEx)
   if (
     (buf[0] === 0x49 && buf[1] === 0x44 && buf[2] === 0x33) ||

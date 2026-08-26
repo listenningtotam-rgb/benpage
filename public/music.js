@@ -1753,10 +1753,11 @@ async function commitTake(overlay) {
   }
 }
 
-/* Quick magic-byte check so a stale file (WebM/M4A/OGG from before the WAV
+/* Quick magic-byte check so a stale file (WebM/OGG/FLAC from before the WAV
    migration) fails with a clear message instead of a confusing server round-trip.
    Returns "wav" | "mp3" | "WebM" | "Ogg" | "FLAC" | "MP4/M4A" | "unknown" | null
-   (null = couldn't read or too small — let the server decide). */
+   (null = couldn't read or too small — let the server decide). M4A is allowed:
+   uploadBlob transcodes it to WAV; every other non-WAV/MP3 kind is rejected. */
 async function sniffAudioKind(blob) {
   try {
     const head = new Uint8Array(await blob.slice(0, 12).arrayBuffer());
@@ -1779,18 +1780,62 @@ async function sniffAudioKind(blob) {
   }
 }
 
+/* M4A → 22050 Hz mono 16-bit PCM WAV, converted in the browser. The client
+   picked the file, so its browser can decode M4A; re-encoding to the same WAV
+   format the recorder produces keeps every stored file decodable through
+   decodeAudioData on every browser (including iOS Safari) — the server still
+   only ever receives WAV/MP3 bytes. */
+async function transcodeM4aToWav(blob) {
+  const ab = await blob.arrayBuffer().catch(() => null);
+  if (!ab) throw new Error("Could not read the M4A file.");
+  let shared = null;
+  let ctx = null;
+  if (audioEngine.ctx && audioEngine.ctx.state !== "closed") {
+    shared = audioEngine.ctx;
+    ctx = shared;
+  } else {
+    try {
+      ctx = new (window.AudioContext || window.webkitAudioContext)();
+    } catch (_) { ctx = null; }
+  }
+  if (!ctx) throw new Error("This browser could not create an audio context to convert the M4A file.");
+  let buf;
+  try {
+    buf = await decodeAudioCompat(ctx, ab);
+  } catch (err) {
+    throw new Error("This browser could not decode the M4A file: " + (err.message || err));
+  } finally {
+    if (!shared) { try { if (typeof ctx.close === "function") ctx.close(); } catch (_) {} }
+  }
+  const ch0 = buf.getChannelData(0);
+  const ch1 = buf.numberOfChannels > 1 ? buf.getChannelData(1) : null;
+  const mono = new Float32Array(buf.length);
+  if (ch1) {
+    for (let i = 0; i < buf.length; i++) mono[i] = (ch0[i] + ch1[i]) / 2;
+  } else {
+    mono.set(ch0);
+  }
+  return encodeWav([mono], buf.sampleRate || 44100, 22050);
+}
+
 async function uploadBlob(blob) {
   const kind = await sniffAudioKind(blob);
-  if (kind && kind !== "wav" && kind !== "mp3" && kind !== "unknown") {
+  let out = blob;
+  if (kind === "MP4/M4A") {
+    out = await transcodeM4aToWav(blob);
+    if (!out || out.size > 16 * 1024 * 1024) {
+      throw new Error("The M4A is too long — converting it to WAV exceeds the 16MB upload limit.");
+    }
+  } else if (kind && kind !== "wav" && kind !== "mp3" && kind !== "unknown") {
     throw new Error(
-      `Unsupported audio type: ${kind}. This site only accepts WAV (recordings) or MP3 (backing tracks).`
+      `Unsupported audio type: ${kind}. This site accepts WAV, MP3, or M4A (M4A is converted to WAV).`
     );
   }
   const token = localStorage.getItem(TOKEN_KEY);
   const res = await fetch("/api/music/upload", {
     method: "POST",
     headers: token ? { Authorization: `Bearer ${token}` } : {},
-    body: blob,
+    body: out,
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data.error || `Upload failed (${res.status})`);
@@ -1824,7 +1869,7 @@ function openNewRecording() {
     </label>
     <div class="rc-source-row">
       <label class="rc-upload">
-        <input type="file" id="new-file" accept=".wav,.mp3,audio/wav,audio/mpeg,audio/*" hidden />
+        <input type="file" id="new-file" accept=".wav,.mp3,.m4a,audio/wav,audio/mpeg,audio/mp4,audio/*" hidden />
         <span class="rc-btn rc-btn-ghost" id="new-file-btn">⬆ Upload audio</span>
       </label>
       <button type="button" class="rc-btn rc-btn-ghost" id="new-record-btn">● Record from mic</button>
