@@ -454,7 +454,8 @@ async function ensureCtxRunning(ctx) {
 async function decodeLayer(ctx, url) {
   const hit = bufferCache.get(url);
   if (hit) return { kind: "buffer", buffer: hit };
-  const res = await fetch(url, { cache: "no-cache" });
+  // blob: URLs ignore cache mode and Safari rejects the cache option on them.
+  const res = await fetch(url, url.indexOf("blob:") === 0 ? {} : { cache: "no-cache" });
   if (!res.ok) throw new Error("Could not load audio: " + url);
   const ab = await res.arrayBuffer();
   const buffer = await decodeAudioCompat(ctx, ab);
@@ -475,6 +476,7 @@ function closeAudio() {
   }
   audioEngine.elements.forEach((el) => {
     try { el.pause(); el.removeAttribute("src"); el.load(); } catch (_) {}
+    if (el._mixUrl) { try { URL.revokeObjectURL(el._mixUrl); } catch (_) {} el._mixUrl = null; }
   });
   audioEngine.ctx = null;
   audioEngine.sources = [];
@@ -564,12 +566,13 @@ function isIOS() {
 
 async function playCommit(commit, extra) {
   closeAudio();
-  // On iOS, skip the Web Audio mix entirely: the only path proven to make
-  // sound on the iPhone is a native <audio> element — the exact one the
-  // /music/:id share page uses. Web Audio on iOS can report "running" and
-  // still drop every source (blue "playing" row, no sound).
+  // On iOS, skip the live Web Audio mix entirely: its clock can report
+  // "running" while sources are dropped silently (blue "playing" row, no
+  // sound). Instead render the whole chain offline (pure DSP — nothing can
+  // drop it) and play the resulting WAV via the native <audio> element the
+  // share page uses. Volume balance is identical to the desktop mix.
   if (isIOS()) {
-    playNativeTrack(commit, extra, null);
+    playIOSMix(commit, extra);
     return;
   }
   let ctx = null;
@@ -701,6 +704,158 @@ function playNativeTrack(commit, extra, reason) {
   });
   audioEngine.elements.push(el);
   if (commit && commit.repo_id) countRepoPlay(commit.repo_id);
+}
+
+/* Promise-style startRendering with a callback fallback (old iOS). */
+function renderOffline(mix) {
+  return new Promise((resolve, reject) => {
+    try {
+      const p = mix.startRendering();
+      if (p && typeof p.then === "function") p.then(resolve, reject);
+      else mix.oncomplete = (e) => resolve(e.renderedBuffer);
+    } catch (err) {
+      reject(err);
+    }
+  });
+}
+
+/* Stereo 16-bit PCM WAV encoder for the rendered iOS mix. The render is already
+   at the target sample rate, so no resampling — a straight two-channel write.
+   (encodeWav above stays mono + resampling for the take recorder.) */
+function encodeWavStereo(ch0, ch1, rate) {
+  const n = Math.min(ch0.length, ch1.length);
+  if (!n) return null;
+  const dataBytes = n * 4; // 2 channels × 2 bytes
+  const buf = new ArrayBuffer(44 + dataBytes);
+  const dv = new DataView(buf);
+  const ascii = (off, s) => { for (let i = 0; i < s.length; i++) dv.setUint8(off + i, s.charCodeAt(i)); };
+  const pcm = (v) => (v > 32767 ? 32767 : v < -32768 ? -32768 : v | 0);
+  ascii(0, "RIFF");
+  dv.setUint32(4, 36 + dataBytes, true);
+  ascii(8, "WAVE");
+  ascii(12, "fmt ");
+  dv.setUint32(16, 16, true);
+  dv.setUint16(20, 1, true);   // PCM
+  dv.setUint16(22, 2, true);   // stereo
+  dv.setUint32(24, rate, true);
+  dv.setUint32(28, rate * 4, true);
+  dv.setUint16(32, 4, true);
+  dv.setUint16(34, 16, true);
+  ascii(36, "data");
+  dv.setUint32(40, dataBytes, true);
+  let o = 44;
+  for (let i = 0; i < n; i++) {
+    dv.setInt16(o, pcm(ch0[i] * 32767), true); o += 2;
+    dv.setInt16(o, pcm(ch1[i] * 32767), true); o += 2;
+  }
+  return new Blob([buf], { type: "audio/wav" });
+}
+
+/* iOS full-chain playback: render the whole layered mix OFFLINE (an
+   OfflineAudioContext does pure DSP with no output, so iOS can't drop it — the
+   silent-clock problem only affects live AudioContext sources) and play the
+   resulting WAV through the same native <audio> element the share page uses.
+   Offsets/gains mirror the desktop mix exactly, so the volume balance matches
+   the PC browser. Falls back to the commit's own file if the render fails. */
+async function playIOSMix(commit, extra) {
+  closeAudio();
+  if (!commit || !commit.url) {
+    playNativeTrack(commit, null, "no audio file");
+    return;
+  }
+  setStudioStatus("▶ mixing…");
+  let blob = null;
+  try {
+    blob = await Promise.race([
+      renderIOSMixBlob(commit, extra),
+      new Promise((_, rej) => setTimeout(() => rej(new Error("render timed out")), 30000)),
+    ]);
+  } catch (err) {
+    setStudioStatus(`⚠ couldn't render the layered mix on this phone (${err.message}) — playing the commit alone.`, true);
+    playNativeTrack(commit, extra, "mix render failed");
+    return;
+  }
+  const mixUrl = URL.createObjectURL(blob);
+  const row = document.querySelector(`.rc-commit[data-commit="${commit.id}"]`);
+  const el = new Audio(mixUrl);
+  el.preload = "auto";
+  el._mixUrl = mixUrl; // revoked in closeAudio
+  let started = false;
+  const fail = () => {
+    if (started) return;
+    started = true;
+    try { URL.revokeObjectURL(mixUrl); } catch (_) {}
+    el._mixUrl = null;
+    setStudioStatus("⚠ couldn't play the rendered mix — open the share link or try a desktop browser.", true);
+  };
+  el.onerror = fail;
+  el.onplaying = () => {
+    if (started) return;
+    started = true; // audio is actually sounding — only now may the row go blue
+    if (row) row.classList.add("playing");
+    setStudioStatus(`▶ playing ${commitHash(commit.id)} (rendered mix)`);
+  };
+  el.onended = () => { if (started) stopPlayback(); };
+  el.play().catch(fail);
+  audioEngine.elements.push(el);
+  if (commit.repo_id) countRepoPlay(commit.repo_id);
+}
+
+/* Decode every chain layer, render the mix offline, and return a WAV Blob. */
+async function renderIOSMixBlob(commit, extra) {
+  const RATE = 44100;
+  const OAC = window.OfflineAudioContext || window.webkitOfflineAudioContext;
+  const dec = new OAC(2, 1, RATE); // decoder only — its length is irrelevant
+  const layers = [];
+  for (const { commit: c, offset } of buildChain(commit)) {
+    const layer = await decodeLayer(dec, c.url);
+    layers.push({
+      buffer: layer.buffer,
+      offset,
+      readOff: Math.max(0, (Number(c.start_time) || 0) - (Number(c.lead) || 0)),
+      dur: takeDuration(c),
+      gain: commitVolume(c),
+    });
+  }
+  if (extra && extra.url) {
+    const layer = await decodeLayer(dec, extra.url);
+    layers.push({
+      buffer: layer.buffer,
+      offset: Math.max(0, Number(extra.start_time) || 0),
+      readOff: Math.max(0, (Number(extra.start_time) || 0) - (Number(extra.lead) || 0)),
+      dur: extra.duration,
+      gain: extra.volume,
+    });
+  }
+  if (!layers.length) throw new Error("no audio layers to mix");
+  // Total length = the latest end across all sources (root plays to its end).
+  let total = 1;
+  for (const l of layers) {
+    const bufDur = l.buffer.duration || 0;
+    const readOff = Math.min(l.readOff, Math.max(0, bufDur - 0.001));
+    const readDur = l.dur != null ? l.dur : Math.max(0.05, bufDur - readOff);
+    total = Math.max(total, l.offset + readDur);
+  }
+  const len = Math.min(600, Math.max(1, total)) * RATE; // ≤ 10 min safety cap
+  const mix = new OAC(2, Math.ceil(len), RATE);
+  for (const l of layers) {
+    const bufDur = l.buffer.duration || 0;
+    const readOff = l.readOff >= bufDur ? Math.max(0, bufDur - 0.001) : l.readOff;
+    const readDur = l.dur != null ? l.dur : Math.max(0.05, bufDur - readOff);
+    const src = mix.createBufferSource();
+    src.buffer = l.buffer;
+    const g = mix.createGain();
+    g.gain.value = isFinite(l.gain) && l.gain >= 0 ? Math.min(3, l.gain) : 1;
+    src.connect(g);
+    g.connect(mix.destination);
+    src.start(l.offset, readOff, readDur);
+  }
+  const rendered = await renderOffline(mix);
+  const ch0 = rendered.getChannelData(0);
+  const ch1 = rendered.numberOfChannels > 1 ? rendered.getChannelData(1) : ch0;
+  const blob = encodeWavStereo(ch0, ch1, RATE);
+  if (!blob) throw new Error("mix encode produced nothing");
+  return blob;
 }
 
 /* "Take only" preview. Native <audio> with a blob: URL is unreliable on iOS
