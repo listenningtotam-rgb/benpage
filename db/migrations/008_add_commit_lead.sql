@@ -1,0 +1,11 @@
+-- 008_add_commit_lead.sql
+-- `lead` = seconds between the backing chain start and the take blob's zero
+-- point. New takes record from the backing start (lead = 0); older takes used
+-- a 1.5 s count-in pre-roll (lead = 1.5). At mix time the take is read from
+-- (start_time - lead), so the audible take sits exactly where it was sung
+-- regardless of where the blob's internal zero point is.
+--
+-- DEFAULT 0 backfills every existing commit: no pre-roll → blob 0 = parent 0
+-- (the historical behaviour). ADDITIVE ONLY — one new column with a constant
+-- default; ADD COLUMN fills existing rows with the default automatically.
+ALTER TABLE recording_commits ADD COLUMN lead REAL NOT NULL DEFAULT 0;

@@ -1754,3 +1754,590 @@ body {
   color: rgba(126, 200, 227, 0.8);
 }
 
+
+/* ── REC HUB ────────────────────────────────────────────── */
+.track-list {
+  max-width: 640px;
+  gap: 1rem;
+}
+
+.hub-toolbar {
+  width: 100%;
+  max-width: 640px;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  margin-bottom: 1.2rem;
+}
+
+.hub-admin,
+.studio-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  background: rgba(17, 21, 39, 0.85);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 12px;
+  padding: 0.7rem 0.9rem;
+}
+
+.hub-admin-user {
+  font-size: 0.8rem;
+  letter-spacing: 0.06em;
+  color: #9be29b;
+  font-weight: 600;
+  margin-right: auto;
+}
+
+.hub-login-note {
+  font-size: 0.85rem;
+  color: rgba(255, 255, 255, 0.5);
+}
+
+.hub-login-note a {
+  color: #7ec8e3;
+}
+
+.studio-checkout {
+  font-size: 0.8rem;
+  color: rgba(255, 255, 255, 0.7);
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.studio-status {
+  font-size: 0.8rem;
+  color: #ffd479;
+}
+
+.studio-status.error {
+  color: #ff5f56;
+}
+
+.studio-device {
+  max-width: 180px;
+  font-size: 0.78rem;
+  color: #fff;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 8px;
+  padding: 0.35rem 0.5rem;
+  cursor: pointer;
+}
+
+.studio-device option {
+  color: #11152a;
+}
+
+.studio-phones {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.78rem;
+  color: rgba(255, 255, 255, 0.75);
+  cursor: pointer;
+  white-space: nowrap;
+  user-select: none;
+}
+
+.studio-phones input {
+  accent-color: #9be29b;
+  cursor: pointer;
+}
+
+.rc-btn {
+  border: none;
+  border-radius: 999px;
+  padding: 0.5rem 1.1rem;
+  font-size: 0.82rem;
+  letter-spacing: 0.05em;
+  cursor: pointer;
+  font-weight: 600;
+  transition: background 0.18s ease, transform 0.12s ease, opacity 0.18s ease;
+  color: #fff;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+}
+
+.rc-btn:hover {
+  background: rgba(255, 255, 255, 0.16);
+}
+
+.rc-btn:active {
+  transform: scale(0.97);
+}
+
+.rc-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  transform: none;
+}
+
+.rc-btn-primary {
+  background: #ff5500;
+  border-color: #ff5500;
+  box-shadow: 0 2px 12px rgba(255, 85, 0, 0.35);
+}
+
+.rc-btn-primary:hover {
+  background: #ff6b1f;
+}
+
+.rc-btn-record {
+  background: #e0245e;
+  border-color: #e0245e;
+  box-shadow: 0 0 14px rgba(224, 36, 94, 0.4);
+}
+
+.rc-btn-record:hover {
+  background: #f0386d;
+}
+
+.rc-btn-ghost {
+  background: transparent;
+}
+
+.rc-icon-btn {
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  color: rgba(255, 255, 255, 0.7);
+  border-radius: 8px;
+  width: 32px;
+  height: 32px;
+  cursor: pointer;
+  font-size: 0.9rem;
+  transition: background 0.18s ease, color 0.18s ease;
+}
+
+.rc-icon-btn:hover {
+  background: rgba(255, 255, 255, 0.14);
+  color: #fff;
+}
+
+.repo-list {
+  width: 100%;
+  max-width: 640px;
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+}
+
+.rc-repo {
+  background: rgba(17, 21, 39, 0.85);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 12px;
+  overflow: hidden;
+  transition: border-color 0.2s ease, background 0.2s ease;
+}
+
+.rc-repo:hover {
+  border-color: rgba(255, 255, 255, 0.16);
+  background: rgba(30, 35, 60, 0.95);
+}
+
+.rc-repo-head {
+  display: flex;
+  align-items: center;
+  gap: 0.9rem;
+  padding: 0.8rem 1rem;
+}
+
+.rc-play {
+  width: 44px;
+  height: 44px;
+  margin-top: 0;
+  flex: 0 0 auto;
+}
+
+.rc-repo-main {
+  flex: 1;
+  min-width: 0;
+}
+
+.rc-repo-title {
+  font-size: 1rem;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.rc-repo-meta {
+  font-size: 0.75rem;
+  color: rgba(255, 255, 255, 0.45);
+  letter-spacing: 0.03em;
+  margin-top: 0.15rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.rc-repo-actions {
+  display: flex;
+  gap: 0.4rem;
+  flex: 0 0 auto;
+}
+
+
+.rc-commit-list {
+  border-top: 1px solid rgba(255, 255, 255, 0.07);
+  background: rgba(8, 11, 28, 0.5);
+}
+
+.rc-commit-list-inner {
+  display: flex;
+  flex-direction: column;
+}
+
+.rc-commit {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.6rem 1rem 0.6rem 1.15rem;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+.rc-commit:last-child {
+  border-bottom: none;
+}
+
+.rc-commit:hover {
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.rc-commit.checked-out {
+  background: rgba(255, 85, 0, 0.08);
+  box-shadow: inset 3px 0 0 #ff5500;
+}
+
+.rc-commit.playing {
+  background: rgba(126, 200, 227, 0.08);
+}
+
+.rc-commit-main {
+  flex: 1;
+  min-width: 0;
+}
+
+.rc-commit-line {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.rc-hash {
+  font-family: "SF Mono", Menlo, monospace;
+  font-size: 0.72rem;
+  color: #9be29b;
+  background: rgba(155, 226, 155, 0.08);
+  border: 1px solid rgba(155, 226, 155, 0.18);
+  border-radius: 6px;
+  padding: 0.1rem 0.4rem;
+  flex: 0 0 auto;
+}
+
+.rc-msg {
+  font-size: 0.9rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+.rc-badge {
+  font-size: 0.62rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  border-radius: 999px;
+  padding: 0.14rem 0.55rem;
+  flex: 0 0 auto;
+}
+
+.rc-badge-single {
+  color: #7ec8e3;
+  background: rgba(126, 200, 227, 0.12);
+  border: 1px solid rgba(126, 200, 227, 0.25);
+}
+
+.rc-badge-overlay {
+  color: #ffd479;
+  background: rgba(255, 212, 121, 0.1);
+  border: 1px solid rgba(255, 212, 121, 0.25);
+}
+
+.rc-commit-meta {
+  display: flex;
+  align-items: center;
+  gap: 0.8rem;
+  flex-wrap: wrap;
+  font-size: 0.72rem;
+  color: rgba(255, 255, 255, 0.4);
+  margin-top: 0.25rem;
+}
+
+.rc-range {
+  font-family: "SF Mono", Menlo, monospace;
+}
+
+.rc-vol {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.7rem;
+  color: rgba(255, 255, 255, 0.45);
+  white-space: nowrap;
+}
+
+.rc-vol input[type="range"] {
+  width: 64px;
+  accent-color: #7ec8e3;
+  cursor: pointer;
+}
+
+.rc-vol-val {
+  font-family: "SF Mono", Menlo, monospace;
+  min-width: 2.8em;
+  text-align: right;
+  color: rgba(255, 255, 255, 0.65);
+}
+
+.rc-parent {
+  color: rgba(255, 255, 255, 0.3);
+}
+
+.rc-parent-root {
+  color: rgba(255, 255, 255, 0.25);
+}
+
+.rc-contributor {
+  color: rgba(255, 255, 255, 0.55);
+  font-weight: 600;
+}
+
+/* Commit time + contributor grouped as one non-wrapping unit. */
+.rc-byline {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  white-space: nowrap;
+}
+
+.rc-checked {
+  color: #ff7a2f;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+}
+
+.rc-commit-play {
+  width: 30px;
+  height: 30px;
+}
+
+.rc-commit-delete {
+  width: 30px;
+  height: 30px;
+}
+
+.rc-commit-delete:hover {
+  background: rgba(255, 85, 85, 0.16);
+  border-color: rgba(255, 85, 85, 0.4);
+  color: #ff6b6b;
+}
+
+/* Modal */
+.rc-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 300;
+  background: rgba(3, 6, 18, 0.85);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  overflow-y: auto;
+  padding: 1.5rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.rc-modal-inner {
+  width: 100%;
+  max-width: 460px;
+  background: rgba(6, 10, 30, 0.96);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 16px;
+  padding: 2rem 1.8rem 1.8rem;
+  position: relative;
+  box-shadow: 0 12px 60px rgba(0, 0, 0, 0.6);
+  animation: panelIn 0.25s ease;
+  margin: auto 0;
+}
+
+.rc-modal-close {
+  position: absolute;
+  top: 0.55rem;
+  right: 0.9rem;
+  background: none;
+  border: none;
+  color: rgba(255, 255, 255, 0.5);
+  font-size: 1.7rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.rc-modal-close:hover {
+  color: #fff;
+}
+
+.rc-modal-title {
+  font-size: 1.25rem;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+}
+
+.rc-modal-sub {
+  font-size: 0.8rem;
+  color: rgba(255, 255, 255, 0.45);
+  margin: 0.35rem 0 1.1rem;
+}
+
+.rc-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  font-size: 0.78rem;
+  letter-spacing: 0.05em;
+  color: rgba(255, 255, 255, 0.6);
+  margin-bottom: 0.85rem;
+}
+
+.rc-field input,
+.rc-field select {
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 8px;
+  color: #fff;
+  padding: 0.55rem 0.7rem;
+  font-size: 0.9rem;
+  font-family: inherit;
+  width: 100%;
+}
+
+.rc-field input:focus,
+.rc-field select:focus {
+  outline: none;
+  border-color: rgba(126, 200, 227, 0.6);
+}
+
+.rc-field-row {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 0.7rem;
+}
+
+.rc-vol-field {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  font-size: 0.78rem;
+  letter-spacing: 0.05em;
+  color: rgba(255, 255, 255, 0.6);
+  margin-bottom: 0.85rem;
+}
+
+.rc-vol-field input[type="range"] {
+  flex: 1;
+  accent-color: #7ec8e3;
+  cursor: pointer;
+}
+
+.rc-vol-field .rc-vol-pct {
+  min-width: 3.2em;
+  text-align: right;
+  font-family: "SF Mono", Menlo, monospace;
+  font-size: 0.75rem;
+  color: #fff;
+}
+
+.rc-timer-wrap {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.7rem;
+  padding: 1.2rem 0;
+}
+
+.rc-timer {
+  font-family: "SF Mono", Menlo, monospace;
+  font-size: 2.2rem;
+  font-weight: 700;
+  color: #fff;
+  letter-spacing: 0.04em;
+}
+
+.rc-rec-dot {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: #e0245e;
+  animation: live-pulse 1.4s ease-in-out infinite;
+}
+
+.rc-modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.7rem;
+  margin-top: 1.2rem;
+  flex-wrap: wrap;
+}
+
+.rc-preview-row {
+  display: flex;
+  gap: 0.6rem;
+  margin-bottom: 1.2rem;
+  flex-wrap: wrap;
+}
+
+.rc-source-row {
+  display: flex;
+  gap: 0.6rem;
+  align-items: center;
+  flex-wrap: wrap;
+  margin-bottom: 0.6rem;
+}
+
+.rc-source-status {
+  font-size: 0.78rem;
+  color: rgba(255, 255, 255, 0.55);
+  min-height: 1rem;
+}
+
+.rc-hint {
+  font-size: 0.72rem;
+  color: rgba(255, 255, 255, 0.35);
+  margin-top: -0.2rem;
+}
+
+.empty-note {
+  color: rgba(255, 255, 255, 0.4);
+  text-align: center;
+  font-size: 0.9rem;
+  padding: 1rem 0;
+}
+
+@media (max-width: 520px) {
+  .rc-field-row {
+    grid-template-columns: 1fr;
+  }
+}
+

@@ -198,7 +198,14 @@ function changePassword(id, newPassword) {
 
 /* ── Music ─────────────────────────────────────────────── */
 function listMusic() {
-  return db.prepare("SELECT * FROM music ORDER BY sort_order ASC, id DESC").all();
+  return db
+    .prepare(
+      `SELECT m.*,
+              (SELECT COUNT(*) FROM recording_commits c WHERE c.repo_id = m.id) AS commit_count
+         FROM music m
+        ORDER BY m.sort_order ASC, m.id DESC`
+    )
+    .all();
 }
 
 function getMusic(id) {
@@ -224,7 +231,120 @@ function updateMusic(id, { title, url, sort_order }) {
 }
 
 function deleteMusic(id) {
+  // Remove its recording commits too (additive-safe: table exists post-005).
+  db.prepare("DELETE FROM recording_commits WHERE repo_id = ?").run(id);
   db.prepare("DELETE FROM music WHERE id = ?").run(id);
+}
+
+/* ── Recording commits (recording hub) ─────────────────── */
+/* Git-like layer on top of music: each music row is a "repo" (a recording
+   project) and every take is a commit. A commit stores the sound file,
+   where the take sits inside the parent's playback timeline (start/end in
+   seconds), and whether the take is standalone ('single') or layered on
+   the parent ('overlay'). */
+
+function listRecordingRepos() {
+  return db
+    .prepare(
+      `SELECT m.*,
+              (SELECT COUNT(*) FROM recording_commits c WHERE c.repo_id = m.id) AS commit_count,
+              (SELECT c.id         FROM recording_commits c WHERE c.repo_id = m.id ORDER BY c.id DESC LIMIT 1) AS head_commit_id,
+              (SELECT c.message    FROM recording_commits c WHERE c.repo_id = m.id ORDER BY c.id DESC LIMIT 1) AS head_message,
+              (SELECT c.url        FROM recording_commits c WHERE c.repo_id = m.id ORDER BY c.id DESC LIMIT 1) AS head_url,
+              (SELECT c.created_at FROM recording_commits c WHERE c.repo_id = m.id ORDER BY c.id DESC LIMIT 1) AS head_created_at
+         FROM music m
+        ORDER BY m.sort_order ASC, m.id DESC`
+    )
+    .all();
+}
+
+function listRecordingCommits(repoId) {
+  return db
+    .prepare(
+      `SELECT c.*,
+              p.message AS parent_message,
+              p.url     AS parent_url
+         FROM recording_commits c
+         LEFT JOIN recording_commits p ON p.id = c.parent_id
+        WHERE c.repo_id = ?
+        ORDER BY c.id ASC`
+    )
+    .all(repoId);
+}
+
+function getRecordingCommit(id) {
+  return db.prepare("SELECT * FROM recording_commits WHERE id = ?").get(id) || null;
+}
+
+function clampCommitVolume(v) {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return 1.0;
+  return Math.min(3, Math.max(0, n));
+}
+
+/* Count-in pre-roll (seconds) between the backing chain start and the take
+   blob's zero point. Only the first few seconds are ever meaningful — the
+   browser's DSP converges that quickly — so clamp rather than trust the
+   client. 0 = no pre-roll (every pre-existing commit). */
+function clampCommitLead(v) {
+  const n = Number(v);
+  if (!Number.isFinite(n) || n < 0) return 0;
+  return Math.min(5, n);
+}
+
+/* Contributor name stored on the commit: trimmed, single-spaced, ≤ 60 chars.
+   Blank/absent falls back to the site admin — the only account today. */
+function cleanContributor(v) {
+  const s = typeof v === "string" ? v.trim().replace(/\s+/g, " ").slice(0, 60) : "";
+  return s || ADMIN_USERNAME;
+}
+
+function createRecordingCommit({ repo_id, parent_id, message, url, start_time, end_time, mode, volume, lead, contributor }) {
+  const info = db
+    .prepare(
+      `INSERT INTO recording_commits (repo_id, parent_id, message, url, start_time, end_time, mode, volume, lead, contributor)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    )
+    .run(
+      repo_id,
+      parent_id || null,
+      message,
+      url,
+      Number.isFinite(start_time) && start_time >= 0 ? start_time : 0,
+      Number.isFinite(end_time) && end_time > 0 ? end_time : null,
+      mode === "overlay" ? "overlay" : "single",
+      clampCommitVolume(volume),
+      clampCommitLead(lead),
+      cleanContributor(contributor)
+    );
+  return getRecordingCommit(info.lastInsertRowid);
+}
+
+function updateRecordingCommitVolume(id, volume) {
+  db.prepare("UPDATE recording_commits SET volume = ? WHERE id = ?").run(clampCommitVolume(volume), id);
+  return getRecordingCommit(id);
+}
+
+function deleteRecordingCommit(id) {
+  // Orphan any children so the chain still plays: same behaviour as the
+  // FK's ON DELETE SET NULL, but explicit so it works even without
+  // PRAGMA foreign_keys enabled.
+  db.prepare("UPDATE recording_commits SET parent_id = NULL WHERE parent_id = ?").run(id);
+  db.prepare("DELETE FROM recording_commits WHERE id = ?").run(id);
+}
+
+/* True when any row still points at this audio URL — either another commit
+   (any repo) or the music row itself (the repo's initial commit shares its
+   URL with music.url). The caller deletes the file only when this is false. */
+function isRecordingUrlReferenced(url) {
+  if (!url) return false;
+  if (db.prepare("SELECT 1 FROM recording_commits WHERE url = ? LIMIT 1").get(url)) return true;
+  if (db.prepare("SELECT 1 FROM music WHERE url = ? LIMIT 1").get(url)) return true;
+  return false;
+}
+
+function deleteRecordingCommits(repoId) {
+  db.prepare("DELETE FROM recording_commits WHERE repo_id = ?").run(repoId);
 }
 
 /* ── Blog ──────────────────────────────────────────────── */
@@ -334,6 +454,14 @@ module.exports = {
   createMusic,
   updateMusic,
   deleteMusic,
+  listRecordingRepos,
+  listRecordingCommits,
+  getRecordingCommit,
+  createRecordingCommit,
+  updateRecordingCommitVolume,
+  deleteRecordingCommit,
+  isRecordingUrlReferenced,
+  deleteRecordingCommits,
   listBlogPosts,
   getBlogPost,
   createBlogPost,

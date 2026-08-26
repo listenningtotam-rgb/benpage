@@ -153,13 +153,16 @@ const API_PROXIES = {
 // blob: the CSP blocks that preview and every upload fails with
 // "Could not read image". Old photos keep working because they are served
 // from /photo/... (same-origin 'self').
+// media-src/connect-src also need blob: — the recording hub plays and decodes
+// in-browser MediaRecorder takes (webm/opus) that only ever exist as blob:
+// URLs until they are uploaded and committed.
 const CSP = [
   "default-src 'self'",
   "script-src 'self'",
   "style-src 'self'",
   "img-src 'self' data: https: blob:",
-  "media-src 'self' https:",
-  "connect-src 'self' https://open.er-api.com",
+  "media-src 'self' https: blob:",
+  "connect-src 'self' https://open.er-api.com blob:",
   "frame-ancestors 'none'",
   "base-uri 'self'",
   "form-action 'self'",
@@ -1037,7 +1040,19 @@ async function handleApi(req, res, urlPath) {
     if (!title || !url) {
       return json(res, 400, { error: "Title and URL are required" });
     }
-    return json(res, 201, db.createMusic({ title, url, sort_order: body.sort_order }));
+    const track = db.createMusic({ title, url, sort_order: body.sort_order });
+    // Every repo must have an initial commit — create one automatically.
+    db.createRecordingCommit({
+      repo_id: track.id,
+      parent_id: null,
+      message: title,
+      url,
+      start_time: 0,
+      end_time: null,
+      mode: "single",
+      contributor: authUser.username,
+    });
+    return json(res, 201, track);
   }
 
   const musicMatch = urlPath.match(/^\/api\/music\/(\d+)$/);
@@ -1064,6 +1079,140 @@ async function handleApi(req, res, urlPath) {
       db.deleteMusic(id);
       return json(res, 200, { ok: true });
     }
+  }
+
+  // ── Recording hub API ─────────────────────────────────
+  // music rows are recording "repos"; every take is a recording_commits row.
+  //   GET  /api/recordings                  → public, all repos + commits
+  //   POST /api/recordings                  → admin, init a new recording
+  //   GET/POST /api/recordings/:id/commits  → public list / admin add commit
+  //   PATCH /api/recordings/:id/commits/:cid → admin, update commit volume
+  //   DELETE /api/recordings/:id/commits/:cid → admin, delete a commit
+  //   DELETE /api/recordings/:id            → admin, remove repo + commits
+  if (urlPath === "/api/recordings" && req.method === "GET") {
+    const repos = db.listRecordingRepos();
+    for (const repo of repos) {
+      repo.commits = db.listRecordingCommits(repo.id);
+    }
+    return json(res, 200, { repos });
+  }
+
+  if (urlPath === "/api/recordings" && req.method === "POST") {
+    if (!requireAuth()) return;
+    const body = await readBody(req);
+    const title = cleanText(body.title, 300);
+    const message = cleanText(body.message, 500) || "Initial recording";
+    const url = cleanText(body.url, 1000);
+    if (!title || !url) {
+      return json(res, 400, { error: "Title and audio URL are required" });
+    }
+    const repo = db.createMusic({ title, url, sort_order: body.sort_order });
+    const commit = db.createRecordingCommit({
+      repo_id: repo.id,
+      parent_id: null,
+      message,
+      url,
+      start_time: parseFloat(body.start_time),
+      end_time: parseFloat(body.end_time),
+      mode: "single",
+      volume: parseFloat(body.volume),
+      contributor: cleanText(body.contributor, 60) || authUser.username,
+    });
+    return json(res, 201, { repo: db.getMusic(repo.id), commit });
+  }
+
+  const repoCommitsMatch = urlPath.match(/^\/api\/recordings\/(\d+)\/commits$/);
+  if (repoCommitsMatch) {
+    const repoId = Number(repoCommitsMatch[1]);
+    const repo = db.getMusic(repoId);
+    if (!repo) return json(res, 404, { error: "Recording not found" });
+
+    if (req.method === "GET") {
+      return json(res, 200, { repo, commits: db.listRecordingCommits(repoId) });
+    }
+
+    if (req.method === "POST") {
+      if (!requireAuth()) return;
+      const body = await readBody(req);
+      const message = cleanText(body.message, 500);
+      const url = cleanText(body.url, 1000);
+      if (!message || !url) {
+        return json(res, 400, { error: "Commit message and audio URL are required" });
+      }
+      const parentId = body.parent_id ? Number(body.parent_id) : null;
+      if (parentId) {
+        const parent = db.getRecordingCommit(parentId);
+        if (!parent || parent.repo_id !== repoId) {
+          return json(res, 400, { error: "Parent commit not found in this recording" });
+        }
+      }
+      const commit = db.createRecordingCommit({
+        repo_id: repoId,
+        parent_id: parentId,
+        message,
+        url,
+        start_time: parseFloat(body.start_time),
+        end_time: parseFloat(body.end_time),
+        mode: body.mode === "single" ? "single" : "overlay",
+        volume: parseFloat(body.volume),
+        lead: parseFloat(body.lead),
+        contributor: cleanText(body.contributor, 60) || authUser.username,
+      });
+      return json(res, 201, { commit });
+    }
+  }
+
+  const commitPatchMatch = urlPath.match(/^\/api\/recordings\/(\d+)\/commits\/(\d+)$/);
+  if (commitPatchMatch && req.method === "PATCH") {
+    if (!requireAuth()) return;
+    const repoId = Number(commitPatchMatch[1]);
+    const commitId = Number(commitPatchMatch[2]);
+    const repo = db.getMusic(repoId);
+    if (!repo) return json(res, 404, { error: "Recording not found" });
+    const existing = db.getRecordingCommit(commitId);
+    if (!existing || existing.repo_id !== repoId) {
+      return json(res, 404, { error: "Commit not found in this recording" });
+    }
+    const body = await readBody(req);
+    const volume = parseFloat(body.volume);
+    if (!Number.isFinite(volume)) {
+      return json(res, 400, { error: "volume must be a number" });
+    }
+    const commit = db.updateRecordingCommitVolume(commitId, volume);
+    return json(res, 200, { commit });
+  }
+
+  if (commitPatchMatch && req.method === "DELETE") {
+    if (!requireAuth()) return;
+    const repoId = Number(commitPatchMatch[1]);
+    const commitId = Number(commitPatchMatch[2]);
+    const repo = db.getMusic(repoId);
+    if (!repo) return json(res, 404, { error: "Recording not found" });
+    const existing = db.getRecordingCommit(commitId);
+    if (!existing || existing.repo_id !== repoId) {
+      return json(res, 404, { error: "Commit not found in this recording" });
+    }
+    const fileUrl = existing.url;
+    db.deleteRecordingCommit(commitId);
+    // Remove the underlying audio file, but only when nothing else still
+    // references it (the repo's initial commit shares its URL with music.url,
+    // and the same file could have been reused by another commit).
+    if (fileUrl && fileUrl.startsWith(RECORDING_URL_PREFIX) && !db.isRecordingUrlReferenced(fileUrl)) {
+      const filePath = path.join(RECORDING_DIR, path.normalize(fileUrl.slice(RECORDING_URL_PREFIX.length)));
+      if (filePath.startsWith(path.resolve(RECORDING_DIR) + path.sep)) {
+        fs.unlink(filePath, () => {}); // best-effort: missing files are fine
+      }
+    }
+    return json(res, 200, { ok: true });
+  }
+
+  const repoDeleteMatch = urlPath.match(/^\/api\/recordings\/(\d+)$/);
+  if (repoDeleteMatch && req.method === "DELETE") {
+    if (!requireAuth()) return;
+    const repoId = Number(repoDeleteMatch[1]);
+    if (!db.getMusic(repoId)) return json(res, 404, { error: "Recording not found" });
+    db.deleteMusic(repoId); // deletes its commits too
+    return json(res, 200, { ok: true });
   }
 
   // ── Blog API ──────────────────────────────────────────

@@ -215,7 +215,7 @@ async function loadMusic() {
       <div class="item-card">
         <div class="item-info">
           <div class="item-title">${escapeHTML(t.title)}</div>
-          <div class="item-sub">${escapeHTML(t.url)} · ${t.play_count || 0} plays</div>
+          <div class="item-sub">${escapeHTML(t.url)} · ${t.commit_count != null ? t.commit_count + " commit" + (t.commit_count === 1 ? "" : "s") + " · " : ""}${t.play_count || 0} plays</div>
         </div>
         <div class="item-actions">
           <button type="button" class="btn btn-ghost btn-sm" data-action="edit-music" data-id="${t.id}">Edit</button>
