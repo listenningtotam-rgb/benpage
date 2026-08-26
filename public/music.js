@@ -389,7 +389,12 @@ async function decodeBuffer(ctx, url) {
   const res = await fetch(url, { cache: "no-cache" });
   if (!res.ok) throw new Error("Could not load audio: " + url);
   const ab = await res.arrayBuffer();
-  const buf = await ctx.decodeAudioData(ab);
+  let buf;
+  try {
+    buf = await ctx.decodeAudioData(ab);
+  } catch (err) {
+    throw new Error("Could not decode audio on this browser: " + url + " — " + (err && err.message ? err.message : "decodeAudioData failed"));
+  }
   bufferCache.set(url, buf);
   return buf;
 }
@@ -493,10 +498,15 @@ async function playCommit(commit, extra) {
       })()
     );
   }
-  await Promise.allSettled(jobs);
+  const results = await Promise.allSettled(jobs);
+  const failed = results.filter((r) => r.status === "rejected");
   const row = document.querySelector(`.rc-commit[data-commit="${commit.id}"]`);
   if (row) row.classList.add("playing");
-  setStudioStatus(`▶ playing ${commitHash(commit.id)}`);
+  if (failed.length) {
+    setStudioStatus("⚠ " + failed.length + " layer(s) couldn't be decoded for playback on this browser — " + failed[0].reason.message, true);
+  } else {
+    setStudioStatus(`▶ playing ${commitHash(commit.id)}`);
+  }
   countRepoPlay(commit.repo_id);
 }
 
@@ -616,18 +626,156 @@ function muteBackingForTake() {
    actually playing through speakers do they stay ON — they're the only defense
    against backing bleed. */
 function takeMicConstraints() {
+  if (isIOS()) {
+    // iOS Safari can return a silent capture when echo cancellation / AGC are
+    // forced off, and its own DSP is solid — so on iOS keep the browser
+    // defaults on regardless of the headphone / "No backing" flags.
+    return { ...RECORD_AUDIO_CONSTRAINTS };
+  }
   if (localStorage.getItem(STUDIO_PHONES_KEY) === "1" || muteBackingForTake()) {
     return { echoCancellation: false, noiseSuppression: false, autoGainControl: false, channelCount: 1 };
   }
   return { ...RECORD_AUDIO_CONSTRAINTS };
 }
 
+/* iOS Safari identifies itself; its WebKit engine also powers Chrome/Firefox
+   on iPhone/iPad. */
+function isIOS() {
+  return (
+    /iPad|iPhone|iPod/.test(navigator.userAgent) ||
+    (typeof navigator.platform === "string" &&
+      navigator.platform === "MacIntel" &&
+      navigator.maxTouchPoints > 1)
+  );
+}
+
 function makeRecorder(stream) {
-  const mime =
-    typeof MediaRecorder !== "undefined" && MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
-      ? "audio/webm;codecs=opus"
-      : "";
-  return new MediaRecorder(stream, { ...(mime ? { mimeType: mime } : {}), audioBitsPerSecond: 128000 });
+  if (typeof MediaRecorder === "undefined") return null;
+  // Chrome/Firefox: webm/opus. Safari/iOS: only audio/mp4 exists.
+  let mime = "";
+  if (MediaRecorder.isTypeSupported("audio/webm;codecs=opus")) mime = "audio/webm;codecs=opus";
+  else if (MediaRecorder.isTypeSupported("audio/mp4")) mime = "audio/mp4";
+  return new MediaRecorder(stream, mime ? { mimeType: mime, audioBitsPerSecond: 128000 } : { audioBitsPerSecond: 128000 });
+}
+
+/* Encode recorded Float32 mono samples into a 16-bit PCM WAV Blob. WAV is the
+   one container every Web Audio decodeAudioData (including Safari/iOS) can
+   decode, which MediaRecorder's audio/mp4 output on iOS often cannot — that
+   decode-silence is the #1 cause of "the iPhone take can't be heard". */
+function encodeWav(chunks, inRate, outRate) {
+  const total = chunks.reduce((n, c) => n + c.length, 0);
+  if (!total) return null;
+  const ratio = inRate / outRate;
+  const max = Math.max(1, Math.round(total / ratio));
+  const out = new Int16Array(max);
+  let o = 0;
+  let acc = 0;
+  let cnt = 0;
+  const push = () => {
+    let s = (acc / cnt) * 32767;
+    out[o++] = s > 32767 ? 32767 : s < -32768 ? -32768 : s | 0;
+    acc = 0;
+    cnt = 0;
+  };
+  for (let k = 0; k < chunks.length; k++) {
+    const ch = chunks[k];
+    for (let i = 0; i < ch.length; i++) {
+      acc += ch[i];
+      cnt++;
+      if (cnt >= ratio) push();
+    }
+  }
+  if (cnt > 0 && o < max) push();
+  const n = o;
+  const dataBytes = n * 2;
+  const buf = new ArrayBuffer(44 + dataBytes);
+  const dv = new DataView(buf);
+  const ascii = (off, s) => { for (let i = 0; i < s.length; i++) dv.setUint8(off + i, s.charCodeAt(i)); };
+  ascii(0, "RIFF");
+  dv.setUint32(4, 36 + dataBytes, true);
+  ascii(8, "WAVE");
+  ascii(12, "fmt ");
+  dv.setUint32(16, 16, true);
+  dv.setUint16(20, 1, true);   // PCM
+  dv.setUint16(22, 1, true);   // mono
+  dv.setUint32(24, outRate, true);
+  dv.setUint32(28, outRate * 2, true);
+  dv.setUint16(32, 2, true);
+  dv.setUint16(34, 16, true);
+  ascii(36, "data");
+  dv.setUint32(40, dataBytes, true);
+  for (let i = 0; i < n; i++) dv.setInt16(44 + i * 2, out[i], true);
+  return new Blob([buf], { type: "audio/wav" });
+}
+
+/* One recorder interface for a take session. On iOS (and any browser with no
+   MediaRecorder) we bypass MediaRecorder and capture the mic through the
+   AudioContext into a WAV — Safari's Web Audio cannot decode its own
+   MediaRecorder audio/mp4, which is why iPhone takes used to be silent in the
+   mix. The blob timeline is identical either way (it starts at the same instant
+   the backing starts), so onTakeStopped treats both paths the same. */
+function createTakeRecorder(ctx, stream) {
+  return createRecorder(ctx, stream, {
+    onData: (chunk) => { if (chunk && chunk.size) studio.chunks.push(chunk); },
+    onStop: () => onTakeStopped(),
+  });
+}
+
+/* Shared mic→recorder factory. MediaRecorder when possible (webm on
+   Chrome/Firefox); on iOS it records to WAV so Web Audio can decode it later. */
+function createRecorder(ctxIn, stream, handlers) {
+  if (!isIOS() && typeof MediaRecorder !== "undefined") {
+    const rec = makeRecorder(stream);
+    if (rec) {
+      rec.ondataavailable = (e) => { if (e.data && e.data.size) handlers.onData(e.data); };
+      rec.onstop = () => handlers.onStop();
+      return {
+        get mimeType() { return rec.mimeType || "audio/webm"; },
+        get state() { return rec.state; },
+        start: () => { rec.start(250); },
+        stop: () => { try { rec.stop(); } catch (_) {} },
+      };
+    }
+  }
+  // PCM → WAV capture through an AudioContext.
+  const ownCtx = !ctxIn;
+  const ctx = ctxIn || new (window.AudioContext || window.webkitAudioContext)();
+  const src = ctx.createMediaStreamSource(stream);
+  const proc = ctx.createScriptProcessor(4096, 1, 1);
+  const sink = ctx.createGain();
+  sink.gain.value = 0; // pull the graph without feeding the mic back to the speakers
+  src.connect(proc);
+  proc.connect(sink);
+  sink.connect(ctx.destination);
+  const pcm = [];
+  let running = false;
+  let stopped = false;
+  proc.onaudioprocess = (e) => {
+    if (!running) return;
+    const ib = e.inputBuffer;
+    const c0 = ib.getChannelData(0);
+    if (ib.numberOfChannels > 1) {
+      const c1 = ib.getChannelData(1);
+      const m = new Float32Array(c0.length);
+      for (let i = 0; i < c0.length; i++) m[i] = (c0[i] + c1[i]) / 2;
+      pcm.push(m);
+    } else {
+      pcm.push(new Float32Array(c0));
+    }
+  };
+  return {
+    get mimeType() { return "audio/wav"; },
+    get state() { return stopped ? "inactive" : running ? "recording" : "inactive"; },
+    start: () => { running = true; ctx.resume().catch(() => {}); },
+    stop: () => {
+      if (stopped) return;
+      stopped = true;
+      running = false;
+      try { src.disconnect(); proc.disconnect(); sink.disconnect(); } catch (_) {}
+      if (ownCtx) ctx.close().catch(() => {});
+      handlers.onStop(encodeWav(pcm, ctx.sampleRate || 44100, 22050));
+    },
+  };
 }
 
 async function getUserMic() {
@@ -813,14 +961,18 @@ async function startTakeRecording() {
 
   // Record the RAW mic stream directly — same capture path as the initial
   // recording. The take is the clean dry mic: nothing from the backing or the
-  // AudioContext graph is connected to this MediaRecorder, and the mic is not
+  // AudioContext graph is connected to this recorder, and the mic is not
   // routed to the speakers, so monitor playback can never contaminate the take.
-  studio.recorder = makeRecorder(stream);
   studio.chunks = [];
-  studio.recorder.ondataavailable = (e) => {
-    if (e.data && e.data.size) studio.chunks.push(e.data);
-  };
-  studio.recorder.onstop = onTakeStopped;
+  studio.takeLevel = null;
+  studio.recorder = createTakeRecorder(ctx, stream);
+  if (!studio.recorder) {
+    studio.recording = false;
+    cleanupTakeMedia();
+    renderHub();
+    setStudioStatus("✗ this browser cannot record audio (no MediaRecorder or Web Audio capture)", true);
+    return;
+  }
   // The take blob starts at the same instant as the backing (blob zero = root
   // zero), so lead is 0 and the take is positioned purely by its detected
   // start_time. Recording from the backing start is the key to a clean take
@@ -927,10 +1079,10 @@ function cancelTake() {
   renderHub();
 }
 
-function onTakeStopped() {
+function onTakeStopped(blobOverride) {
   const cancelled = studio.cancelled;
-  const type = (studio.recorder && studio.recorder.mimeType) || "audio/webm";
-  const blob = new Blob(studio.chunks, { type });
+  const type = (blobOverride && blobOverride.type) || (studio.recorder && studio.recorder.mimeType) || "audio/webm";
+  const blob = blobOverride || new Blob(studio.chunks, { type });
   clearInterval(studio.timerId);
   studio.recording = false;
   setRecordUI(false); // button stays "… recording" until renderHub; restore it here too
@@ -943,6 +1095,7 @@ function onTakeStopped() {
     studio.takeDuration = info.duration;
     studio.takeStartGuess = info.start;
     studio.takeEndGuess = info.end;
+    studio.takeLevel = info.level;
     openTakePreview();
   });
 }
@@ -996,11 +1149,16 @@ function analyzeTake(blob) {
         const thr = 0.01;                                 // ~ -40 dBFS
         let first = -1;
         let last = -1;
+        let sumSq = 0;
+        let winCount = 0;
         for (let i = 0; i < ch.length; i += win) {
           let sum = 0;
           const end = Math.min(ch.length, i + win);
           for (let j = i; j < end; j++) { const s = ch[j]; sum += s * s; }
-          if (Math.sqrt(sum / (end - i)) > thr) {
+          const rms = Math.sqrt(sum / (end - i));
+          sumSq += rms * rms;
+          winCount++;
+          if (rms > thr) {
             if (first < 0) first = i;
             last = end;
           }
@@ -1010,6 +1168,9 @@ function analyzeTake(blob) {
           duration,
           start: first >= 0 ? Math.max(0, first / rate - PAD) : 0,
           end: last >= 0 ? Math.min(duration, last / rate + PAD) : duration,
+          // Overall RMS — lets the Review modal warn when the take came out
+          // silent (e.g. an iOS mic that captured nothing).
+          level: winCount ? Math.sqrt(sumSq / winCount) : 0,
         });
       })
       .catch(() => {
@@ -1021,7 +1182,7 @@ function analyzeTake(blob) {
           new Promise((r) => setTimeout(() => r(0), 3000)),
         ]).then((d) => {
           const dur = isFinite(d) && d > 0 ? d : 0;
-          resolve({ duration: dur, start: 0, end: dur });
+          resolve({ duration: dur, start: 0, end: dur, level: null });
         });
       });
   });
@@ -1060,6 +1221,16 @@ function openTakePreview() {
   // commits whose blob started after a pre-roll.
   const start = (isFinite(studio.takeStartGuess) && studio.takeStartGuess > 0 ? studio.takeStartGuess : 0) + (studio.lead || 0);
   const contributorDefault = (hub.user && (hub.user.username || hub.user.name)) || "admin";
+  const warnings = [];
+  if (typeof studio.takeLevel === "number" && studio.takeLevel < 0.002) {
+    warnings.push("This take decoded as silent / very quiet — the mic may not have captured your voice (a known iOS mic issue). Re-record, and check the iPhone isn’t muted.");
+  }
+  if (studio.blob && studio.blob.size > 4.5 * 1024 * 1024) {
+    warnings.push(`This take is ${(studio.blob.size / (1024 * 1024)).toFixed(1)} MB — near the 5 MB upload cap. Consider re-recording a shorter take.`);
+  }
+  const warnHtml = warnings.length
+    ? warnings.map((w) => `<p class="rc-hint" style="color:#c0392b;font-weight:600">⚠ ${w}</p>`).join("")
+    : "";
   showModal(`
     <h3 class="rc-modal-title">Review take</h3>
     <p class="rc-modal-sub">Over <span class="rc-hash">${commitHash(commit.id)}</span> · ${scEscapeHTML(commit.message)}</p>
@@ -1093,6 +1264,7 @@ function openTakePreview() {
       <span class="rc-vol-pct" id="commit-volume-pct">100%</span>
     </label>
     <p class="rc-hint">Start is auto-detected from the first sound in your take — adjust if needed. Leave End as "end" to play the take's natural length.</p>
+    ${warnHtml}
     <div class="rc-modal-actions">
       <button type="button" class="rc-btn rc-btn-ghost" id="discard-take-btn">Discard</button>
       <button type="button" class="rc-btn rc-btn-primary" id="commit-take-btn">Commit take</button>
@@ -1257,20 +1429,25 @@ async function startNewRec(overlay) {
     return;
   }
   newRecChunks = [];
-  newRecRecorder = makeRecorder(newRecStream);
-  newRecRecorder.ondataavailable = (e) => {
-    if (e.data && e.data.size) newRecChunks.push(e.data);
-  };
-  newRecRecorder.onstop = () => {
-    const blob = new Blob(newRecChunks, { type: (newRecRecorder && newRecRecorder.mimeType) || "audio/webm" });
-    newRecBlob = blob;
-    if (newRecUrl && newRecUrl.startsWith("blob:")) URL.revokeObjectURL(newRecUrl);
-    newRecUrl = URL.createObjectURL(blob);
-    const status = overlay.querySelector("#new-source-status");
-    status.textContent = "✓ Recorded take ready (" + fmtTime(newRecDuration) + ")";
-    overlay.querySelector("#new-record-btn").hidden = false;
-    overlay.querySelector("#new-stop-btn").hidden = true;
-  };
+  newRecRecorder = createRecorder(null, newRecStream, {
+    onData: (chunk) => { if (chunk && chunk.size) newRecChunks.push(chunk); },
+    onStop: (wavBlob) => {
+      const blob = wavBlob || new Blob(newRecChunks, { type: (newRecRecorder && newRecRecorder.mimeType) || "audio/webm" });
+      newRecBlob = blob;
+      if (newRecUrl && newRecUrl.startsWith("blob:")) URL.revokeObjectURL(newRecUrl);
+      newRecUrl = URL.createObjectURL(blob);
+      const status = overlay.querySelector("#new-source-status");
+      status.textContent = "✓ Recorded take ready (" + fmtTime(newRecDuration) + ")";
+      overlay.querySelector("#new-record-btn").hidden = false;
+      overlay.querySelector("#new-stop-btn").hidden = true;
+    },
+  });
+  if (!newRecRecorder) {
+    newRecStream.getTracks().forEach((t) => t.stop());
+    newRecStream = null;
+    overlay.querySelector("#new-source-status").textContent = "✗ this browser cannot record audio";
+    return;
+  }
   newRecRecorder.start(250);
   newRecStart = Date.now();
   newRecDuration = 0;
