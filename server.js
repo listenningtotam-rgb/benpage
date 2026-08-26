@@ -1230,8 +1230,22 @@ async function handleApi(req, res, urlPath) {
   if (repoDeleteMatch && req.method === "DELETE") {
     if (!requireAuth()) return;
     const repoId = Number(repoDeleteMatch[1]);
-    if (!db.getMusic(repoId)) return json(res, 404, { error: "Recording not found" });
+    const repo = db.getMusic(repoId);
+    if (!repo) return json(res, 404, { error: "Recording not found" });
+    // Collect the audio files this recording owns (the repo's own file plus
+    // every commit's) so the files can be removed once nothing else references
+    // them — mirroring the per-commit delete. Shared URLs are left alone.
+    const urls = new Set([repo.url]);
+    for (const c of db.listRecordingCommits(repoId)) urls.add(c.url);
     db.deleteMusic(repoId); // deletes its commits too
+    for (const url of urls) {
+      if (url && url.startsWith(RECORDING_URL_PREFIX) && !db.isRecordingUrlReferenced(url)) {
+        const filePath = path.join(RECORDING_DIR, path.normalize(url.slice(RECORDING_URL_PREFIX.length)));
+        if (filePath.startsWith(path.resolve(RECORDING_DIR) + path.sep)) {
+          fs.unlink(filePath, () => {}); // best-effort: missing files are fine
+        }
+      }
+    }
     return json(res, 200, { ok: true });
   }
 

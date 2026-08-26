@@ -205,6 +205,11 @@ function renderRepoCard(repo) {
       <div class="rc-repo-actions">
         <button type="button" class="rc-icon-btn" data-action="share-repo" data-repo="${repo.id}" title="Share">↗</button>
         <button type="button" class="rc-icon-btn" data-action="toggle-repo" data-repo="${repo.id}" title="Commit history">${expanded ? "▾" : "▸"}</button>
+        ${
+          hub.admin
+            ? `<button type="button" class="rc-icon-btn rc-repo-delete" data-action="delete-repo" data-repo="${repo.id}" title="Delete this recording and all its commits">🗑</button>`
+            : ""
+        }
       </div>
     </div>
     ${
@@ -297,6 +302,23 @@ function attachRepoListEvents() {
           if (hub.checkedOut && hub.checkedOut.repoId === repoId && hub.checkedOut.commitId === c.id) {
             hub.checkedOut = null;
           }
+          return loadHub();
+        })
+        .catch((err) => alert(err.message));
+    } else if (action === "delete-repo") {
+      if (!hub.admin) return;
+      const repo = hub.repos.find((r) => r.id === repoId);
+      if (!repo) return;
+      const commits = hub.commits.get(repoId) || [];
+      const plural = commits.length === 1 ? "commit" : "commits";
+      if (!window.confirm(`Delete the recording "${repo.title}" and all ${commits.length} ${plural} under it? This cannot be undone.`)) return;
+      // Stop playback if the sound playing belongs to this recording.
+      const playing = document.querySelector(".rc-commit.playing");
+      if (playing && commits.some((x) => x.id === Number(playing.dataset.commit))) stopPlayback();
+      hubApi(`/api/recordings/${repoId}`, { method: "DELETE" })
+        .then(() => {
+          if (hub.checkedOut && hub.checkedOut.repoId === repoId) hub.checkedOut = null;
+          if (hub.expanded === repoId) hub.expanded = null;
           return loadHub();
         })
         .catch((err) => alert(err.message));

@@ -2155,6 +2155,12 @@ body {
   color: #ff6b6b;
 }
 
+.rc-repo-delete:hover {
+  background: rgba(255, 85, 85, 0.16);
+  border-color: rgba(255, 85, 85, 0.4);
+  color: #ff6b6b;
+}
+
 /* Modal */
 .rc-modal {
   position: fixed;
