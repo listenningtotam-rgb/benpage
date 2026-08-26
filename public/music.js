@@ -383,6 +383,70 @@ const audioEngine = {
    it every time (0.5-3 s) used to swallow the count-in's lead time. */
 const bufferCache = new Map(); // url → AudioBuffer
 
+/* Promise.allSettled with a tiny fallback for old iOS (< 12.1): without it,
+   playCommit silently dies on those devices while recording still works. */
+function allSettled(promises) {
+  if (typeof Promise.allSettled === "function") return Promise.allSettled(promises);
+  return Promise.all(
+    promises.map((p) =>
+      Promise.resolve(p).then(
+        (value) => ({ status: "fulfilled", value }),
+        (reason) => ({ status: "rejected", reason })
+      )
+    )
+  );
+}
+
+/* decodeAudioData has two flavors: promise-based (modern browsers) and
+   callback-based (old Safari/iOS < 14.5). Awaiting the callback flavor yields
+   `undefined` (a silent "playing" state) instead of throwing, so wrap both
+   forms into a real promise that always settles with an AudioBuffer or an
+   error. */
+function decodeAudioCompat(ctx, ab) {
+  return new Promise((resolve, reject) => {
+    if (!ctx || typeof ctx.decodeAudioData !== "function") {
+      reject(new Error("decodeAudioData is not supported in this browser"));
+      return;
+    }
+    let settled = false;
+    const ok = (b) => {
+      if (settled) return;
+      settled = true;
+      if (b && typeof b.duration === "number") resolve(b);
+      else reject(new Error("decodeAudioData returned no audio"));
+    };
+    const bad = (err) => {
+      if (settled) return;
+      settled = true;
+      reject(err instanceof Error ? err : new Error(String((err && err.message) || err || "decodeAudioData failed")));
+    };
+    try {
+      const p = ctx.decodeAudioData(ab, ok, bad);
+      if (p && typeof p.then === "function") p.then(ok, bad);
+    } catch (err) {
+      bad(err);
+    }
+  });
+}
+
+/* iOS keeps a freshly created AudioContext suspended until it is resumed from
+   a user gesture, and sources started while the context is still suspended can
+   be dropped silently. Resume must COMPLETE before scheduling; a timeout keeps
+   a never-settling resume from hanging playback (the caller falls back to a
+   native <audio> element). Returns true when the context is running. */
+async function ensureCtxRunning(ctx) {
+  if (!ctx || ctx.state === "closed") return false;
+  if (ctx.state !== "running") {
+    try {
+      await Promise.race([
+        ctx.resume(),
+        new Promise((_, reject) => setTimeout(() => reject(new Error("audio resume timed out")), 1500)),
+      ]);
+    } catch (_) { /* stays suspended */ }
+  }
+  return !!ctx && ctx.state === "running";
+}
+
 /* Decode one audio layer for playback → an AudioBuffer (cached by URL).
    Every recording in the library is WAV (and backings are WAV or MP3), and
    decodeAudioData accepts WAV and MP3 on every browser — including iOS
@@ -393,7 +457,7 @@ async function decodeLayer(ctx, url) {
   const res = await fetch(url, { cache: "no-cache" });
   if (!res.ok) throw new Error("Could not load audio: " + url);
   const ab = await res.arrayBuffer();
-  const buffer = await ctx.decodeAudioData(ab);
+  const buffer = await decodeAudioCompat(ctx, ab);
   bufferCache.set(url, buffer);
   return { kind: "buffer", buffer };
 }
@@ -404,7 +468,10 @@ function closeAudio() {
       try { s.stop(); } catch (_) {}
       try { s.disconnect(); } catch (_) {}
     });
-    audioEngine.ctx.close().catch(() => {});
+    // close() is missing on old iOS (< 14.5) — guard so it can't throw here.
+    try {
+      if (typeof audioEngine.ctx.close === "function") audioEngine.ctx.close().catch(() => {});
+    } catch (_) {}
   }
   audioEngine.elements.forEach((el) => {
     try { el.pause(); el.removeAttribute("src"); el.load(); } catch (_) {}
@@ -466,6 +533,11 @@ function commitVolume(c) {
 function scheduleLayer(ctx, layer, whenOffset, bufOffset, dur, startAt, dest, gain) {
   const out = dest || ctx.destination;
   const off = Math.max(0, bufOffset || 0);
+  // A take read past its own buffer's end would throw (RangeError) and drop
+  // the layer from the mix; clamp instead so a badly-timed take is silent,
+  // never fatal.
+  const bufDur = layer.buffer.duration || 0;
+  const readOff = off >= bufDur ? Math.max(0, bufDur - 0.001) : off;
   const src = ctx.createBufferSource();
   src.buffer = layer.buffer;
   if (isFinite(gain) && gain >= 0 && Math.abs(gain - 1) > 0.001) {
@@ -476,15 +548,44 @@ function scheduleLayer(ctx, layer, whenOffset, bufOffset, dur, startAt, dest, ga
   } else {
     src.connect(out);
   }
-  src.start(startAt + whenOffset, off, Math.max(0.05, dur || (layer.buffer.duration - off)));
+  src.start(startAt + whenOffset, readOff, Math.max(0.05, dur || (bufDur - readOff)));
   audioEngine.sources.push(src);
+}
+
+/* iPadOS 13+ reports a desktop "MacIntel" UA; maxTouchPoints > 1 is the
+   reliable tell. iOS Safari's Web Audio clock can run while sources are
+   dropped silently, so iOS always plays through a native <audio> element. */
+function isIOS() {
+  return (
+    /iPhone|iPad|iPod/.test(navigator.userAgent || "") ||
+    (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1)
+  );
 }
 
 async function playCommit(commit, extra) {
   closeAudio();
-  const ctx = new (window.AudioContext || window.webkitAudioContext)();
+  // On iOS, skip the Web Audio mix entirely: the only path proven to make
+  // sound on the iPhone is a native <audio> element — the exact one the
+  // /music/:id share page uses. Web Audio on iOS can report "running" and
+  // still drop every source (blue "playing" row, no sound).
+  if (isIOS()) {
+    playNativeTrack(commit, extra, null);
+    return;
+  }
+  let ctx = null;
+  try {
+    ctx = new (window.AudioContext || window.webkitAudioContext)();
+  } catch (_) {
+    ctx = null; // iOS can refuse to create one when the 4-context limit is hit
+  }
+  if (!ctx) {
+    playNativeTrack(commit, null, "Web Audio is unavailable on this device");
+    return;
+  }
   audioEngine.ctx = ctx;
-  if (ctx.state === "suspended") ctx.resume().catch(() => {}); // iOS autoplay hardening
+  // First resume inside the user gesture, then decode every layer, then resume
+  // again (awaited) so the clock is running before any source is scheduled.
+  await ensureCtxRunning(ctx);
   const chain = buildChain(commit);
   const jobs = chain.map(async ({ commit: c, offset }) => ({
     c,
@@ -502,12 +603,21 @@ async function playCommit(commit, extra) {
       }))
     );
   }
-  const results = await Promise.allSettled(jobs);
+  const results = await allSettled(jobs);
   if (!audioEngine.ctx) return; // stopped while loading
-  // Fix the start time only AFTER every layer is decoded so the whole mix
-  // begins at the same instant.
+  // The commit clicked is jobs[0]; if its own file won't decode, the mix is
+  // pointless — fall back to the same native <audio> path the share page uses.
+  if (results[0] && results[0].status === "rejected") {
+    playNativeTrack(commit, null, (results[0].reason && results[0].reason.message) || "audio would not decode");
+    return;
+  }
+  const running = await ensureCtxRunning(ctx);
+  if (!audioEngine.ctx) return; // stopped while resuming
+  if (!running) {
+    playNativeTrack(commit, null, "the audio context would not start");
+    return;
+  }
   const startAt = ctx.currentTime + 0.05;
-  if (ctx.state === "suspended") ctx.resume().catch(() => {});
   const failed = [];
   for (const r of results) {
     if (r.status === "rejected") {
@@ -527,7 +637,7 @@ async function playCommit(commit, extra) {
         r.value.gain !== undefined ? r.value.gain : commitVolume(c)
       );
     } catch (err) {
-      failed.push(err);
+      failed.push(new Error(commitHash(c.id) + ": " + err.message));
     }
   }
   const row = document.querySelector(`.rc-commit[data-commit="${commit.id}"]`);
@@ -535,20 +645,127 @@ async function playCommit(commit, extra) {
   if (failed.length) {
     setStudioStatus("⚠ " + failed.length + " layer(s) couldn't be decoded for playback on this browser — " + failed[0].message, true);
   } else {
-    setStudioStatus(`▶ playing ${commitHash(commit.id)}`);
+    setStudioStatus(`▶ playing ${commitHash(commit.id)} (Web Audio mix)`);
   }
   countRepoPlay(commit.repo_id);
 }
 
-/* Plain element playback for "take only" preview (blob: URL). The blob now
-   starts at the backing start (the count-in pre-roll is inside it), so the
-   preview seeks to the detected take start to skip the pre-roll. */
+/* Native <audio>-element playback so a recording ALWAYS makes sound. On iOS
+   this is the primary path (identical to the /music/:id share page, which is
+   proven to play on the phone); on desktop it's the fallback when Web Audio
+   can't start. Plays the commit's own file as a single track. */
+function playNativeTrack(commit, extra, reason) {
+  closeAudio();
+  const url = commit && commit.url;
+  if (!url) {
+    setStudioStatus("⚠ can't play this recording — no audio file.", true);
+    return;
+  }
+  const row = document.querySelector(`.rc-commit[data-commit="${commit.id}"]`);
+  const el = new Audio(url);
+  el.preload = "auto";
+  let started = false;
+  const showErr = () => {
+    if (started) return;
+    started = true;
+    setStudioStatus(`⚠ couldn't play this recording here — ${reason ? reason + " — " : ""}open the share link or try a desktop browser.`, true);
+  };
+  el.onerror = showErr;
+  el.onplaying = () => {
+    if (started) return;
+    started = true; // audio is actually sounding — only now may the row go blue
+    if (row) row.classList.add("playing");
+    setStudioStatus(`▶ playing ${commitHash(commit.id)} (browser audio)`);
+  };
+  el.onended = () => { if (started) stopPlayback(); };
+  // A take's WAV starts at the backing's beginning, so skip its count-in ticks
+  // by starting at (start_time − lead); the root commit sits at 0.
+  const start = Math.max(0, (Number(commit.start_time) || 0) - (Number(commit.lead) || 0));
+  if (start > 0) el.currentTime = start;
+  el.play().catch((e) => {
+    if (started) return;
+    // iOS blocks play() outside a gesture — retry on the next tap.
+    if (e && e.name === "NotAllowedError") {
+      const retry = () => {
+        if (started) return;
+        el.play().catch(showErr);
+        window.removeEventListener("touchend", retry);
+        window.removeEventListener("click", retry);
+      };
+      window.addEventListener("touchend", retry, { once: true });
+      window.addEventListener("click", retry, { once: true });
+      setStudioStatus("▶ tap the play button again", false);
+      return;
+    }
+    showErr();
+  });
+  audioEngine.elements.push(el);
+  if (commit && commit.repo_id) countRepoPlay(commit.repo_id);
+}
+
+/* "Take only" preview. Native <audio> with a blob: URL is unreliable on iOS
+   Safari, so if the element can't start quickly, decode the in-memory blob
+   through Web Audio instead (WAV always decodes). */
 function playDry(url, start) {
   closeAudio();
   const el = new Audio(url);
+  let done = false;
+  const fallback = () => {
+    if (done) return;
+    done = true;
+    try { el.pause(); el.removeAttribute("src"); el.load(); } catch (_) {}
+    playBlobViaWebAudio(url, start);
+  };
+  el.onerror = fallback;
+  const t = setTimeout(fallback, 4000);
+  el.onplaying = () => {
+    if (done) return;
+    done = true;
+    clearTimeout(t);
+    setStudioStatus("▶ take preview");
+  };
   if (isFinite(start) && start > 0) el.currentTime = start;
-  el.play().catch(() => {});
+  el.play().catch(fallback);
   audioEngine.elements.push(el);
+}
+
+/* Decode a blob: URL and play it through Web Audio (hardened resume). Used by
+   playDry when the phone won't play the blob in a native <audio> element. */
+async function playBlobViaWebAudio(url, start) {
+  let ctx = null;
+  try {
+    ctx = new (window.AudioContext || window.webkitAudioContext)();
+  } catch (_) { ctx = null; }
+  if (!ctx) {
+    setStudioStatus("⚠ this browser can't preview the take.", true);
+    return;
+  }
+  audioEngine.ctx = ctx;
+  if (!(await ensureCtxRunning(ctx))) {
+    audioEngine.ctx = null;
+    try { ctx.close().catch(() => {}); } catch (_) {}
+    setStudioStatus("⚠ this browser can't preview the take.", true);
+    return;
+  }
+  try {
+    const res = await fetch(url);
+    if (!res.ok) throw new Error("could not load the take");
+    const ab = await res.arrayBuffer();
+    const buffer = await decodeAudioCompat(ctx, ab);
+    if (!audioEngine.ctx) return;
+    const off = Math.max(0, Number(start) || 0);
+    const src = ctx.createBufferSource();
+    src.buffer = buffer;
+    src.connect(ctx.destination);
+    src.start(ctx.currentTime + 0.05, off < buffer.duration ? off : 0);
+    audioEngine.sources.push(src);
+    setStudioStatus("▶ take preview");
+  } catch (err) {
+    // Don't leak the context on iOS (4-context cap) after a failed preview.
+    try { ctx.close().catch(() => {}); } catch (_) {}
+    if (audioEngine.ctx === ctx) audioEngine.ctx = null;
+    setStudioStatus("⚠ couldn't preview the take on this browser — " + err.message, true);
+  }
 }
 
 let lastPlayCountRepo = null;
@@ -1158,9 +1375,9 @@ function analyzeTake(blob) {
     try { oc = new (window.OfflineAudioContext || window.webkitOfflineAudioContext)(1, 1, 44100); } catch (_) { oc = null; }
     blob.arrayBuffer()
       .then((buf) => {
-        if (oc) return oc.decodeAudioData(buf);
+        if (oc) return decodeAudioCompat(oc, buf);
         const ac = new (window.AudioContext || window.webkitAudioContext)();
-        return ac.decodeAudioData(buf).then((a) => { safeClose(ac); return a; });
+        return decodeAudioCompat(ac, buf).then((a) => { safeClose(ac); return a; });
       })
       .then((audio) => {
         safeClose(oc);
