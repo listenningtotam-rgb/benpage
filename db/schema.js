@@ -113,9 +113,10 @@ function detectBaselineVersion(db) {
   // 006_add_commit_volume.sql → recording_commits.volume
   // 007_add_commit_contributor.sql → recording_commits.contributor
   // 008_add_commit_lead.sql → recording_commits.lead
+  // 009_add_commit_version.sql → recording_commits."version"
   if (tableExists(db, "recording_commits")) {
     const cols = db.prepare("PRAGMA table_info(recording_commits)").all().map((c) => c.name);
-    version = cols.includes("lead") ? 8 : cols.includes("contributor") ? 7 : cols.includes("volume") ? 6 : 5;
+    version = cols.includes("version") ? 9 : cols.includes("lead") ? 8 : cols.includes("contributor") ? 7 : cols.includes("volume") ? 6 : 5;
   }
   return version;
 }

@@ -228,6 +228,9 @@ function renderCommitRows(repo, commits) {
       const checkedOut =
         hub.checkedOut && hub.checkedOut.repoId === repo.id && hub.checkedOut.commitId === c.id;
       const isOverlay = c.mode === "overlay";
+      // Next version number a tag button would assign (the server is
+      // authoritative — this is just for the tooltip).
+      const nextVersion = commits.reduce((m, x) => Math.max(m, Number(x.version) || 0), 0) + 1;
       return `
         <div class="rc-commit ${checkedOut ? "checked-out" : ""}" data-commit="${c.id}">
           <div class="rc-commit-main" data-action="select-commit" data-repo="${repo.id}" data-commit="${c.id}">
@@ -235,6 +238,7 @@ function renderCommitRows(repo, commits) {
               <span class="rc-hash">${commitHash(c.id)}</span>
               <span class="rc-msg">${scEscapeHTML(c.message)}</span>
               <span class="rc-badge ${isOverlay ? "rc-badge-overlay" : "rc-badge-single"}">${isOverlay ? "overlay" : "single"}</span>
+              ${c.version != null ? `<span class="rc-badge rc-badge-version" title="This commit is public version v${c.version}.0 — the share link plays it">v${c.version}.0</span>` : ""}
             </div>
             <div class="rc-commit-meta">
               <span class="rc-range">⏱ ${fmtRange(c)}</span>
@@ -254,6 +258,11 @@ function renderCommitRows(repo, commits) {
             </div>
           </div>
           <button type="button" class="rc-icon-btn rc-commit-play" data-action="play-commit" data-repo="${repo.id}" data-commit="${c.id}" title="Play this commit">▶</button>
+          ${
+            hub.admin && c.version == null
+              ? `<button type="button" class="rc-icon-btn rc-commit-tag" data-action="tag-commit" data-repo="${repo.id}" data-commit="${c.id}" title="Tag this commit as the next public version (v${nextVersion}.0) — the share link will play it">🏷</button>`
+              : ""
+          }
           ${
             hub.admin
               ? `<button type="button" class="rc-icon-btn rc-commit-delete" data-action="delete-commit" data-repo="${repo.id}" data-commit="${c.id}" title="Delete this commit">🗑</button>`
@@ -291,6 +300,14 @@ function attachRepoListEvents() {
     } else if (action === "play-commit") {
       const c = findCommit(Number(btn.dataset.commit));
       if (c) playCommit(c);
+    } else if (action === "tag-commit") {
+      const c = findCommit(Number(btn.dataset.commit));
+      if (!c || !hub.admin || c.version != null) return;
+      const next = (hub.commits.get(repoId) || []).reduce((m, x) => Math.max(m, Number(x.version) || 0), 0) + 1;
+      if (!window.confirm(`Tag ${commitHash(c.id)} as the next public version (v${next}.0)? The share link will play this version.`)) return;
+      hubApi(`/api/recordings/${repoId}/commits/${c.id}/tag`, { method: "POST" })
+        .then(() => loadHub())
+        .catch((err) => alert(err.message));
     } else if (action === "delete-commit") {
       const c = findCommit(Number(btn.dataset.commit));
       if (!c || !hub.admin) return;

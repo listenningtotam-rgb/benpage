@@ -685,18 +685,54 @@ function renderBlogSharePage(req, post) {
   );
 }
 
-function renderMusicSharePage(req, track) {
+function renderMusicSharePage(req, track, latest) {
   const urlPath = "/music/" + track.id;
+  // `latest` = the repo's highest tagged version (see db.getLatestTaggedCommit).
+  // NULL only in the degenerate "nothing tagged" case → fall back to the
+  // initial file, exactly as the page has always behaved.
+  const version = latest && latest.version != null ? latest.version : null;
+  const versionLabel = version != null ? `v${version}.0` : "";
   const head = renderSharePageHead({
     req,
     kind: "music",
     id: track.id,
-    title: track.title,
+    title: versionLabel ? `${track.title} · ${versionLabel}` : track.title,
     description: `${track.title} — a recording from ${SITE_NAME}.`,
     image: "",
     type: "music.song",
     url: urlPath,
   });
+
+  // Overlay versions play their RENDERED chain mix (take over its backing).
+  // The chain layers are embedded as JSON so /share-music.js can render them
+  // with the exact offline Web Audio path the hub page already uses on iOS.
+  // Without JS the <audio> src falls back to the version's own take file.
+  let audioHtml;
+  let mixJson = "";
+  let mixScript = "";
+  if (version != null && latest.mode === "overlay") {
+    const layers = db.getCommitChainFrom(latest).map((c, i) => {
+      const start = Number(c.start_time) || 0;
+      const end = Number(c.end_time);
+      const d = isFinite(end) && end > 0 ? end - start : NaN;
+      const vol = Number(c.volume);
+      return {
+        url: c.url,
+        offset: i === 0 ? 0 : start, // root sits at 0; takes at their start_time
+        readOff: Math.max(0, start - (Number(c.lead) || 0)), // blob read point
+        dur: d > 0 ? d : null, // null = play the take's natural length
+        gain: isFinite(vol) && vol >= 0 ? Math.min(3, vol) : 1,
+      };
+    });
+    // Escape "<" so the JSON can never close the enclosing script tag.
+    mixJson = `\n  <script type="application/json" id="share-mix-chain">${JSON.stringify(layers).replace(/</g, "\\u003c")}</script>`;
+    mixScript = '\n  <script src="/share-music.js"></script>';
+    audioHtml =
+      `      <audio id="share-audio" class="share-audio" controls preload="metadata" src="${escHtml(latest.url)}" data-render="overlay"></audio>\n` +
+      `      <p class="share-mix-status" id="share-mix-status" hidden>⏳ rendering the layered mix…</p>`;
+  } else {
+    audioHtml = `      <audio class="share-audio" controls preload="metadata" src="${escHtml(version != null ? latest.url : track.url)}"></audio>`;
+  }
 
   return (
     head +
@@ -706,15 +742,17 @@ function renderMusicSharePage(req, track) {
     `      <span class="share-meta">Recording · ▶ ${Number(track.play_count) || 0} plays</span>\n` +
     "    </header>\n" +
     '    <section class="share-track">\n' +
-    `      <h1 class="share-title">${escHtml(track.title)}</h1>\n` +
-    `      <audio class="share-audio" controls preload="metadata" src="${escHtml(track.url)}"></audio>\n` +
+    `      <h1 class="share-title">${escHtml(track.title)}${versionLabel ? ` <span class="share-version">${versionLabel}</span>` : ""}</h1>\n` +
+    audioHtml +
     "    </section>\n" +
     "    <footer class=\"share-foot\">\n" +
     `      <a href="/">返回 ${SITE_NAME} →</a>\n` +
     "    </footer>\n" +
     "  </div>\n" +
-    '  <script src="/share-count.js"></script>\n' +
-    "</body>\n</html>\n"
+    mixJson +
+    '  <script src="/share-count.js"></script>' +
+    mixScript +
+    "\n</body>\n</html>\n"
   );
 }
 
@@ -1064,6 +1102,7 @@ async function handleApi(req, res, urlPath) {
     }
     const track = db.createMusic({ title, url, sort_order: body.sort_order });
     // Every repo must have an initial commit — create one automatically.
+    // It is always the recording's first version (v1.0).
     db.createRecordingCommit({
       repo_id: track.id,
       parent_id: null,
@@ -1073,6 +1112,7 @@ async function handleApi(req, res, urlPath) {
       end_time: null,
       mode: "single",
       contributor: authUser.username,
+      version: 1,
     });
     return json(res, 201, track);
   }
@@ -1109,6 +1149,7 @@ async function handleApi(req, res, urlPath) {
   //   POST /api/recordings                  → admin, init a new recording
   //   GET/POST /api/recordings/:id/commits  → public list / admin add commit
   //   PATCH /api/recordings/:id/commits/:cid → admin, update commit volume
+  //   POST /api/recordings/:id/commits/:cid/tag → admin, tag as next version
   //   DELETE /api/recordings/:id/commits/:cid → admin, delete a commit
   //   DELETE /api/recordings/:id            → admin, remove repo + commits
   if (urlPath === "/api/recordings" && req.method === "GET") {
@@ -1139,6 +1180,7 @@ async function handleApi(req, res, urlPath) {
       mode: "single",
       volume: parseFloat(body.volume),
       contributor: cleanText(body.contributor, 60) || authUser.username,
+      version: 1, // the initial commit is always the recording's first version
     });
     return json(res, 201, { repo: db.getMusic(repo.id), commit });
   }
@@ -1226,6 +1268,22 @@ async function handleApi(req, res, urlPath) {
       }
     }
     return json(res, 200, { ok: true });
+  }
+
+  const commitTagMatch = urlPath.match(/^\/api\/recordings\/(\d+)\/commits\/(\d+)\/tag$/);
+  if (commitTagMatch && req.method === "POST") {
+    if (!requireAuth()) return;
+    const repoId = Number(commitTagMatch[1]);
+    const commitId = Number(commitTagMatch[2]);
+    const repo = db.getMusic(repoId);
+    if (!repo) return json(res, 404, { error: "Recording not found" });
+    const existing = db.getRecordingCommit(commitId);
+    if (!existing || existing.repo_id !== repoId) {
+      return json(res, 404, { error: "Commit not found in this recording" });
+    }
+    const commit = db.tagRecordingCommit(commitId);
+    if (!commit) return json(res, 404, { error: "Commit not found" });
+    return json(res, 200, { commit });
   }
 
   const repoDeleteMatch = urlPath.match(/^\/api\/recordings\/(\d+)$/);
@@ -1558,8 +1616,12 @@ const server = http.createServer((req, res) => {
       res.end("Not Found");
       return;
     }
+    // The share page plays the recording's latest TAGGED version (single = the
+    // version's own file; overlay = its rendered chain mix), never the initial
+    // commit's file.
+    const latest = db.getLatestTaggedCommit(track.id);
     res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
-    res.end(renderMusicSharePage(req, track));
+    res.end(renderMusicSharePage(req, track, latest));
     return;
   }
 

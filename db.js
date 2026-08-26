@@ -299,11 +299,11 @@ function cleanContributor(v) {
   return s || ADMIN_USERNAME;
 }
 
-function createRecordingCommit({ repo_id, parent_id, message, url, start_time, end_time, mode, volume, lead, contributor }) {
+function createRecordingCommit({ repo_id, parent_id, message, url, start_time, end_time, mode, volume, lead, contributor, version }) {
   const info = db
     .prepare(
-      `INSERT INTO recording_commits (repo_id, parent_id, message, url, start_time, end_time, mode, volume, lead, contributor)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO recording_commits (repo_id, parent_id, message, url, start_time, end_time, mode, volume, lead, contributor, "version")
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .run(
       repo_id,
@@ -315,9 +315,53 @@ function createRecordingCommit({ repo_id, parent_id, message, url, start_time, e
       mode === "overlay" ? "overlay" : "single",
       clampCommitVolume(volume),
       clampCommitLead(lead),
-      cleanContributor(contributor)
+      cleanContributor(contributor),
+      Number.isInteger(version) && version > 0 ? version : null
     );
   return getRecordingCommit(info.lastInsertRowid);
+}
+
+/* Tag a commit as the repo's next version (MAX(version)+1). Only the owner
+   tags, and a commit can only be tagged once. Returns the updated commit, or
+   null when the id doesn't exist. The transaction makes the MAX+1 read and
+   the UPDATE atomic, so two rapid taps can never assign the same number. */
+function tagRecordingCommit(id) {
+  return db.transaction(() => {
+    const commit = getRecordingCommit(id);
+    if (!commit) return null;
+    if (commit.version != null) return commit; // already tagged → no-op
+    const next =
+      db
+        .prepare('SELECT COALESCE(MAX("version"), 0) + 1 AS next FROM recording_commits WHERE repo_id = ?')
+        .get(commit.repo_id).next;
+    db.prepare('UPDATE recording_commits SET "version" = ? WHERE id = ?').run(next, id);
+    return getRecordingCommit(id);
+  })();
+}
+
+/* The commit that is CURRENTLY the recording's public version: the highest
+   version number in the repo (server-assigned, monotonically increasing).
+   NULL when nothing is tagged (impossible in practice — every repo's root
+   commit is tagged v1.0 at creation / migration time). */
+function getLatestTaggedCommit(repoId) {
+  return (
+    db
+      .prepare('SELECT * FROM recording_commits WHERE repo_id = ? AND "version" IS NOT NULL ORDER BY "version" DESC, id DESC LIMIT 1')
+      .get(repoId) || null
+  );
+}
+
+/* Ordered root → commit for one commit (server-side twin of the client's
+   buildChain in public/music.js): the chain its mix is rendered from. */
+function getCommitChainFrom(commit) {
+  const chain = [];
+  let cur = commit;
+  let guard = 0;
+  while (cur && guard++ < 1000) {
+    chain.unshift(cur);
+    cur = cur.parent_id != null ? getRecordingCommit(cur.parent_id) : null;
+  }
+  return chain;
 }
 
 function updateRecordingCommitVolume(id, volume) {
@@ -466,6 +510,9 @@ module.exports = {
   updateRecordingCommitVolume,
   updateRecordingCommitUrl,
   deleteRecordingCommit,
+  tagRecordingCommit,
+  getLatestTaggedCommit,
+  getCommitChainFrom,
   isRecordingUrlReferenced,
   deleteRecordingCommits,
   listBlogPosts,

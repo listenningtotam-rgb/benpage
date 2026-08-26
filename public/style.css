@@ -2076,6 +2076,14 @@ body {
   border: 1px solid rgba(255, 212, 121, 0.25);
 }
 
+/* A commit tagged as a public version (v1.0, v2.0, …) — green reads as
+   "the official version the share link plays". */
+.rc-badge-version {
+  color: #9be29b;
+  background: rgba(155, 226, 155, 0.1);
+  border: 1px solid rgba(155, 226, 155, 0.25);
+}
+
 .rc-commit-meta {
   display: flex;
   align-items: center;
@@ -2153,6 +2161,17 @@ body {
   background: rgba(255, 85, 85, 0.16);
   border-color: rgba(255, 85, 85, 0.4);
   color: #ff6b6b;
+}
+
+.rc-commit-tag {
+  width: 30px;
+  height: 30px;
+}
+
+.rc-commit-tag:hover {
+  background: rgba(155, 226, 155, 0.16);
+  border-color: rgba(155, 226, 155, 0.4);
+  color: #9be29b;
 }
 
 .rc-repo-delete:hover {
