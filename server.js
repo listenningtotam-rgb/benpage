@@ -154,8 +154,8 @@ const API_PROXIES = {
 // "Could not read image". Old photos keep working because they are served
 // from /photo/... (same-origin 'self').
 // media-src/connect-src also need blob: — the recording hub plays and decodes
-// in-browser MediaRecorder takes (webm/opus) that only ever exist as blob:
-// URLs until they are uploaded and committed.
+// in-browser WAV takes that only ever exist as blob: URLs until they are
+// uploaded and committed.
 const CSP = [
   "default-src 'self'",
   "script-src 'self'",
@@ -283,12 +283,18 @@ function sniffImageExt(buf) {
 }
 
 // ─── Audio upload (raw binary body) ────────────────────────────────────
-// 5 MB — keep in sync with nginx client_max_body_size (deploy/nginx-upload.conf)
-// and the client-side check in public/admin.js.
-const MAX_AUDIO_UPLOAD_BYTES = 5 * 1024 * 1024;
+// 16 MB — WAV takes at 22050 Hz mono 16-bit ≈ 2.65 MB/min, so this allows
+// ~6 min takes. Keep in sync with nginx client_max_body_size
+// (deploy/nginx-upload.conf) and the client-side checks (public/admin.js,
+// public/music.js).
+const MAX_AUDIO_UPLOAD_BYTES = 16 * 1024 * 1024;
 
 function sniffAudioExt(buf) {
   if (!buf || buf.length < 12) return null;
+  // WAV and MP3 only — the two formats every browser's Web Audio
+  // decodeAudioData accepts (including iOS Safari). Recorded takes are always
+  // WAV; backing tracks may be MP3. Everything else (webm/m4a/ogg/flac…)
+  // is rejected so no future iOS-unplayable recording can sneak in.
   // MP3 — ID3 tag, or MPEG audio frame sync (0xFFEx)
   if (
     (buf[0] === 0x49 && buf[1] === 0x44 && buf[2] === 0x33) ||
@@ -299,14 +305,6 @@ function sniffAudioExt(buf) {
     buf[0] === 0x52 && buf[1] === 0x49 && buf[2] === 0x46 && buf[3] === 0x46 &&
     buf[8] === 0x57 && buf[9] === 0x41 && buf[10] === 0x56 && buf[11] === 0x45
   ) return ".wav";
-  // OGG / Opus — "OggS"
-  if (buf[0] === 0x4f && buf[1] === 0x67 && buf[2] === 0x67 && buf[3] === 0x53) return ".ogg";
-  // FLAC — "fLaC"
-  if (buf[0] === 0x66 && buf[1] === 0x4c && buf[2] === 0x61 && buf[3] === 0x43) return ".flac";
-  // M4A / AAC — MP4 container "....ftyp"
-  if (buf[4] === 0x66 && buf[5] === 0x74 && buf[6] === 0x79 && buf[7] === 0x70) return ".m4a";
-  // WebM / Opus — EBML magic
-  if (buf[0] === 0x1a && buf[1] === 0x45 && buf[2] === 0xdf && buf[3] === 0xa3) return ".webm";
   return null;
 }
 
@@ -987,7 +985,7 @@ async function handleApi(req, res, urlPath) {
     const ext = sniffAudioExt(buf);
     if (!ext) {
       return json(res, 400, {
-        error: "Unsupported audio type. Send MP3, WAV, OGG, FLAC, M4A, AAC or WebM bytes.",
+        error: "Unsupported audio type. Send WAV (recordings) or MP3 (backing tracks) bytes.",
       });
     }
 

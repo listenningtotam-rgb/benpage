@@ -325,6 +325,11 @@ function updateRecordingCommitVolume(id, volume) {
   return getRecordingCommit(id);
 }
 
+function updateRecordingCommitUrl(id, url) {
+  db.prepare("UPDATE recording_commits SET url = ? WHERE id = ?").run(url, id);
+  return getRecordingCommit(id);
+}
+
 function deleteRecordingCommit(id) {
   // Orphan any children so the chain still plays: same behaviour as the
   // FK's ON DELETE SET NULL, but explicit so it works even without
@@ -459,6 +464,7 @@ module.exports = {
   getRecordingCommit,
   createRecordingCommit,
   updateRecordingCommitVolume,
+  updateRecordingCommitUrl,
   deleteRecordingCommit,
   isRecordingUrlReferenced,
   deleteRecordingCommits,

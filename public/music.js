@@ -383,48 +383,19 @@ const audioEngine = {
    it every time (0.5-3 s) used to swallow the count-in's lead time. */
 const bufferCache = new Map(); // url → AudioBuffer
 
-/* Decode one audio layer for playback. Returns:
-     { kind: "buffer", buffer }  — decoded AudioBuffer (cached by URL), or
-     { kind: "media", el, src }  — an <audio> element routed into the Web Audio
-       graph via createMediaElementSource, used when decodeAudioData rejects the
-       format. This is the iOS fix for old takes: Safari's Web Audio refuses to
-       decode webm/Opus (all desktop-recorded commits) and its own MediaRecorder
-       audio/mp4, but its media engine plays both — so the layer becomes audible
-       in the mix instead of silently dropped.
-   Media layers are NOT cached: an element can only ever have ONE
-   createMediaElementSource node, and the node is bound to its AudioContext, so
-   each playback needs a fresh element. */
+/* Decode one audio layer for playback → an AudioBuffer (cached by URL).
+   Every recording in the library is WAV (and backings are WAV or MP3), and
+   decodeAudioData accepts WAV and MP3 on every browser — including iOS
+   Safari — so this is the single, deterministic playback path. */
 async function decodeLayer(ctx, url) {
   const hit = bufferCache.get(url);
   if (hit) return { kind: "buffer", buffer: hit };
   const res = await fetch(url, { cache: "no-cache" });
   if (!res.ok) throw new Error("Could not load audio: " + url);
   const ab = await res.arrayBuffer();
-  try {
-    const buffer = await ctx.decodeAudioData(ab);
-    bufferCache.set(url, buffer);
-    return { kind: "buffer", buffer };
-  } catch (_) {
-    // Fallback: media element captured into the graph.
-    const el = new Audio();
-    el.preload = "auto";
-    el.src = url;
-    await new Promise((resolve) => {
-      const done = () => {
-        el.removeEventListener("canplay", done);
-        el.removeEventListener("error", done);
-        resolve();
-      };
-      el.addEventListener("canplay", done);
-      el.addEventListener("error", done);
-      setTimeout(done, 4000); // never let a slow load hang playback
-    });
-    if (el.error) {
-      throw new Error("Could not decode or play audio on this browser: " + url);
-    }
-    const src = ctx.createMediaElementSource(el);
-    return { kind: "media", el, src };
-  }
+  const buffer = await ctx.decodeAudioData(ab);
+  bufferCache.set(url, buffer);
+  return { kind: "buffer", buffer };
 }
 
 function closeAudio() {
@@ -489,69 +460,24 @@ function commitVolume(c) {
                 take exactly where it belongs on the parent).
    gain       = linear multiplier applied to THIS source only (per-commit
                 volume balance vs the parent chain; 1 = unchanged).
-   layer      = { kind: "buffer", buffer } | { kind: "media", el, src } from
-                decodeLayer(). A media layer (decodeAudioData failed) is played
-                through its <audio> element, gated into the graph at the
-                scheduled time and pre-seeked so its playhead sits at bufOffset
-                the moment the gate opens — keeping mix alignment correct. */
+   layer      = { kind: "buffer", buffer } from decodeLayer(). Every recording
+                is WAV/MP3, which decodeAudioData accepts on every browser, so
+                there is no media-element layer anymore. */
 function scheduleLayer(ctx, layer, whenOffset, bufOffset, dur, startAt, dest, gain) {
   const out = dest || ctx.destination;
   const off = Math.max(0, bufOffset || 0);
-  if (layer.kind === "buffer") {
-    const src = ctx.createBufferSource();
-    src.buffer = layer.buffer;
-    if (isFinite(gain) && gain >= 0 && Math.abs(gain - 1) > 0.001) {
-      const g = ctx.createGain();
-      g.gain.value = gain; // 0 = muted
-      src.connect(g);
-      g.connect(out);
-    } else {
-      src.connect(out);
-    }
-    src.start(startAt + whenOffset, off, Math.max(0.05, dur || (layer.buffer.duration - off)));
-    audioEngine.sources.push(src);
-    return;
-  }
-
-  // Media element layer. The element can only start on the wall clock, so line
-  // up its playhead with the graph timeline: when the blob reaches back far
-  // enough, pre-seek by the gate lead and let a graph gain gate open the slot
-  // (robust to main-thread jank); otherwise (audible start sits inside the
-  // lead — e.g. a root backing at off=0) hold it paused and start it at tStart
-  // so the first moment of audio is never skipped.
-  const el = layer.el;
-  const src = layer.src;
-  const g = ctx.createGain();
-  const vol = isFinite(gain) && gain >= 0 ? gain : 1;
-  g.gain.value = vol; // 0 = muted
-  src.connect(g);
-  g.connect(out);
-  const tStart = startAt + whenOffset;
-  const lead = tStart - ctx.currentTime;
-  if (off - lead >= 0) {
-    try { el.currentTime = off - lead; } catch (_) {}
-    if (lead > 0.01) {
-      g.gain.setValueAtTime(0, ctx.currentTime);
-      g.gain.linearRampToValueAtTime(vol, tStart);
-    }
-    const p = el.play();
-    if (p && typeof p.catch === "function") p.catch(() => {});
+  const src = ctx.createBufferSource();
+  src.buffer = layer.buffer;
+  if (isFinite(gain) && gain >= 0 && Math.abs(gain - 1) > 0.001) {
+    const g = ctx.createGain();
+    g.gain.value = gain; // 0 = muted
+    src.connect(g);
+    g.connect(out);
   } else {
-    el.pause();
-    const ms = Math.max(0, Math.round(lead * 1000));
-    setTimeout(() => {
-      if (audioEngine.ctx !== ctx) return; // stopped while waiting
-      try { el.currentTime = off; } catch (_) {}
-      const p = el.play();
-      if (p && typeof p.catch === "function") p.catch(() => {});
-    }, ms);
+    src.connect(out);
   }
-  if (dur) {
-    g.gain.setValueAtTime(vol, tStart + dur);
-    g.gain.linearRampToValueAtTime(0.0001, tStart + dur + 0.05);
-  }
-  audioEngine.elements.push(el);
-  audioEngine.sources.push(src); // closeAudio disconnects it (stop() throws → caught)
+  src.start(startAt + whenOffset, off, Math.max(0.05, dur || (layer.buffer.duration - off)));
+  audioEngine.sources.push(src);
 }
 
 async function playCommit(commit, extra) {
@@ -578,8 +504,8 @@ async function playCommit(commit, extra) {
   }
   const results = await Promise.allSettled(jobs);
   if (!audioEngine.ctx) return; // stopped while loading
-  // Fix the start time only AFTER every layer is decoded so the whole mix —
-  // including slow media-element fallbacks — begins at the same instant.
+  // Fix the start time only AFTER every layer is decoded so the whole mix
+  // begins at the same instant.
   const startAt = ctx.currentTime + 0.05;
   if (ctx.state === "suspended") ctx.resume().catch(() => {});
   const failed = [];
@@ -648,7 +574,6 @@ function stopPlayback() {
 const studio = {
   stream: null,
   recorder: null,
-  chunks: [],
   blob: null,
   blobUrl: null,
   takeDuration: 0,
@@ -753,19 +678,10 @@ function isIOS() {
   );
 }
 
-function makeRecorder(stream) {
-  if (typeof MediaRecorder === "undefined") return null;
-  // Chrome/Firefox: webm/opus. Safari/iOS: only audio/mp4 exists.
-  let mime = "";
-  if (MediaRecorder.isTypeSupported("audio/webm;codecs=opus")) mime = "audio/webm;codecs=opus";
-  else if (MediaRecorder.isTypeSupported("audio/mp4")) mime = "audio/mp4";
-  return new MediaRecorder(stream, mime ? { mimeType: mime, audioBitsPerSecond: 128000 } : { audioBitsPerSecond: 128000 });
-}
-
 /* Encode recorded Float32 mono samples into a 16-bit PCM WAV Blob. WAV is the
    one container every Web Audio decodeAudioData (including Safari/iOS) can
-   decode, which MediaRecorder's audio/mp4 output on iOS often cannot — that
-   decode-silence is the #1 cause of "the iPhone take can't be heard". */
+   decode, so recording directly to WAV means a take is playable on every
+   browser with no transcode step. */
 function encodeWav(chunks, inRate, outRate) {
   const total = chunks.reduce((n, c) => n + c.length, 0);
   if (!total) return null;
@@ -775,18 +691,28 @@ function encodeWav(chunks, inRate, outRate) {
   let o = 0;
   let acc = 0;
   let cnt = 0;
+  let nextOut = 1; // output sample index the running average is being built toward
   const push = () => {
     let s = (acc / cnt) * 32767;
     out[o++] = s > 32767 ? 32767 : s < -32768 ? -32768 : s | 0;
     acc = 0;
     cnt = 0;
   };
+  let src = 0;
   for (let k = 0; k < chunks.length; k++) {
     const ch = chunks[k];
     for (let i = 0; i < ch.length; i++) {
       acc += ch[i];
       cnt++;
-      if (cnt >= ratio) push();
+      src++;
+      // Emit one averaged output sample whenever the cumulative input count
+      // crosses the next output boundary. Averaging over fractional groups
+      // (2–3 samples per output) resamples any context rate correctly —
+      // `cnt >= ratio` would instead collapse 48 kHz → 22050 Hz into 16 kHz.
+      if (src >= nextOut * ratio) {
+        nextOut++;
+        push();
+      }
     }
   }
   if (cnt > 0 && o < max) push();
@@ -812,35 +738,23 @@ function encodeWav(chunks, inRate, outRate) {
   return new Blob([buf], { type: "audio/wav" });
 }
 
-/* One recorder interface for a take session. On iOS (and any browser with no
-   MediaRecorder) we bypass MediaRecorder and capture the mic through the
-   AudioContext into a WAV — Safari's Web Audio cannot decode its own
-   MediaRecorder audio/mp4, which is why iPhone takes used to be silent in the
-   mix. The blob timeline is identical either way (it starts at the same instant
-   the backing starts), so onTakeStopped treats both paths the same. */
+/* One recorder interface for a take session. The mic is captured through the
+   AudioContext into a 22050 Hz mono 16-bit WAV on every browser — the one
+   container every Web Audio decodeAudioData (including iOS Safari) accepts.
+   The blob timeline starts at the same instant the backing starts, so
+   onTakeStopped aligns the take purely by its detected start_time. */
 function createTakeRecorder(ctx, stream) {
   return createRecorder(ctx, stream, {
-    onData: (chunk) => { if (chunk && chunk.size) studio.chunks.push(chunk); },
-    onStop: () => onTakeStopped(),
+    // The recorder assembles the WAV itself (createRecorder → encodeWav); it is
+    // delivered whole in onStop. No per-buffer accumulation needed here.
+    onData: () => {},
+    onStop: (wavBlob) => onTakeStopped(wavBlob),
   });
 }
 
-/* Shared mic→recorder factory. MediaRecorder when possible (webm on
-   Chrome/Firefox); on iOS it records to WAV so Web Audio can decode it later. */
+/* Shared mic→recorder factory — PCM → WAV capture through an AudioContext on
+   every browser (no MediaRecorder): guarantees a WAV take everywhere. */
 function createRecorder(ctxIn, stream, handlers) {
-  if (!isIOS() && typeof MediaRecorder !== "undefined") {
-    const rec = makeRecorder(stream);
-    if (rec) {
-      rec.ondataavailable = (e) => { if (e.data && e.data.size) handlers.onData(e.data); };
-      rec.onstop = () => handlers.onStop();
-      return {
-        get mimeType() { return rec.mimeType || "audio/webm"; },
-        get state() { return rec.state; },
-        start: () => { rec.start(250); },
-        stop: () => { try { rec.stop(); } catch (_) {} },
-      };
-    }
-  }
   // PCM → WAV capture through an AudioContext.
   const ownCtx = !ctxIn;
   const ctx = ctxIn || new (window.AudioContext || window.webkitAudioContext)();
@@ -1067,14 +981,13 @@ async function startTakeRecording() {
   // recording. The take is the clean dry mic: nothing from the backing or the
   // AudioContext graph is connected to this recorder, and the mic is not
   // routed to the speakers, so monitor playback can never contaminate the take.
-  studio.chunks = [];
   studio.takeLevel = null;
   studio.recorder = createTakeRecorder(ctx, stream);
   if (!studio.recorder) {
     studio.recording = false;
     cleanupTakeMedia();
     renderHub();
-    setStudioStatus("✗ this browser cannot record audio (no MediaRecorder or Web Audio capture)", true);
+    setStudioStatus("✗ this browser cannot record audio (no Web Audio capture)", true);
     return;
   }
   // The take blob starts at the same instant as the backing (blob zero = root
@@ -1185,13 +1098,18 @@ function cancelTake() {
 
 function onTakeStopped(blobOverride) {
   const cancelled = studio.cancelled;
-  const type = (blobOverride && blobOverride.type) || (studio.recorder && studio.recorder.mimeType) || "audio/webm";
-  const blob = blobOverride || new Blob(studio.chunks, { type });
   clearInterval(studio.timerId);
   studio.recording = false;
   setRecordUI(false); // button stays "… recording" until renderHub; restore it here too
   cleanupTakeMedia();
   if (cancelled) return;
+  // The recorder delivers the finished WAV blob whole (createRecorder → encodeWav).
+  if (!blobOverride || !blobOverride.size) {
+    setStudioStatus("✗ take capture failed — nothing was recorded. Please try again.", true);
+    renderHub();
+    return;
+  }
+  const blob = blobOverride;
   studio.blob = blob;
   studio.blobUrl = URL.createObjectURL(blob);
   analyzeTake(blob).then((info) => {
@@ -1228,9 +1146,9 @@ function decodeBlobDuration(blob) {
    blob is read from (start_time − lead), which keeps every blob position at its
    true root spot.
 
-   Decoding via decodeAudioData instead of <audio>.duration is important:
-   Chrome reports Infinity as the duration for MediaRecorder webm/opus blobs,
-   which broke the commit modal's End field and the mix preview. */
+   Decoding via decodeAudioData (WAV always decodes) gives exact sample-level
+   duration/level on every browser — <audio>.duration is unreliable for
+   blobs. */
 function analyzeTake(blob) {
   const safeClose = (ctx) => {
     try { if (ctx && typeof ctx.close === "function") ctx.close().catch(() => {}); } catch (_) {}
@@ -1279,8 +1197,8 @@ function analyzeTake(blob) {
       })
       .catch(() => {
         safeClose(oc);
-        // Last-resort: <audio> metadata duration (Chrome may report Infinity
-        // for webm blobs, so guard). Timeout so the modal can never hang.
+        // Last-resort: <audio> metadata duration, guarded (blobs can report
+        // Infinity). Timeout so the modal can never hang.
         Promise.race([
           decodeBlobDuration(blob),
           new Promise((r) => setTimeout(() => r(0), 3000)),
@@ -1329,8 +1247,8 @@ function openTakePreview() {
   if (typeof studio.takeLevel === "number" && studio.takeLevel < 0.002) {
     warnings.push("This take decoded as silent / very quiet — the mic may not have captured your voice (a known iOS mic issue). Re-record, and check the iPhone isn’t muted.");
   }
-  if (studio.blob && studio.blob.size > 4.5 * 1024 * 1024) {
-    warnings.push(`This take is ${(studio.blob.size / (1024 * 1024)).toFixed(1)} MB — near the 5 MB upload cap. Consider re-recording a shorter take.`);
+  if (studio.blob && studio.blob.size > 15 * 1024 * 1024) {
+    warnings.push(`This take is ${(studio.blob.size / (1024 * 1024)).toFixed(1)} MB — near the 16 MB upload cap. Consider re-recording a shorter take.`);
   }
   const warnHtml = warnings.length
     ? warnings.map((w) => `<p class="rc-hint" style="color:#c0392b;font-weight:600">⚠ ${w}</p>`).join("")
@@ -1459,7 +1377,6 @@ let newRecBlob = null;     // Blob when the source was recorded from mic
 let newRecUrl = null;      // /recordings/... URL when uploaded, or blob: URL
 let newRecStream = null;
 let newRecRecorder = null;
-let newRecChunks = [];
 let newRecTimer = null;
 let newRecStart = 0;
 let newRecDuration = 0;
@@ -1481,7 +1398,7 @@ function openNewRecording() {
     </label>
     <div class="rc-source-row">
       <label class="rc-upload">
-        <input type="file" id="new-file" accept="audio/*,.mp3,.wav,.ogg,.oga,.flac,.m4a,.aac,.opus,.webm" hidden />
+        <input type="file" id="new-file" accept=".wav,.mp3,audio/wav,audio/mpeg,audio/*" hidden />
         <span class="rc-btn rc-btn-ghost" id="new-file-btn">⬆ Upload audio</span>
       </label>
       <button type="button" class="rc-btn rc-btn-ghost" id="new-record-btn">● Record from mic</button>
@@ -1502,8 +1419,8 @@ function openNewRecording() {
       if (!f) return;
       e.target.value = "";
       const status = overlay.querySelector("#new-source-status");
-      if (f.size > 5 * 1024 * 1024) {
-        status.textContent = "✗ File too large — max 5MB.";
+      if (f.size > 16 * 1024 * 1024) {
+        status.textContent = "✗ File too large — max 16MB.";
         return;
       }
       status.textContent = "Uploading…";
@@ -1532,11 +1449,18 @@ async function startNewRec(overlay) {
     overlay.querySelector("#new-source-status").textContent = "✗ mic unavailable: " + err.message;
     return;
   }
-  newRecChunks = [];
   newRecRecorder = createRecorder(null, newRecStream, {
-    onData: (chunk) => { if (chunk && chunk.size) newRecChunks.push(chunk); },
+    // The recorder assembles the WAV itself; onStop delivers the finished blob.
+    onData: () => {},
     onStop: (wavBlob) => {
-      const blob = wavBlob || new Blob(newRecChunks, { type: (newRecRecorder && newRecRecorder.mimeType) || "audio/webm" });
+      const blob = wavBlob;
+      if (!blob || !blob.size) {
+        const statusEl = overlay.querySelector("#new-source-status");
+        statusEl.textContent = "✗ nothing was recorded — please try again.";
+        overlay.querySelector("#new-record-btn").hidden = false;
+        overlay.querySelector("#new-stop-btn").hidden = true;
+        return;
+      }
       newRecBlob = blob;
       if (newRecUrl && newRecUrl.startsWith("blob:")) URL.revokeObjectURL(newRecUrl);
       newRecUrl = URL.createObjectURL(blob);

@@ -6,7 +6,7 @@ const USER_KEY = "benpage_admin_user";
 
 // Max upload size in MB — keep in sync with server.js (MAX_UPLOAD_BYTES /
 // MAX_AUDIO_UPLOAD_BYTES) and nginx client_max_body_size (deploy/nginx-upload.conf).
-const MAX_UPLOAD_MB = 5;
+const MAX_UPLOAD_MB = 16;
 
 /* Admin lists (music + blog) show only this many rows by default, with a
    "Show more" button to reveal the rest. */

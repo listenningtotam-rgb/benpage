@@ -9,12 +9,15 @@
     "dev": "PORT=3000 node server.js",
     "check": "node check.js",
     "migrate": "node migrate.js",
-    "migrate:dry": "node migrate.js --dry"
+    "migrate:dry": "node migrate.js --dry",
+    "convert-recordings": "node convert-recordings.js",
+    "convert-recordings:dry": "node convert-recordings.js --dry"
   },
   "engines": {
     "node": ">=22"
   },
   "dependencies": {
+    "@audio/decode": "^3.12.0",
     "better-sqlite3": "^13.0.2",
     "jsonwebtoken": "^9.0.3"
   }
