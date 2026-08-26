@@ -383,20 +383,48 @@ const audioEngine = {
    it every time (0.5-3 s) used to swallow the count-in's lead time. */
 const bufferCache = new Map(); // url → AudioBuffer
 
-async function decodeBuffer(ctx, url) {
+/* Decode one audio layer for playback. Returns:
+     { kind: "buffer", buffer }  — decoded AudioBuffer (cached by URL), or
+     { kind: "media", el, src }  — an <audio> element routed into the Web Audio
+       graph via createMediaElementSource, used when decodeAudioData rejects the
+       format. This is the iOS fix for old takes: Safari's Web Audio refuses to
+       decode webm/Opus (all desktop-recorded commits) and its own MediaRecorder
+       audio/mp4, but its media engine plays both — so the layer becomes audible
+       in the mix instead of silently dropped.
+   Media layers are NOT cached: an element can only ever have ONE
+   createMediaElementSource node, and the node is bound to its AudioContext, so
+   each playback needs a fresh element. */
+async function decodeLayer(ctx, url) {
   const hit = bufferCache.get(url);
-  if (hit) return hit;
+  if (hit) return { kind: "buffer", buffer: hit };
   const res = await fetch(url, { cache: "no-cache" });
   if (!res.ok) throw new Error("Could not load audio: " + url);
   const ab = await res.arrayBuffer();
-  let buf;
   try {
-    buf = await ctx.decodeAudioData(ab);
-  } catch (err) {
-    throw new Error("Could not decode audio on this browser: " + url + " — " + (err && err.message ? err.message : "decodeAudioData failed"));
+    const buffer = await ctx.decodeAudioData(ab);
+    bufferCache.set(url, buffer);
+    return { kind: "buffer", buffer };
+  } catch (_) {
+    // Fallback: media element captured into the graph.
+    const el = new Audio();
+    el.preload = "auto";
+    el.src = url;
+    await new Promise((resolve) => {
+      const done = () => {
+        el.removeEventListener("canplay", done);
+        el.removeEventListener("error", done);
+        resolve();
+      };
+      el.addEventListener("canplay", done);
+      el.addEventListener("error", done);
+      setTimeout(done, 4000); // never let a slow load hang playback
+    });
+    if (el.error) {
+      throw new Error("Could not decode or play audio on this browser: " + url);
+    }
+    const src = ctx.createMediaElementSource(el);
+    return { kind: "media", el, src };
   }
-  bufferCache.set(url, buf);
-  return buf;
 }
 
 function closeAudio() {
@@ -460,50 +488,126 @@ function commitVolume(c) {
                 so reading the blob from its start_time places the audible
                 take exactly where it belongs on the parent).
    gain       = linear multiplier applied to THIS source only (per-commit
-                volume balance vs the parent chain; 1 = unchanged). */
-function scheduleSource(ctx, buffer, whenOffset, bufOffset, dur, startAt, dest, gain) {
-  const src = ctx.createBufferSource();
-  src.buffer = buffer;
+                volume balance vs the parent chain; 1 = unchanged).
+   layer      = { kind: "buffer", buffer } | { kind: "media", el, src } from
+                decodeLayer(). A media layer (decodeAudioData failed) is played
+                through its <audio> element, gated into the graph at the
+                scheduled time and pre-seeked so its playhead sits at bufOffset
+                the moment the gate opens — keeping mix alignment correct. */
+function scheduleLayer(ctx, layer, whenOffset, bufOffset, dur, startAt, dest, gain) {
   const out = dest || ctx.destination;
-  if (isFinite(gain) && gain >= 0 && Math.abs(gain - 1) > 0.001) {
-    const g = ctx.createGain();
-    g.gain.value = gain; // 0 = muted
-    src.connect(g);
-    g.connect(out);
-  } else {
-    src.connect(out);
-  }
   const off = Math.max(0, bufOffset || 0);
-  src.start(startAt + whenOffset, off, Math.max(0.05, dur || (buffer.duration - off)));
-  audioEngine.sources.push(src);
+  if (layer.kind === "buffer") {
+    const src = ctx.createBufferSource();
+    src.buffer = layer.buffer;
+    if (isFinite(gain) && gain >= 0 && Math.abs(gain - 1) > 0.001) {
+      const g = ctx.createGain();
+      g.gain.value = gain; // 0 = muted
+      src.connect(g);
+      g.connect(out);
+    } else {
+      src.connect(out);
+    }
+    src.start(startAt + whenOffset, off, Math.max(0.05, dur || (layer.buffer.duration - off)));
+    audioEngine.sources.push(src);
+    return;
+  }
+
+  // Media element layer. The element can only start on the wall clock, so line
+  // up its playhead with the graph timeline: when the blob reaches back far
+  // enough, pre-seek by the gate lead and let a graph gain gate open the slot
+  // (robust to main-thread jank); otherwise (audible start sits inside the
+  // lead — e.g. a root backing at off=0) hold it paused and start it at tStart
+  // so the first moment of audio is never skipped.
+  const el = layer.el;
+  const src = layer.src;
+  const g = ctx.createGain();
+  const vol = isFinite(gain) && gain >= 0 ? gain : 1;
+  g.gain.value = vol; // 0 = muted
+  src.connect(g);
+  g.connect(out);
+  const tStart = startAt + whenOffset;
+  const lead = tStart - ctx.currentTime;
+  if (off - lead >= 0) {
+    try { el.currentTime = off - lead; } catch (_) {}
+    if (lead > 0.01) {
+      g.gain.setValueAtTime(0, ctx.currentTime);
+      g.gain.linearRampToValueAtTime(vol, tStart);
+    }
+    const p = el.play();
+    if (p && typeof p.catch === "function") p.catch(() => {});
+  } else {
+    el.pause();
+    const ms = Math.max(0, Math.round(lead * 1000));
+    setTimeout(() => {
+      if (audioEngine.ctx !== ctx) return; // stopped while waiting
+      try { el.currentTime = off; } catch (_) {}
+      const p = el.play();
+      if (p && typeof p.catch === "function") p.catch(() => {});
+    }, ms);
+  }
+  if (dur) {
+    g.gain.setValueAtTime(vol, tStart + dur);
+    g.gain.linearRampToValueAtTime(0.0001, tStart + dur + 0.05);
+  }
+  audioEngine.elements.push(el);
+  audioEngine.sources.push(src); // closeAudio disconnects it (stop() throws → caught)
 }
 
 async function playCommit(commit, extra) {
   closeAudio();
   const ctx = new (window.AudioContext || window.webkitAudioContext)();
   audioEngine.ctx = ctx;
+  if (ctx.state === "suspended") ctx.resume().catch(() => {}); // iOS autoplay hardening
   const chain = buildChain(commit);
-  const startAt = ctx.currentTime + 0.05;
-  const jobs = chain.map(async ({ commit: c, offset }) => {
-    const buffer = await decodeBuffer(ctx, c.url);
-    if (!audioEngine.ctx) return; // stopped while loading
-    scheduleSource(ctx, buffer, offset, Math.max(0, (Number(c.start_time) || 0) - (Number(c.lead) || 0)), takeDuration(c), startAt, undefined, commitVolume(c));
-  });
+  const jobs = chain.map(async ({ commit: c, offset }) => ({
+    c,
+    offset,
+    layer: await decodeLayer(ctx, c.url),
+  }));
   if (extra && extra.url) {
     jobs.push(
-      (async () => {
-        const buffer = await decodeBuffer(ctx, extra.url);
-        if (!audioEngine.ctx) return;
-        scheduleSource(ctx, buffer, Number(extra.start_time) || 0, Math.max(0, (Number(extra.start_time) || 0) - (Number(extra.lead) || 0)), extra.duration, startAt, undefined, extra.volume);
-      })()
+      decodeLayer(ctx, extra.url).then((layer) => ({
+        c: { start_time: Number(extra.start_time) || 0, lead: Number(extra.lead) || 0, end_time: null },
+        offset: Number(extra.start_time) || 0,
+        layer,
+        dur: extra.duration,
+        gain: extra.volume,
+      }))
     );
   }
   const results = await Promise.allSettled(jobs);
-  const failed = results.filter((r) => r.status === "rejected");
+  if (!audioEngine.ctx) return; // stopped while loading
+  // Fix the start time only AFTER every layer is decoded so the whole mix —
+  // including slow media-element fallbacks — begins at the same instant.
+  const startAt = ctx.currentTime + 0.05;
+  if (ctx.state === "suspended") ctx.resume().catch(() => {});
+  const failed = [];
+  for (const r of results) {
+    if (r.status === "rejected") {
+      failed.push(r.reason);
+      continue;
+    }
+    const { c, offset, layer } = r.value;
+    try {
+      scheduleLayer(
+        ctx,
+        layer,
+        offset,
+        Math.max(0, (Number(c.start_time) || 0) - (Number(c.lead) || 0)),
+        r.value.dur !== undefined ? r.value.dur : takeDuration(c),
+        startAt,
+        undefined,
+        r.value.gain !== undefined ? r.value.gain : commitVolume(c)
+      );
+    } catch (err) {
+      failed.push(err);
+    }
+  }
   const row = document.querySelector(`.rc-commit[data-commit="${commit.id}"]`);
   if (row) row.classList.add("playing");
   if (failed.length) {
-    setStudioStatus("⚠ " + failed.length + " layer(s) couldn't be decoded for playback on this browser — " + failed[0].reason.message, true);
+    setStudioStatus("⚠ " + failed.length + " layer(s) couldn't be decoded for playback on this browser — " + failed[0].message, true);
   } else {
     setStudioStatus(`▶ playing ${commitHash(commit.id)}`);
   }
@@ -916,7 +1020,7 @@ async function startTakeRecording() {
   if (!backingMuted) {
     try {
       decoded = await Promise.all(
-        chain.map(async ({ commit: c, offset }) => ({ c, offset, buffer: await decodeBuffer(ctx, c.url) }))
+        chain.map(async ({ commit: c, offset }) => ({ c, offset, layer: await decodeLayer(ctx, c.url) }))
       );
     } catch (err) {
       studio.recording = false;
@@ -948,8 +1052,8 @@ async function startTakeRecording() {
   backingGain.gain.value = backingMuted ? 0 : getBackingVolume();
   backingGain.connect(ctx.destination);
 
-  for (const { c, offset, buffer } of decoded) {
-    scheduleSource(ctx, buffer, offset, Math.max(0, (Number(c.start_time) || 0) - (Number(c.lead) || 0)), takeDuration(c), backingStartAt, backingGain, commitVolume(c));
+  for (const { c, offset, layer } of decoded) {
+    scheduleLayer(ctx, layer, offset, Math.max(0, (Number(c.start_time) || 0) - (Number(c.lead) || 0)), takeDuration(c), backingStartAt, backingGain, commitVolume(c));
   }
 
   // Audible count-in ticks over the pre-roll — the 4th ends exactly at
