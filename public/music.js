@@ -1359,7 +1359,39 @@ async function commitTake(overlay) {
   }
 }
 
+/* Quick magic-byte check so a stale file (WebM/M4A/OGG from before the WAV
+   migration) fails with a clear message instead of a confusing server round-trip.
+   Returns "wav" | "mp3" | "WebM" | "Ogg" | "FLAC" | "MP4/M4A" | "unknown" | null
+   (null = couldn't read or too small — let the server decide). */
+async function sniffAudioKind(blob) {
+  try {
+    const head = new Uint8Array(await blob.slice(0, 12).arrayBuffer());
+    if (head.length < 12) return null;
+    if (
+      head[0] === 0x52 && head[1] === 0x49 && head[2] === 0x46 && head[3] === 0x46 &&
+      head[8] === 0x57 && head[9] === 0x41 && head[10] === 0x56 && head[11] === 0x45
+    ) return "wav";
+    if (
+      (head[0] === 0x49 && head[1] === 0x44 && head[2] === 0x33) ||
+      (head[0] === 0xff && (head[1] & 0xe0) === 0xe0)
+    ) return "mp3";
+    if (head[0] === 0x1a && head[1] === 0x45 && head[2] === 0xdf && head[3] === 0xa3) return "WebM";
+    if (head[0] === 0x4f && head[1] === 0x67 && head[2] === 0x67 && head[3] === 0x53) return "Ogg";
+    if (head[0] === 0x66 && head[1] === 0x4c && head[2] === 0x61 && head[3] === 0x43) return "FLAC";
+    if (head[4] === 0x66 && head[5] === 0x74 && head[6] === 0x79 && head[7] === 0x70) return "MP4/M4A";
+    return "unknown";
+  } catch (_) {
+    return null;
+  }
+}
+
 async function uploadBlob(blob) {
+  const kind = await sniffAudioKind(blob);
+  if (kind && kind !== "wav" && kind !== "mp3" && kind !== "unknown") {
+    throw new Error(
+      `Unsupported audio type: ${kind}. This site only accepts WAV (recordings) or MP3 (backing tracks).`
+    );
+  }
   const token = localStorage.getItem(TOKEN_KEY);
   const res = await fetch("/api/music/upload", {
     method: "POST",

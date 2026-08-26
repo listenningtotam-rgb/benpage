@@ -308,6 +308,18 @@ function sniffAudioExt(buf) {
   return null;
 }
 
+/* Name a rejected buffer's container for diagnostics. Used so a stale client
+   (old MusicRecorder-era page still uploading WebM) produces an error message
+   that says exactly what was received. */
+function audioMagicName(buf) {
+  if (!buf || buf.length < 12) return "unknown";
+  if (buf[0] === 0x1a && buf[1] === 0x45 && buf[2] === 0xdf && buf[3] === 0xa3) return "WebM/Matroska";
+  if (buf[0] === 0x4f && buf[1] === 0x67 && buf[2] === 0x67 && buf[3] === 0x53) return "Ogg";
+  if (buf[0] === 0x66 && buf[1] === 0x4c && buf[2] === 0x61 && buf[3] === 0x43) return "FLAC";
+  if (buf[4] === 0x66 && buf[5] === 0x74 && buf[6] === 0x79 && buf[7] === 0x70) return "MP4/M4A";
+  return "unknown";
+}
+
 // ─── Login brute-force limiter (in-memory) ─────────────────────────────
 const LOGIN_MAX_ATTEMPTS = 10; // per username+IP per 15 min
 const LOGIN_WINDOW_MS = 15 * 60 * 1000;
@@ -984,8 +996,18 @@ async function handleApi(req, res, urlPath) {
     }
     const ext = sniffAudioExt(buf);
     if (!ext) {
+      const name = audioMagicName(buf);
+      const hex = [...buf.slice(0, 12)]
+        .map((b) => b.toString(16).padStart(2, "0"))
+        .join(" ");
+      const hint =
+        name === "WebM/Matroska"
+          ? " A WebM upload usually means an outdated recorder is still saving the old format — hard-refresh the page (Cmd/Ctrl+Shift+R) to load the WAV update."
+          : "";
       return json(res, 400, {
-        error: "Unsupported audio type. Send WAV (recordings) or MP3 (backing tracks) bytes.",
+        error:
+          `Unsupported audio type (${name}, ${buf.length} bytes, magic: ${hex}). ` +
+          `Send WAV (recordings) or MP3 (backing tracks) bytes.${hint}`,
       });
     }
 
@@ -1559,7 +1581,16 @@ const server = http.createServer((req, res) => {
     }
 
     const ext = path.extname(filePath);
-    res.writeHead(200, { "Content-Type": mimeTypes[ext] || "application/octet-stream" });
+    // HTML/JS/CSS: revalidate every load so a deploy is picked up immediately
+    // instead of browsers keeping the old recorder code (which caused WebM
+    // uploads to be rejected after the WAV migration). Other static files
+    // (images, fonts) keep the default (no explicit cache header).
+    const cacheControl = [".html", ".js", ".css", ".mjs"].includes(ext)
+      ? "no-cache"
+      : undefined;
+    const headers = { "Content-Type": mimeTypes[ext] || "application/octet-stream" };
+    if (cacheControl) headers["Cache-Control"] = cacheControl;
+    res.writeHead(200, headers);
     res.end(data);
   });
 });
