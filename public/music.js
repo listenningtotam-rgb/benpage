@@ -362,6 +362,10 @@ function updateStudioBar() {
     label.textContent = `Checked out: ${repo ? repo.title + " " : ""}${c ? commitHash(c.id) + " · " + c.message : ""}`;
     btn.disabled = false;
   }
+  if (hub.admin && (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia)) {
+    btn.title = "Mic is blocked — this page must be served over HTTPS";
+    setStudioStatus("⚠ Microphone blocked: this page is on plain http — serve it over HTTPS to record takes.", true);
+  }
 }
 
 /* ── Audio engine ──────────────────────────────────────── */
@@ -627,6 +631,9 @@ function makeRecorder(stream) {
 }
 
 async function getUserMic() {
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    throw new Error("Mic access is blocked: this page is on plain http — serve it over HTTPS to record");
+  }
   // Let the user pick the real mic. The OS "default" input is often a
   // loopback / stereo-mix device that records whatever plays (e.g. the
   // backing track) — which is exactly the "parent sound in my take" symptom.
@@ -691,10 +698,21 @@ function scheduleCountIn(ctx, backingStartAt, chainStartAt) {
 
 async function populateMicDevices() {
   const sel = document.getElementById("studio-device");
-  if (!sel || !navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) return;
+  if (!sel) return;
+  // Browsers only expose mic APIs on secure contexts (HTTPS) or localhost.
+  if (!navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) {
+    sel.innerHTML = `<option value="">Mic blocked — HTTPS required</option>`;
+    return;
+  }
   try {
     const mics = (await navigator.mediaDevices.enumerateDevices()).filter((d) => d.kind === "audioinput");
     if (!mics.length) return;
+    // Until mic permission is granted, browsers hide the real device names.
+    // Tell the user instead of listing useless "Microphone 1/2" fallbacks.
+    if (!mics.some((d) => d.label)) {
+      sel.innerHTML = `<option value="">Allow mic access to see devices</option>`;
+      return;
+    }
     const saved = localStorage.getItem("studio_mic_device") || "";
     sel.innerHTML = mics
       .map((d, i) => `<option value="${scEscapeHTML(d.deviceId)}">${scEscapeHTML(d.label || "Microphone " + (i + 1))}</option>`)
@@ -707,6 +725,10 @@ async function populateMicDevices() {
 
 async function startTakeRecording() {
   if (!hub.checkedOut || studio.recording) return;
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    setStudioStatus("✗ Microphone blocked: this page is on plain http — serve it over HTTPS to record takes.", true);
+    return;
+  }
   const repoId = hub.checkedOut.repoId;
   const commit = (hub.commits.get(repoId) || []).find((c) => c.id === hub.checkedOut.commitId);
   if (!commit) return;
