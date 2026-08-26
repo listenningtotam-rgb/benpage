@@ -799,26 +799,81 @@ async function playIOSMix(commit, extra) {
   }
   const mixUrl = URL.createObjectURL(blob);
   const row = document.querySelector(`.rc-commit[data-commit="${commit.id}"]`);
-  const el = new Audio(mixUrl);
+  const el = new Audio();
   el.preload = "auto";
   el._mixUrl = mixUrl; // revoked in closeAudio
-  let started = false;
-  const fail = () => {
-    if (started) return;
+  let started = false; // terminal: actually sounding, or gave up / fell back
+  let attempt = 0;     // play() attempts for this blob
+  // Still the active attempt? false once playing, or after closeAudio()/giveUp()
+  // superseded this element (e.g. the user re-tapped play on another commit).
+  const live = () => !started && el._mixUrl === mixUrl;
+  const giveUp = (why) => {
+    if (!live()) return;
     started = true;
     try { URL.revokeObjectURL(mixUrl); } catch (_) {}
     el._mixUrl = null;
-    setStudioStatus("⚠ couldn't play the rendered mix — open the share link or try a desktop browser.", true);
+    // The commit's own file over a server URL is the proven iOS playback path —
+    // better than leaving the user stuck on "mixing…".
+    setStudioStatus(`⚠ couldn't play the rendered mix (${why}) — playing the recording alone.`, true);
+    playNativeTrack(commit, extra, "rendered mix didn't start");
   };
-  el.onerror = fail;
+  const tryPlay = () => {
+    if (!live()) return;
+    attempt++;
+    el.play().catch((e) => {
+      if (!live()) return;
+      // The render is async, so by the time play() runs the original tap's
+      // gesture is long gone and iOS blocks it (NotAllowedError) — even though
+      // the same mix plays fine on the next tap. Retry on the next touch,
+      // exactly like playNativeTrack does for single-track playback.
+      if (e && e.name === "NotAllowedError") {
+        const retry = () => {
+          if (!live()) return;
+          el.play().catch(() => { if (live()) giveUp("tap retry failed"); });
+          window.removeEventListener("touchend", retry);
+          window.removeEventListener("click", retry);
+        };
+        window.addEventListener("touchend", retry, { once: true });
+        window.addEventListener("click", retry, { once: true });
+        setStudioStatus("▶ tap to play the rendered mix", false);
+        return;
+      }
+      // One automatic retry covers a spurious first-attempt error (iOS can
+      // error before a blob URL is fully loaded); only then give up.
+      if (attempt < 2) {
+        setTimeout(tryPlay, 400);
+        return;
+      }
+      giveUp((e && e.message) || e || "play failed");
+    });
+  };
+  el.onerror = () => { if (live()) giveUp("load failed"); };
   el.onplaying = () => {
-    if (started) return;
+    if (!live()) return;
     started = true; // audio is actually sounding — only now may the row go blue
     if (row) row.classList.add("playing");
     setStudioStatus(`▶ playing ${commitHash(commit.id)} (rendered mix)`);
   };
   el.onended = () => { if (started) stopPlayback(); };
-  el.play().catch(fail);
+  // Don't call play() until the blob URL is actually loadable — on iOS, play()
+  // too early (or after the async render, outside the tap's gesture) fires a
+  // spurious error even though the same mix plays fine on a retry.
+  el.src = mixUrl;
+  let armed = false;
+  const arm = () => {
+    if (armed || !live()) return;
+    armed = true;
+    tryPlay();
+  };
+  el.addEventListener("loadedmetadata", arm, { once: true });
+  el.addEventListener("canplay", arm, { once: true });
+  // Readiness never arrived (huge mix / slow blob) — try anyway, then bail out
+  // so the UI is never left stuck on "mixing…".
+  const bail = setTimeout(() => {
+    if (!live()) return;
+    arm();
+    setTimeout(() => { if (live()) giveUp("timed out"); }, 4000);
+  }, 8000);
   audioEngine.elements.push(el);
   if (commit.repo_id) countRepoPlay(commit.repo_id);
 }
