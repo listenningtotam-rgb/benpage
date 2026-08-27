@@ -527,10 +527,11 @@ function sanitizeBlocks(blocks) {
 }
 
 // ─── Share pages (WeChat-friendly, server-rendered) ────────────────────
-// Every blog post / music track gets a real HTML page at /post/:id and
-// /music/:id.  WeChat's crawler builds the forwarded preview card from the
-// og: meta tags below, and the page body renders fully without JavaScript,
-// so it reads perfectly inside WeChat's in-app browser.
+// Every blog post / music track / recording repo gets a real HTML page at
+// /post/:id, /music/:id and /recording/:id.  WeChat's crawler builds the
+// forwarded preview card from the og: meta tags below, and the page body
+// renders fully without JavaScript, so it reads perfectly inside WeChat's
+// in-app browser.
 const SITE_NAME = "BEN 言";
 
 function escHtml(s) {
@@ -685,18 +686,21 @@ function renderBlogSharePage(req, post) {
   );
 }
 
-function renderMusicSharePage(req, track, latest) {
-  const urlPath = "/music/" + track.id;
+/* One shared renderer for the track-style share pages. `kind` is "music"
+   (Recordings tab, /music/:id) or "recording" (REC HUB, /recording/:id);
+   `track` is the matching music row or recording_repos row — both carry the
+   same fields this page reads (id/title/url/source_type/play_count). */
+function renderTrackSharePage(req, kind, track, latest, urlPath) {
   // `latest` = the repo's highest tagged version (see db.getLatestTaggedCommit).
-  // NULL only in the degenerate "nothing tagged" case → fall back to the
-  // initial file, exactly as the page has always behaved.
+  // NULL when nothing is tagged (plain music tracks never have commits) →
+  // fall back to the track's own file, exactly as the page has always behaved.
   const version = latest && latest.version != null ? latest.version : null;
   const versionLabel = version != null ? `v${version}.0` : "";
   // 原创 (original) vs Cover — set once when the recording was created.
   const sourceLabel = track.source_type === "cover" ? "Cover" : "原创";
   const head = renderSharePageHead({
     req,
-    kind: "music",
+    kind,
     id: track.id,
     title: `${track.title} · ${sourceLabel}${versionLabel ? ` · ${versionLabel}` : ""}`,
     description: `${track.title} (${sourceLabel}) — a recording from ${SITE_NAME}.`,
@@ -756,6 +760,14 @@ function renderMusicSharePage(req, track, latest) {
     mixScript +
     "\n</body>\n</html>\n"
   );
+}
+
+function renderMusicSharePage(req, track, latest) {
+  return renderTrackSharePage(req, "music", track, latest, "/music/" + track.id);
+}
+
+function renderRecordingSharePage(req, repo, latest) {
+  return renderTrackSharePage(req, "recording", repo, latest, "/recording/" + repo.id);
 }
 
 // ─── Password policy ───────────────────────────────────────────────────
@@ -1103,19 +1115,6 @@ async function handleApi(req, res, urlPath) {
       return json(res, 400, { error: "Title and URL are required" });
     }
     const track = db.createMusic({ title, url, sort_order: body.sort_order });
-    // Every repo must have an initial commit — create one automatically.
-    // It is always the recording's first version (v1.0).
-    db.createRecordingCommit({
-      repo_id: track.id,
-      parent_id: null,
-      message: title,
-      url,
-      start_time: 0,
-      end_time: null,
-      mode: "single",
-      contributor: authUser.username,
-      version: 1,
-    });
     return json(res, 201, track);
   }
 
@@ -1146,9 +1145,12 @@ async function handleApi(req, res, urlPath) {
   }
 
   // ── Recording hub API ─────────────────────────────────
-  // music rows are recording "repos"; every take is a recording_commits row.
+  // `recording_repos` are the hub's OWN projects — a separate library from
+  // the Recordings `music` table (split in migration 011). Every take is a
+  // recording_commits row on the repo.
   //   GET  /api/recordings                  → public, all repos + commits
   //   POST /api/recordings                  → admin, init a new recording
+  //   POST /api/recordings/:id/play         → public, bump a repo's play count
   //   GET/POST /api/recordings/:id/commits  → public list / admin add commit
   //   PATCH /api/recordings/:id/commits/:cid → admin, update commit volume
   //   POST /api/recordings/:id/commits/:cid/tag → admin, tag as next version
@@ -1171,7 +1173,7 @@ async function handleApi(req, res, urlPath) {
     if (!title || !url) {
       return json(res, 400, { error: "Title and audio URL are required" });
     }
-    const repo = db.createMusic({
+    const repo = db.createRecordingRepo({
       title,
       url,
       sort_order: body.sort_order,
@@ -1191,13 +1193,22 @@ async function handleApi(req, res, urlPath) {
       contributor: cleanText(body.contributor, 60) || authUser.username,
       version: 1, // the initial commit is always the recording's first version
     });
-    return json(res, 201, { repo: db.getMusic(repo.id), commit });
+    return json(res, 201, { repo: db.getRecordingRepo(repo.id), commit });
+  }
+
+  // Play-count increment — public (visitors bump it), host-gated + rate-limited.
+  const recordingPlayMatch = urlPath.match(/^\/api\/recordings\/(\d+)\/play$/);
+  if (recordingPlayMatch && req.method === "POST") {
+    if (!checkCountRate(req)) return json(res, 429, { error: "Rate limit exceeded" });
+    const repo = db.incrementRecordingRepoPlay(Number(recordingPlayMatch[1]));
+    if (!repo) return json(res, 404, { error: "Recording not found" });
+    return json(res, 200, { ok: true, play_count: repo.play_count });
   }
 
   const repoCommitsMatch = urlPath.match(/^\/api\/recordings\/(\d+)\/commits$/);
   if (repoCommitsMatch) {
     const repoId = Number(repoCommitsMatch[1]);
-    const repo = db.getMusic(repoId);
+    const repo = db.getRecordingRepo(repoId);
     if (!repo) return json(res, 404, { error: "Recording not found" });
 
     if (req.method === "GET") {
@@ -1240,7 +1251,7 @@ async function handleApi(req, res, urlPath) {
     if (!requireAuth()) return;
     const repoId = Number(commitPatchMatch[1]);
     const commitId = Number(commitPatchMatch[2]);
-    const repo = db.getMusic(repoId);
+    const repo = db.getRecordingRepo(repoId);
     if (!repo) return json(res, 404, { error: "Recording not found" });
     const existing = db.getRecordingCommit(commitId);
     if (!existing || existing.repo_id !== repoId) {
@@ -1259,7 +1270,7 @@ async function handleApi(req, res, urlPath) {
     if (!requireAuth()) return;
     const repoId = Number(commitPatchMatch[1]);
     const commitId = Number(commitPatchMatch[2]);
-    const repo = db.getMusic(repoId);
+    const repo = db.getRecordingRepo(repoId);
     if (!repo) return json(res, 404, { error: "Recording not found" });
     const existing = db.getRecordingCommit(commitId);
     if (!existing || existing.repo_id !== repoId) {
@@ -1268,8 +1279,9 @@ async function handleApi(req, res, urlPath) {
     const fileUrl = existing.url;
     db.deleteRecordingCommit(commitId);
     // Remove the underlying audio file, but only when nothing else still
-    // references it (the repo's initial commit shares its URL with music.url,
-    // and the same file could have been reused by another commit).
+    // references it (the repo's initial commit shares its URL with
+    // recording_repos.url, and the same file could be reused by another
+    // commit or a Recordings track).
     if (fileUrl && fileUrl.startsWith(RECORDING_URL_PREFIX) && !db.isRecordingUrlReferenced(fileUrl)) {
       const filePath = path.join(RECORDING_DIR, path.normalize(fileUrl.slice(RECORDING_URL_PREFIX.length)));
       if (filePath.startsWith(path.resolve(RECORDING_DIR) + path.sep)) {
@@ -1284,7 +1296,7 @@ async function handleApi(req, res, urlPath) {
     if (!requireAuth()) return;
     const repoId = Number(commitTagMatch[1]);
     const commitId = Number(commitTagMatch[2]);
-    const repo = db.getMusic(repoId);
+    const repo = db.getRecordingRepo(repoId);
     if (!repo) return json(res, 404, { error: "Recording not found" });
     const existing = db.getRecordingCommit(commitId);
     if (!existing || existing.repo_id !== repoId) {
@@ -1299,14 +1311,14 @@ async function handleApi(req, res, urlPath) {
   if (repoDeleteMatch && req.method === "DELETE") {
     if (!requireAuth()) return;
     const repoId = Number(repoDeleteMatch[1]);
-    const repo = db.getMusic(repoId);
+    const repo = db.getRecordingRepo(repoId);
     if (!repo) return json(res, 404, { error: "Recording not found" });
     // Collect the audio files this recording owns (the repo's own file plus
     // every commit's) so the files can be removed once nothing else references
     // them — mirroring the per-commit delete. Shared URLs are left alone.
     const urls = new Set([repo.url]);
     for (const c of db.listRecordingCommits(repoId)) urls.add(c.url);
-    db.deleteMusic(repoId); // deletes its commits too
+    db.deleteRecordingRepo(repoId); // deletes its commits too
     for (const url of urls) {
       if (url && url.startsWith(RECORDING_URL_PREFIX) && !db.isRecordingUrlReferenced(url)) {
         const filePath = path.join(RECORDING_DIR, path.normalize(url.slice(RECORDING_URL_PREFIX.length)));
@@ -1625,12 +1637,28 @@ const server = http.createServer((req, res) => {
       res.end("Not Found");
       return;
     }
-    // The share page plays the recording's latest TAGGED version (single = the
-    // version's own file; overlay = its rendered chain mix), never the initial
-    // commit's file.
-    const latest = db.getLatestTaggedCommit(track.id);
+    // Recordings are plain admin-uploaded tracks (they live in `music` and
+    // never have recording commits), so the share page plays the track's own
+    // file — no tagged-version logic.
     res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
-    res.end(renderMusicSharePage(req, track, latest));
+    res.end(renderMusicSharePage(req, track, null));
+    return;
+  }
+
+  // REC HUB share page — reads recording_repos (not music) and plays the
+  // repo's latest TAGGED version (single = the version's own file; overlay =
+  // its rendered chain mix), never the initial commit's file.
+  const recordingShare = urlPath.match(/^\/recording\/(\d+)$/);
+  if (recordingShare && req.method === "GET") {
+    const repo = db.getRecordingRepo(Number(recordingShare[1]));
+    if (!repo) {
+      res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
+      res.end("Not Found");
+      return;
+    }
+    const latest = db.getLatestTaggedCommit(repo.id);
+    res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+    res.end(renderRecordingSharePage(req, repo, latest));
     return;
   }
 

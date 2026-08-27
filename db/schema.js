@@ -124,6 +124,8 @@ function detectBaselineVersion(db) {
     const commitVer = cols.includes("version") ? 9 : cols.includes("lead") ? 8 : cols.includes("contributor") ? 7 : cols.includes("volume") ? 6 : 5;
     version = Math.max(version, commitVer);
   }
+  // 011_separate_recording_repos.sql → recording_repos (hub's own table)
+  if (tableExists(db, "recording_repos")) version = Math.max(version, 11);
   return version;
 }
 

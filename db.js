@@ -196,12 +196,14 @@ function changePassword(id, newPassword) {
   );
 }
 
-/* ── Music ─────────────────────────────────────────────── */
+/* ── Music (Recordings tab) ────────────────────────────── */
+/* Plain tracks uploaded by the admin. Since the recording hub was split out
+   into its own `recording_repos` table (migration 011), a music row is a
+   single sound file and nothing more — it never has commits. */
 function listMusic() {
   return db
     .prepare(
-      `SELECT m.*,
-              (SELECT COUNT(*) FROM recording_commits c WHERE c.repo_id = m.id) AS commit_count
+      `SELECT m.*
          FROM music m
         ORDER BY m.sort_order ASC, m.id DESC`
     )
@@ -243,31 +245,56 @@ function updateMusic(id, { title, url, sort_order, source_type }) {
 }
 
 function deleteMusic(id) {
-  // Remove its recording commits too (additive-safe: table exists post-005).
-  db.prepare("DELETE FROM recording_commits WHERE repo_id = ?").run(id);
+  // A track owns only itself. Recording-hub commits belong to
+  // `recording_repos` now — never delete them when a track goes away.
   db.prepare("DELETE FROM music WHERE id = ?").run(id);
 }
 
-/* ── Recording commits (recording hub) ─────────────────── */
-/* Git-like layer on top of music: each music row is a "repo" (a recording
-   project) and every take is a commit. A commit stores the sound file,
-   where the take sits inside the parent's playback timeline (start/end in
-   seconds), and whether the take is standalone ('single') or layered on
-   the parent ('overlay'). */
+/* ── Recording repos (REC HUB) ─────────────────────────── */
+/* Git-like layer on top of `recording_repos` (separate from the Recordings
+   `music` table since migration 011): each repo row is a recording project
+   and every take is a commit. A commit stores the sound file, where the
+   take sits inside the parent's playback timeline (start/end in seconds),
+   and whether the take is standalone ('single') or layered on the parent
+   ('overlay'). */
+
+function getRecordingRepo(id) {
+  return db.prepare("SELECT * FROM recording_repos WHERE id = ?").get(id) || null;
+}
 
 function listRecordingRepos() {
   return db
     .prepare(
-      `SELECT m.*,
-              (SELECT COUNT(*) FROM recording_commits c WHERE c.repo_id = m.id) AS commit_count,
-              (SELECT c.id         FROM recording_commits c WHERE c.repo_id = m.id ORDER BY c.id DESC LIMIT 1) AS head_commit_id,
-              (SELECT c.message    FROM recording_commits c WHERE c.repo_id = m.id ORDER BY c.id DESC LIMIT 1) AS head_message,
-              (SELECT c.url        FROM recording_commits c WHERE c.repo_id = m.id ORDER BY c.id DESC LIMIT 1) AS head_url,
-              (SELECT c.created_at FROM recording_commits c WHERE c.repo_id = m.id ORDER BY c.id DESC LIMIT 1) AS head_created_at
-         FROM music m
-        ORDER BY m.sort_order ASC, m.id DESC`
+      `SELECT r.*,
+              (SELECT COUNT(*) FROM recording_commits c WHERE c.repo_id = r.id) AS commit_count,
+              (SELECT c.id         FROM recording_commits c WHERE c.repo_id = r.id ORDER BY c.id DESC LIMIT 1) AS head_commit_id,
+              (SELECT c.message    FROM recording_commits c WHERE c.repo_id = r.id ORDER BY c.id DESC LIMIT 1) AS head_message,
+              (SELECT c.url        FROM recording_commits c WHERE c.repo_id = r.id ORDER BY c.id DESC LIMIT 1) AS head_url,
+              (SELECT c.created_at FROM recording_commits c WHERE c.repo_id = r.id ORDER BY c.id DESC LIMIT 1) AS head_created_at
+         FROM recording_repos r
+        ORDER BY r.sort_order ASC, r.id DESC`
     )
     .all();
+}
+
+function createRecordingRepo({ title, url, sort_order, source_type }) {
+  const order = Number.isInteger(sort_order) ? sort_order : 0;
+  const info = db
+    .prepare("INSERT INTO recording_repos (title, url, sort_order, source_type) VALUES (?, ?, ?, ?)")
+    .run(title, url, order, cleanSourceType(source_type));
+  return getRecordingRepo(info.lastInsertRowid);
+}
+
+function deleteRecordingRepo(id) {
+  // Remove its commits first (FK ON DELETE CASCADE, but explicit so it works
+  // even without PRAGMA foreign_keys enabled), then the repo itself.
+  db.prepare("DELETE FROM recording_commits WHERE repo_id = ?").run(id);
+  db.prepare("DELETE FROM recording_repos WHERE id = ?").run(id);
+}
+
+function updateRecordingRepoUrl(id, url) {
+  db.prepare("UPDATE recording_repos SET url = ? WHERE id = ?").run(url, id);
+  return getRecordingRepo(id);
 }
 
 function listRecordingCommits(repoId) {
@@ -394,12 +421,14 @@ function deleteRecordingCommit(id) {
   db.prepare("DELETE FROM recording_commits WHERE id = ?").run(id);
 }
 
-/* True when any row still points at this audio URL — either another commit
-   (any repo) or the music row itself (the repo's initial commit shares its
-   URL with music.url). The caller deletes the file only when this is false. */
+/* True when any row still points at this audio URL — a commit (any repo), a
+   recording repo's own file (its initial take shares its URL with the root
+   commit), or a plain Recordings track. The caller deletes the file only
+   when this is false. */
 function isRecordingUrlReferenced(url) {
   if (!url) return false;
   if (db.prepare("SELECT 1 FROM recording_commits WHERE url = ? LIMIT 1").get(url)) return true;
+  if (db.prepare("SELECT 1 FROM recording_repos WHERE url = ? LIMIT 1").get(url)) return true;
   if (db.prepare("SELECT 1 FROM music WHERE url = ? LIMIT 1").get(url)) return true;
   return false;
 }
@@ -419,9 +448,9 @@ function deleteRecordingCommits(repoId) {
  * leaves its music_*.wav behind).  This sweep deletes those that no DB
  * row references anymore.  Safe by construction: candidate files must
  * match the app's own generated naming scheme and the reference check
- * covers both music.url and recording_commits.url, so shared and
- * in-use files are never touched.  Returns the list of removed files
- * (public URLs, or paths for the internal .tmp files). */
+ * covers music.url, recording_repos.url and recording_commits.url, so
+ * shared and in-use files are never touched.  Returns the list of removed
+ * files (public URLs, or paths for the internal .tmp files). */
 function gcOrphanedRecordingFiles(recordingDir, urlPrefix) {
   const removed = [];
   const root = path.resolve(recordingDir);
@@ -518,6 +547,14 @@ function incrementMusicPlay(id) {
   return getMusic(id);
 }
 
+function incrementRecordingRepoPlay(id) {
+  const info = db
+    .prepare("UPDATE recording_repos SET play_count = play_count + 1 WHERE id = ?")
+    .run(id);
+  if (info.changes === 0) return null; // unknown id
+  return getRecordingRepo(id);
+}
+
 function incrementBlogRead(id) {
   const info = db
     .prepare("UPDATE blog_posts SET read_count = read_count + 1 WHERE id = ?")
@@ -573,6 +610,10 @@ module.exports = {
   updateMusic,
   deleteMusic,
   listRecordingRepos,
+  getRecordingRepo,
+  createRecordingRepo,
+  deleteRecordingRepo,
+  updateRecordingRepoUrl,
   listRecordingCommits,
   getRecordingCommit,
   createRecordingCommit,
@@ -591,6 +632,7 @@ module.exports = {
   updateBlogPost,
   deleteBlogPost,
   incrementMusicPlay,
+  incrementRecordingRepoPlay,
   incrementBlogRead,
   createShareLink,
   getShareLink,

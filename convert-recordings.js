@@ -6,10 +6,10 @@
  * browser (including iOS Safari) with NO runtime transcode path.
  *
  * Every /recordings/... audio URL referenced by the DB (music.url
- * + each recording_commits.url) whose file is NOT already .wav or
- * .mp3 (webm / m4a / aac / ogg / flac …) is decoded and re-encoded
- * into RECORDING_DIR/conv/<sha1(rel:size:mtime)>.wav — the same
- * location/scheme the old lazy runtime converter used, so files
+ * + each recording_repos.url + each recording_commits.url) whose file
+ * is NOT already .wav or .mp3 (webm / m4a / aac / ogg / flac …) is
+ * decoded and re-encoded into RECORDING_DIR/conv/<sha1(rel:size:mtime)>.wav
+ * — the same location/scheme the old lazy runtime converter used, so files
  * converted before the switch are reused. DB rows are then pointed
  * at the WAV, and original files that no row references anymore
  * are deleted (unless --keep). MP3 files are never touched.
@@ -191,6 +191,7 @@ async function main() {
     if (isLocalRecordingUrl(m.url)) rows.push({ table: "music", id: m.id, url: m.url });
   }
   for (const repo of db.listRecordingRepos()) {
+    if (isLocalRecordingUrl(repo.url)) rows.push({ table: "repo", id: repo.id, url: repo.url });
     for (const c of db.listRecordingCommits(repo.id)) {
       if (isLocalRecordingUrl(c.url)) rows.push({ table: "commit", id: c.id, url: c.url });
     }
@@ -246,6 +247,8 @@ async function main() {
     if (row.table === "music") {
       const cur = db.getMusic(row.id);
       db.updateMusic(row.id, { title: cur.title, url: row.outUrl, sort_order: cur.sort_order });
+    } else if (row.table === "repo") {
+      db.updateRecordingRepoUrl(row.id, row.outUrl);
     } else {
       db.updateRecordingCommitUrl(row.id, row.outUrl);
     }

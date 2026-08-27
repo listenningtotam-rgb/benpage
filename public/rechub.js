@@ -1,6 +1,7 @@
 /* ── REC HUB (Apps) ──────────────────────────────────── */
 /* Git-like recording studio — now an app under the Apps tab.
-   Each music row is a "repo" (a recording project); every take is a
+   Each recording_repos row is a "repo" (a recording project — a separate
+   library from the Recordings `music` table); every take is a
    recording_commits commit:
      · message     → commit message
      · url         → sound file for the take
@@ -304,7 +305,7 @@ function attachRepoListEvents() {
     } else if (action === "share-repo") {
       const repo = hub.repos.find((r) => r.id === repoId);
       if (repo && typeof window.openShareDialog === "function") {
-        window.openShareDialog({ title: repo.title, path: `/music/${repoId}` });
+        window.openShareDialog({ title: repo.title, path: `/recording/${repoId}` });
       }
     } else if (action === "play-commit") {
       const c = findCommit(Number(btn.dataset.commit));
@@ -1030,7 +1031,7 @@ let lastPlayCountRepo = null;
 function countRepoPlay(repoId) {
   if (lastPlayCountRepo === repoId) return;
   lastPlayCountRepo = repoId;
-  fetch(`/api/music/${repoId}/play`, { method: "POST" }).catch(() => {});
+  fetch(`/api/recordings/${repoId}/play`, { method: "POST" }).catch(() => {});
 }
 
 function stopPlayback() {
