@@ -20,7 +20,7 @@
       </div>
 
       <nav id="nav-links">
-        <a href="#music" class="nav-link">REC HUB</a>
+        <a href="#music" class="nav-link">Recordings</a>
         <a href="#blog" class="nav-link">Blog</a>
         <a href="#apps" class="nav-link">Apps</a>
         <a href="#contact" class="nav-link">Contact</a>
@@ -30,9 +30,9 @@
       <div class="scroll-indicator">↓ Scroll to explore</div>
     </section>
 
-    <!-- Music / REC HUB Section -->
+    <!-- Music Section -->
     <section id="music" class="section">
-      <h2 class="section-title">REC HUB</h2>
+      <h2 class="section-title">Music</h2>
       <div class="track-list" id="track-list"></div>
     </section>
 
@@ -72,6 +72,14 @@
             <h3 class="app-title">FX Market Watch</h3>
             <p class="app-desc">Global currency exchange — live bid & ask prices from the main market makers, with spread & trend for every major pair.</p>
             <button type="button" class="app-open" data-target="fx">Open App</button>
+          </div>
+        </article>
+        <article class="app-card">
+          <div class="app-thumb"><div class="thumb-widget thumb-rechub"><span class="thumb-rechub-dot"></span><span class="thumb-rechub-label">REC HUB</span><div class="thumb-rechub-bars"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div></div></div>
+          <div class="app-body">
+            <h3 class="app-title">REC HUB</h3>
+            <p class="app-desc">Git-like recording studio — every take is a commit on a recording. Layer takes over a backing track, preview, tag versions, and share the mix as a web page.</p>
+            <button type="button" class="app-open" data-target="rechub">Open App</button>
           </div>
         </article>
       </div>
@@ -134,6 +142,12 @@
             <p>Mid rates streamed from ExchangeRate-API, refreshed each minute · bid/ask derived around the live mid with a market-style pip spread. If offline, a snapshot marked accordingly.</p>
           </div>
         </div>
+
+        <div id="app-rechub" class="app-panel" hidden>
+          <h3 class="app-panel-title">REC HUB</h3>
+          <p class="cal-caption">Git-like recording studio — browse recordings, layer takes over a backing track, tag versions, and share the mix as a web page.</p>
+          <div class="track-list" id="rec-hub-root"></div>
+        </div>
       </div>
     </section>
 
@@ -154,6 +168,7 @@
   <script src="share.js"></script>
   <script src="apps.js"></script>
   <script src="music.js"></script>
+  <script src="rechub.js"></script>
   <script src="blog.js"></script>
 </body>
 </html>

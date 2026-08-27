@@ -6,7 +6,7 @@ const $ = (id) => document.getElementById(id);
 // ─── Gallery open / close ─────────────────────────────────
 const gallery = $("apps-gallery");
 const detail = $("app-detail");
-const panels = { calendar: $("app-calendar"), fx: $("app-fx") };
+const panels = { calendar: $("app-calendar"), fx: $("app-fx"), rechub: $("app-rechub") };
 
 document.querySelectorAll(".app-open").forEach((btn) => {
   btn.addEventListener("click", () => {
