@@ -212,19 +212,31 @@ function getMusic(id) {
   return db.prepare("SELECT * FROM music WHERE id = ?").get(id);
 }
 
-function createMusic({ title, url, sort_order }) {
+/* A recording is either an original (原创) or a cover (Cover) of someone
+   else's song — the owner picks this once when the recording is created.
+   Anything else falls back to 'original' (the historical behaviour). */
+function cleanSourceType(v) {
+  return v === "cover" ? "cover" : "original";
+}
+
+function createMusic({ title, url, sort_order, source_type }) {
   const order = Number.isInteger(sort_order) ? sort_order : 0;
   const info = db
-    .prepare("INSERT INTO music (title, url, sort_order) VALUES (?, ?, ?)")
-    .run(title, url, order);
+    .prepare("INSERT INTO music (title, url, sort_order, source_type) VALUES (?, ?, ?, ?)")
+    .run(title, url, order, cleanSourceType(source_type));
   return getMusic(info.lastInsertRowid);
 }
 
-function updateMusic(id, { title, url, sort_order }) {
-  db.prepare("UPDATE music SET title = ?, url = ?, sort_order = ? WHERE id = ?").run(
+function updateMusic(id, { title, url, sort_order, source_type }) {
+  const cur = getMusic(id);
+  if (!cur) return null;
+  // source_type is optional here — when omitted it stays whatever it already
+  // was (the legacy track-edit form doesn't know about it).
+  db.prepare("UPDATE music SET title = ?, url = ?, sort_order = ?, source_type = ? WHERE id = ?").run(
     title,
     url,
     Number.isInteger(sort_order) ? sort_order : 0,
+    source_type !== undefined ? cleanSourceType(source_type) : cleanSourceType(cur.source_type),
     id
   );
   return getMusic(id);
@@ -396,6 +408,63 @@ function deleteRecordingCommits(repoId) {
   db.prepare("DELETE FROM recording_commits WHERE repo_id = ?").run(repoId);
 }
 
+/* ── Orphaned recording-file GC ──────────────────────────
+ * Playback never writes files: the layered mix is rendered inside the
+ * browser (OfflineAudioContext → WAV blob → object URL) and the
+ * per-commit delete already unlinks its own file.  The only generated
+ * audio that can accumulate on the server is the conversion cache
+ * <dir>/conv/<sha1>.wav (written by convert-recordings.js and the old
+ * lazy runtime converter), *.tmp leftovers from interrupted conversions,
+ * and the occasional take uploaded but never committed (a failed create
+ * leaves its music_*.wav behind).  This sweep deletes those that no DB
+ * row references anymore.  Safe by construction: candidate files must
+ * match the app's own generated naming scheme and the reference check
+ * covers both music.url and recording_commits.url, so shared and
+ * in-use files are never touched.  Returns the list of removed files
+ * (public URLs, or paths for the internal .tmp files). */
+function gcOrphanedRecordingFiles(recordingDir, urlPrefix) {
+  const removed = [];
+  const root = path.resolve(recordingDir);
+  const sweep = (dir, nameOk, urlFor) => {
+    let entries;
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return; // dir absent → nothing to sweep
+    }
+    for (const ent of entries) {
+      if (!ent.isFile()) continue;
+      const p = path.join(dir, ent.name);
+      if (ent.name.endsWith(".tmp")) {
+        // Stale temp from an interrupted conversion (write tmp → rename).
+        try {
+          fs.unlinkSync(p);
+          removed.push(p);
+        } catch (_) {}
+        continue;
+      }
+      if (!nameOk(ent.name)) continue;
+      const url = urlFor(ent.name);
+      if (isRecordingUrlReferenced(url)) continue;
+      try {
+        fs.unlinkSync(p);
+        removed.push(url);
+      } catch (_) {}
+    }
+  };
+  sweep(
+    path.join(root, "conv"),
+    (n) => /^[0-9a-f]{20}\.wav$/.test(n), // conversion cache sha1 key
+    (n) => urlPrefix + "conv/" + n
+  );
+  sweep(
+    root,
+    (n) => /^music_[0-9TZ]{16}_[0-9a-z]{5}\.[a-z0-9]{2,5}$/i.test(n), // uploaded takes
+    (n) => urlPrefix + n
+  );
+  return removed;
+}
+
 /* ── Blog ──────────────────────────────────────────────── */
 function listBlogPosts() {
   return db.prepare("SELECT * FROM blog_posts ORDER BY date DESC, id DESC").all();
@@ -514,6 +583,7 @@ module.exports = {
   getLatestTaggedCommit,
   getCommitChainFrom,
   isRecordingUrlReferenced,
+  gcOrphanedRecordingFiles,
   deleteRecordingCommits,
   listBlogPosts,
   getBlogPost,

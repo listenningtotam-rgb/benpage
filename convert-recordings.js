@@ -18,6 +18,8 @@
  *   npm run convert-recordings           convert + delete originals
  *   npm run convert-recordings -- --dry  preview only (no changes)
  *   node convert-recordings.js --keep    convert but keep originals
+ *   node convert-recordings.js --gc      sweep orphaned cache files only
+ *                                        (no conversion, no row changes)
  *
  * Idempotent: rows already pointing at .wav/.mp3 are skipped; the
  * conv-file cache key includes size+mtime, so re-runs are no-ops.
@@ -32,6 +34,7 @@ const db = require("./db");
 
 const DRY_RUN = process.argv.includes("--dry") || process.env.NODE_ENV === "dry";
 const KEEP_FILES = process.argv.includes("--keep");
+const GC_ONLY = process.argv.includes("--gc");
 
 const DB_PATH = path.join(__dirname, "data", "benpage.db");
 const RECORDING_URL_PREFIX = "/recordings/";
@@ -158,10 +161,29 @@ async function main() {
   console.log(`[convert-recordings] RECORDING_DIR : ${RECORDING_DIR}`);
   console.log(
     `[convert-recordings] Mode          : ${
-      DRY_RUN ? "DRY RUN (no changes)" : KEEP_FILES ? "apply (keep originals)" : "apply (delete unreferenced originals)"
+      GC_ONLY
+        ? "GC only (no conversion, no row changes)"
+        : DRY_RUN
+          ? "DRY RUN (no changes)"
+          : KEEP_FILES
+            ? "apply (keep originals)"
+            : "apply (delete unreferenced originals)"
     }`
   );
   console.log("");
+
+  // --gc: just sweep the generated cache / orphaned takes (same check the
+  // server runs at startup) and stop — useful for a cron or a manual check.
+  if (GC_ONLY) {
+    const removed = db.gcOrphanedRecordingFiles(RECORDING_DIR, RECORDING_URL_PREFIX);
+    if (removed.length) {
+      console.log(`[convert-recordings --gc] Removed ${removed.length} orphaned file(s):`);
+      for (const f of removed) console.log(`  - ${f}`);
+    } else {
+      console.log("[convert-recordings --gc] Nothing to remove — every generated file is referenced.");
+    }
+    return;
+  }
 
   // Collect every /recordings/ URL the DB references.
   const rows = [];

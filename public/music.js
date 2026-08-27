@@ -182,6 +182,13 @@ function renderRepos() {
   updateStudioBar();
 }
 
+/* 原创 (original) vs Cover badge — set once when the recording is created,
+   shown on the repo's HEAD line and on its first (root) commit. */
+function sourceBadge(sourceType) {
+  const isCover = sourceType === "cover";
+  return `<span class="rc-badge ${isCover ? "rc-badge-cover" : "rc-badge-original"}">${isCover ? "Cover" : "原创"}</span>`;
+}
+
 function renderRepoCard(repo) {
   const commits = hub.commits.get(repo.id) || [];
   const head = commits[commits.length - 1] || null;
@@ -197,6 +204,7 @@ function renderRepoCard(repo) {
       <div class="rc-repo-main">
         <div class="rc-repo-title">${scEscapeHTML(repo.title)}</div>
         <div class="rc-repo-meta">
+          ${sourceBadge(repo.source_type)}
           ${commits.length} commit${commits.length === 1 ? "" : "s"}
           ${head ? ` · HEAD ${commitHash(head.id)} ${scEscapeHTML(head.message)}` : ""}
           · ${Number(repo.play_count) || 0} plays
@@ -238,6 +246,7 @@ function renderCommitRows(repo, commits) {
               <span class="rc-hash">${commitHash(c.id)}</span>
               <span class="rc-msg">${scEscapeHTML(c.message)}</span>
               <span class="rc-badge ${isOverlay ? "rc-badge-overlay" : "rc-badge-single"}">${isOverlay ? "overlay" : "single"}</span>
+              ${c.parent_id == null ? sourceBadge(repo.source_type) : ""}
               ${c.version != null ? `<span class="rc-badge rc-badge-version" title="This commit is public version v${c.version}.0 — the share link plays it">v${c.version}.0</span>` : ""}
             </div>
             <div class="rc-commit-meta">
@@ -1933,6 +1942,12 @@ function openNewRecording() {
     <label class="rc-field">Title
       <input type="text" id="new-title" maxlength="300" placeholder="e.g. Midnight Dreams" />
     </label>
+    <label class="rc-field">Type
+      <select id="new-source-type">
+        <option value="original" selected>原创</option>
+        <option value="cover">Cover</option>
+      </select>
+    </label>
     <label class="rc-field">Commit message
       <input type="text" id="new-message" maxlength="500" placeholder="e.g. initial recording" />
     </label>
@@ -2060,6 +2075,7 @@ async function createNewRecording(overlay) {
   const title = overlay.querySelector("#new-title").value.trim();
   const message = overlay.querySelector("#new-message").value.trim() || "Initial recording";
   const contributor = overlay.querySelector("#new-contributor").value.trim();
+  const sourceType = overlay.querySelector("#new-source-type").value;
   if (!title) { alert("Please enter a title."); return; }
   if (!newRecUrl) { alert("Please upload or record an audio source first."); return; }
   const btn = overlay.querySelector("#new-create-btn");
@@ -2073,7 +2089,7 @@ async function createNewRecording(overlay) {
     await hubApi("/api/recordings", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ title, message, url, sort_order: 0, contributor }),
+      body: JSON.stringify({ title, message, url, sort_order: 0, contributor, source_type: sourceType }),
     });
     cancelNewRec();
     closeModal();

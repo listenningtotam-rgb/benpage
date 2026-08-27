@@ -2084,6 +2084,20 @@ body {
   border: 1px solid rgba(155, 226, 155, 0.25);
 }
 
+/* The recording's source type — 原创 (original) vs Cover — set when the
+   recording is created. Shown on the repo's HEAD line and first commit. */
+.rc-badge-original {
+  color: #c8a2ff;
+  background: rgba(200, 162, 255, 0.12);
+  border: 1px solid rgba(200, 162, 255, 0.25);
+}
+
+.rc-badge-cover {
+  color: #ff9e7a;
+  background: rgba(255, 158, 122, 0.12);
+  border: 1px solid rgba(255, 158, 122, 0.25);
+}
+
 .rc-commit-meta {
   display: flex;
   align-items: center;

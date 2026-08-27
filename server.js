@@ -692,12 +692,14 @@ function renderMusicSharePage(req, track, latest) {
   // initial file, exactly as the page has always behaved.
   const version = latest && latest.version != null ? latest.version : null;
   const versionLabel = version != null ? `v${version}.0` : "";
+  // 原创 (original) vs Cover — set once when the recording was created.
+  const sourceLabel = track.source_type === "cover" ? "Cover" : "原创";
   const head = renderSharePageHead({
     req,
     kind: "music",
     id: track.id,
-    title: versionLabel ? `${track.title} · ${versionLabel}` : track.title,
-    description: `${track.title} — a recording from ${SITE_NAME}.`,
+    title: `${track.title} · ${sourceLabel}${versionLabel ? ` · ${versionLabel}` : ""}`,
+    description: `${track.title} (${sourceLabel}) — a recording from ${SITE_NAME}.`,
     image: "",
     type: "music.song",
     url: urlPath,
@@ -742,7 +744,7 @@ function renderMusicSharePage(req, track, latest) {
     `      <span class="share-meta">Recording · ▶ ${Number(track.play_count) || 0} plays</span>\n` +
     "    </header>\n" +
     '    <section class="share-track">\n' +
-    `      <h1 class="share-title">${escHtml(track.title)}${versionLabel ? ` <span class="share-version">${versionLabel}</span>` : ""}</h1>\n` +
+    `      <h1 class="share-title">${escHtml(track.title)} <span class="share-source${track.source_type === "cover" ? " share-source-cover" : ""}">${sourceLabel}</span>${versionLabel ? ` <span class="share-version">${versionLabel}</span>` : ""}</h1>\n` +
     audioHtml +
     "    </section>\n" +
     "    <footer class=\"share-foot\">\n" +
@@ -1169,7 +1171,14 @@ async function handleApi(req, res, urlPath) {
     if (!title || !url) {
       return json(res, 400, { error: "Title and audio URL are required" });
     }
-    const repo = db.createMusic({ title, url, sort_order: body.sort_order });
+    const repo = db.createMusic({
+      title,
+      url,
+      sort_order: body.sort_order,
+      // 原创 (original) vs Cover — the owner picks this once in the New
+      // Recording form; only those two values are ever stored.
+      source_type: body.source_type === "cover" ? "cover" : "original",
+    });
     const commit = db.createRecordingCommit({
       repo_id: repo.id,
       parent_id: null,
@@ -1672,6 +1681,17 @@ const server = http.createServer((req, res) => {
     res.end(data);
   });
 });
+
+// Auto-cleanup of generated recording files (conversion cache, stale
+// *.tmp, uploaded-but-never-committed takes) that no DB row references
+// anymore. Playback itself never writes to disk, so these are the only
+// files that can pile up. Cheap (one directory scan) and safe: only
+// app-scheme names are candidates and every file is reference-checked.
+const gcRemoved = db.gcOrphanedRecordingFiles(RECORDING_DIR, RECORDING_URL_PREFIX);
+if (gcRemoved.length) {
+  console.log(`[gc] Removed ${gcRemoved.length} orphaned recording file(s):`);
+  for (const f of gcRemoved) console.log(`[gc]   - ${f}`);
+}
 
 server.listen(PORT, HOST, () => {
   const allowed =

@@ -94,21 +94,26 @@ function isFresh(db) {
  * be baselined at the correct version.
  */
 function detectBaselineVersion(db) {
+  // Math.max everywhere: checks run in ascending migration order but a later
+  // detection (e.g. music.source_type → 10) must never be overwritten by an
+  // earlier-shaped check, so each positive detection only ever raises the bar.
   let version = 0;
   // 001_init.sql → users / music / blog_posts
-  if (APP_TABLES.some((t) => tableExists(db, t))) version = 1;
+  if (APP_TABLES.some((t) => tableExists(db, t))) version = Math.max(version, 1);
   // 002_add_must_change_password.sql → users.must_change_password
   if (tableExists(db, "users")) {
     const cols = db.prepare("PRAGMA table_info(users)").all().map((c) => c.name);
-    if (cols.includes("must_change_password")) version = 2;
+    if (cols.includes("must_change_password")) version = Math.max(version, 2);
   }
   // 003_add_play_read_counts.sql → music.play_count / blog_posts.read_count
   if (tableExists(db, "music")) {
     const cols = db.prepare("PRAGMA table_info(music)").all().map((c) => c.name);
-    if (cols.includes("play_count")) version = 3;
+    if (cols.includes("play_count")) version = Math.max(version, 3);
+    // 010_add_recording_source_type.sql → music.source_type
+    if (cols.includes("source_type")) version = Math.max(version, 10);
   }
   // 004_add_share_links.sql → share_links
-  if (tableExists(db, "share_links")) version = 4;
+  if (tableExists(db, "share_links")) version = Math.max(version, 4);
   // 005_add_recording_commits.sql → recording_commits
   // 006_add_commit_volume.sql → recording_commits.volume
   // 007_add_commit_contributor.sql → recording_commits.contributor
@@ -116,7 +121,8 @@ function detectBaselineVersion(db) {
   // 009_add_commit_version.sql → recording_commits."version"
   if (tableExists(db, "recording_commits")) {
     const cols = db.prepare("PRAGMA table_info(recording_commits)").all().map((c) => c.name);
-    version = cols.includes("version") ? 9 : cols.includes("lead") ? 8 : cols.includes("contributor") ? 7 : cols.includes("volume") ? 6 : 5;
+    const commitVer = cols.includes("version") ? 9 : cols.includes("lead") ? 8 : cols.includes("contributor") ? 7 : cols.includes("volume") ? 6 : 5;
+    version = Math.max(version, commitVer);
   }
   return version;
 }
