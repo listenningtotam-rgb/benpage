@@ -82,6 +82,14 @@
             <button type="button" class="app-open" data-target="rechub">Open App</button>
           </div>
         </article>
+        <article class="app-card">
+          <div class="app-thumb"><div class="thumb-widget thumb-vinyl"><div class="thumb-vinyl-disc"><div class="thumb-vinyl-art"><img src="/vinyl-art/dark-side-of-the-moon.jpg" alt="" /></div><div class="thumb-vinyl-hole"></div></div><span class="thumb-vinyl-label">黑胶档案</span></div></div>
+          <div class="app-body">
+            <h3 class="app-title">黑胶档案</h3>
+            <p class="app-desc">Vinyl Archive — 拍一张黑胶封面，识别出专辑、唱片公司、发行年份与完整曲目，并生成一张复古风分享页。</p>
+            <button type="button" class="app-open" data-target="vinyl">Open App</button>
+          </div>
+        </article>
       </div>
 
       <div id="app-detail" hidden>
@@ -148,6 +156,31 @@
           <p class="cal-caption">Git-like recording studio — browse recordings, layer takes over a backing track, tag versions, and share the mix as a web page.</p>
           <div class="track-list" id="rec-hub-root"></div>
         </div>
+
+        <div id="app-vinyl" class="app-panel" hidden>
+          <h3 class="app-panel-title">黑胶档案 · Vinyl Archive</h3>
+          <p class="cal-caption">拍一张黑胶封面（或从相册选一张），应用会计算它的感知哈希并与档案中的专辑比对 —— 认出专辑后展示唱片公司、发行年份与完整曲目，并生成一张复古分享页。</p>
+
+          <div class="vinyl-stage" id="vinyl-stage">
+            <video id="vinyl-video" autoplay playsinline muted hidden></video>
+            <div id="vinyl-preview" class="vinyl-preview" hidden></div>
+            <div class="vinyl-actions" id="vinyl-actions">
+              <button type="button" id="vinyl-camera" class="app-open">📷 拍照识别</button>
+              <button type="button" id="vinyl-file" class="app-open">🖼 从相册选择</button>
+              <input type="file" id="vinyl-file-input" accept="image/*" hidden />
+            </div>
+            <div class="vinyl-demo">
+              <label for="vinyl-demo">没有黑胶在手？用一张已归档的封面试试：</label>
+              <span class="vinyl-demo-row">
+                <select id="vinyl-demo"></select>
+                <button type="button" id="vinyl-demo-run" class="app-open">识别示例</button>
+              </span>
+            </div>
+            <div id="vinyl-status" class="vinyl-status" aria-live="polite"></div>
+            <div id="vinyl-result" class="vinyl-result" hidden></div>
+          </div>
+        </div>
+
       </div>
     </section>
 
@@ -167,6 +200,7 @@
   <script src="qrcode.js"></script>
   <script src="share.js"></script>
   <script src="apps.js"></script>
+  <script src="vinyl.js"></script>
   <script src="music.js"></script>
   <script src="rechub.js"></script>
   <script src="blog.js"></script>

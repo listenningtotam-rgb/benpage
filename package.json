@@ -11,7 +11,8 @@
     "migrate": "node migrate.js",
     "migrate:dry": "node migrate.js --dry",
     "convert-recordings": "node convert-recordings.js",
-    "convert-recordings:dry": "node convert-recordings.js --dry"
+    "convert-recordings:dry": "node convert-recordings.js --dry",
+    "seed:demos": "node seed-demos.js"
   },
   "engines": {
     "node": ">=22"
@@ -19,6 +20,7 @@
   "dependencies": {
     "@audio/decode": "^3.12.0",
     "better-sqlite3": "^13.0.2",
+    "jpeg-js": "^0.4.4",
     "jsonwebtoken": "^9.0.3"
   }
 }

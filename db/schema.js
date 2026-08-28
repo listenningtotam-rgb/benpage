@@ -24,7 +24,7 @@ const path = require("path");
 
 const MIGRATIONS_DIR = path.join(__dirname, "migrations");
 const TRACKING_TABLE = "schema_migrations";
-const APP_TABLES = ["users", "music", "blog_posts"];
+const APP_TABLES = ["users", "music", "blog_posts", "vinyl_records"];
 
 /* ── migration list (sorted, stable) ───────────────────── */
 function loadMigrations() {
@@ -126,6 +126,8 @@ function detectBaselineVersion(db) {
   }
   // 011_separate_recording_repos.sql → recording_repos (hub's own table)
   if (tableExists(db, "recording_repos")) version = Math.max(version, 11);
+  // 012_add_vinyl_records.sql → vinyl_records (黑胶档案 seeded albums)
+  if (tableExists(db, "vinyl_records")) version = Math.max(version, 12);
   return version;
 }
 

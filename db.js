@@ -538,6 +538,97 @@ function deleteBlogPost(id) {
   db.prepare("DELETE FROM blog_posts WHERE id = ?").run(id);
 }
 
+/* ── Vinyl Archive (黑胶档案) ─────────────────────────── */
+/* Seeded album records recognized from photographed covers. A record is a
+   normalized MusicBrainz release: metadata + cover path + perceptual hashes
+   (64-bit aHash/dHash hex) used to match a photographed cover. */
+function listVinylRecords() {
+  return db
+    .prepare(
+      `SELECT id, mbid, slug, title, artist, release_date, country, label,
+              catalog_number, cover_path, tracks_json, play_count, created_at
+         FROM vinyl_records
+        ORDER BY release_date ASC, title ASC`
+    )
+    .all();
+}
+
+function getVinylRecord(slugOrId) {
+  return (
+    db.prepare("SELECT * FROM vinyl_records WHERE slug = ?").get(slugOrId) ||
+    db.prepare("SELECT * FROM vinyl_records WHERE id = ?").get(slugOrId) ||
+    null
+  );
+}
+
+function upsertVinylRecord(r) {
+  const rec = {
+    mbid: String(r.mbid || ""),
+    slug: String(r.slug || ""),
+    title: String(r.title || ""),
+    artist: String(r.artist || ""),
+    release_date: r.release_date || null,
+    country: r.country || null,
+    label: r.label || null,
+    catalog_number: r.catalog_number || null,
+    cover_path: String(r.cover_path || ""),
+    ahash: String(r.ahash || ""),
+    dhash: String(r.dhash || ""),
+    tracks_json: JSON.stringify(Array.isArray(r.tracks) ? r.tracks : []),
+  };
+  db.prepare(
+    `INSERT INTO vinyl_records
+       (mbid, slug, title, artist, release_date, country, label, catalog_number,
+        cover_path, ahash, dhash, tracks_json)
+     VALUES
+       (@mbid, @slug, @title, @artist, @release_date, @country, @label,
+        @catalog_number, @cover_path, @ahash, @dhash, @tracks_json)
+     ON CONFLICT(mbid) DO UPDATE SET
+        slug = excluded.slug,
+        title = excluded.title,
+        artist = excluded.artist,
+        release_date = excluded.release_date,
+        country = excluded.country,
+        label = excluded.label,
+        catalog_number = excluded.catalog_number,
+        cover_path = excluded.cover_path,
+        ahash = excluded.ahash,
+        dhash = excluded.dhash,
+        tracks_json = excluded.tracks_json`
+  ).run(rec);
+  return getVinylRecord(rec.slug);
+}
+
+/* Hamming distance between two 64-bit perceptual hashes ("0x" + 16 hex). */
+function hammingDistance(a, b) {
+  let x = BigInt("0x" + a) ^ BigInt("0x" + b);
+  let count = 0;
+  while (x) {
+    count += Number(x & 1n);
+    x >>= 1n;
+  }
+  return count;
+}
+
+/* Best matching vinyl record for a client-supplied (ahash, dhash) pair.
+   dHash (difference hash) is the primary key — it is robust to flat color /
+   exposure shifts, so it holds up when a photographed cover is compared
+   against the clean seed art.  Returns null when nothing is close enough. */
+function matchVinylByHash(ahash, dhash, threshold = 14) {
+  const rows = db
+    .prepare("SELECT id, slug, title, artist, cover_path, ahash, dhash FROM vinyl_records")
+    .all();
+  let best = null;
+  for (const row of rows) {
+    const dh = hammingDistance(row.dhash, dhash);
+    if (best && dh >= best.dhashDist) continue;
+    const ah = hammingDistance(row.ahash, ahash);
+    best = { record: row, dhashDist: dh, ahashDist: ah };
+  }
+  if (!best || best.dhashDist > threshold) return null;
+  return best;
+}
+
 /* ── Play / read counters ─────────────────────────────── */
 function incrementMusicPlay(id) {
   const info = db
@@ -561,6 +652,14 @@ function incrementBlogRead(id) {
     .run(id);
   if (info.changes === 0) return null; // unknown id
   return getBlogPost(id);
+}
+
+function incrementVinylPlay(id) {
+  const info = db
+    .prepare("UPDATE vinyl_records SET play_count = play_count + 1 WHERE id = ?")
+    .run(id);
+  if (info.changes === 0) return null; // unknown id
+  return getVinylRecord(id);
 }
 
 /* ── Short links (share feature) ──────────────────────── */
@@ -634,6 +733,12 @@ module.exports = {
   incrementMusicPlay,
   incrementRecordingRepoPlay,
   incrementBlogRead,
+  incrementVinylPlay,
+  listVinylRecords,
+  getVinylRecord,
+  upsertVinylRecord,
+  hammingDistance,
+  matchVinylByHash,
   createShareLink,
   getShareLink,
   incrementShareLinkHit,

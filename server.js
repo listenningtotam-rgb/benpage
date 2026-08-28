@@ -385,6 +385,10 @@ const COUNT_MAX_REQ = 30; // per IP per minute
 const COUNT_WINDOW_MS = 60 * 1000;
 const countHits = new Map();
 
+// Maximum dHash Hamming distance for a photographed cover to be accepted as
+// a match (64 bits; identical images = 0, unrelated covers are usually > 24).
+const VINYL_MATCH_THRESHOLD = 14;
+
 function checkCountRate(req) {
   const key = req.socket.remoteAddress || "?";
   const now = Date.now();
@@ -768,6 +772,93 @@ function renderMusicSharePage(req, track, latest) {
 
 function renderRecordingSharePage(req, repo, latest) {
   return renderTrackSharePage(req, "recording", repo, latest, "/recording/" + repo.id);
+}
+
+// ─── Vinyl Archive (黑胶档案) ─────────────────────────────────────────
+/* Normalized public shape for a vinyl_records row (parses tracks_json). */
+function publicVinylRow(row) {
+  if (!row) return null;
+  let tracks = [];
+  try {
+    tracks = JSON.parse(row.tracks_json || "[]");
+  } catch (e) {
+    tracks = [];
+  }
+  return {
+    id: row.id,
+    slug: row.slug,
+    mbid: row.mbid,
+    title: row.title,
+    artist: row.artist,
+    release_date: row.release_date,
+    country: row.country,
+    label: row.label,
+    catalog_number: row.catalog_number,
+    cover_path: row.cover_path,
+    tracks,
+    play_count: Number(row.play_count) || 0,
+    created_at: row.created_at,
+  };
+}
+
+function vinylFmtMs(ms) {
+  if (!ms || !isFinite(Number(ms))) return "";
+  const total = Math.round(Number(ms) / 1000);
+  const m = Math.floor(total / 60);
+  const s = String(total % 60).padStart(2, "0");
+  return m + ":" + s;
+}
+
+function renderVinylSharePage(req, rec) {
+  const pub = publicVinylRow(rec);
+  const tracks = pub.tracks || [];
+  const year = String(rec.release_date || "").slice(0, 4);
+  const facts = [year, rec.country, rec.label, rec.catalog_number].filter(Boolean).join(" · ");
+  const description = [rec.artist, year, rec.label].filter(Boolean).join(" · ");
+  const head = renderSharePageHead({
+    req,
+    kind: "vinyl",
+    id: rec.id,
+    title: `${rec.title} — ${rec.artist}`,
+    description,
+    image: rec.cover_path,
+    type: "music.album",
+    url: "/vinyl/" + rec.slug,
+  });
+
+  const trackRows = tracks
+    .map(
+      (t, i) =>
+        `      <li class="vinyl-track"><span class="vinyl-track-num">${String(t.position || i + 1).padStart(2, "0")}</span><span class="vinyl-track-title">${escHtml(t.title)}</span>${t.length ? ` <span class="vinyl-track-len">${vinylFmtMs(t.length)}</span>` : ""}</li>`
+    )
+    .join("\n");
+
+  return (
+    head +
+    '  <div class="share-page share-page-vinyl">\n' +
+    "    <header class=\"share-head\">\n" +
+    `      <a class="share-brand" href="/">${SITE_NAME}</a>\n` +
+    `      <span class="share-meta">黑胶档案 · Vinyl Archive · <span class="vinyl-plays" data-play-count>${Number(rec.play_count) || 0} plays</span></span>\n` +
+    "    </header>\n" +
+    '    <section class="vinyl-record">\n' +
+    `      <div class="vinyl-cover-wrap"><img class="vinyl-cover" src="${escHtml(rec.cover_path)}" alt="${escHtml(rec.title)} cover" /></div>\n` +
+    '      <div class="vinyl-info">\n' +
+    `        <h1 class="share-title vinyl-title">${escHtml(rec.title)}</h1>\n` +
+    `        <p class="vinyl-artist">${escHtml(rec.artist)}</p>\n` +
+    (facts ? `        <p class="vinyl-facts">${escHtml(facts)}</p>\n` : "") +
+    (tracks.length
+      ? `        <ol class="vinyl-tracklist">\n${trackRows}\n        </ol>\n`
+      : "") +
+    "      </div>\n" +
+    "    </section>\n" +
+    "    <footer class=\"share-foot\">\n" +
+    `      <a href="/">返回 ${SITE_NAME} →</a>\n` +
+    '      <span class="share-stat">黑胶档案 · Vinyl Archive</span>\n' +
+    "    </footer>\n" +
+    "  </div>\n" +
+    '  <script src="/share-count.js"></script>\n' +
+    "\n</body>\n</html>\n"
+  );
 }
 
 // ─── Password policy ───────────────────────────────────────────────────
@@ -1367,6 +1458,48 @@ async function handleApi(req, res, urlPath) {
     });
   }
 
+  // ── Vinyl Archive (黑胶档案) API ──────────────────────
+  //   POST /api/vinyl/recognize     → public, match a photographed cover
+  //                                   by perceptual hash (aHash + dHash)
+  //   GET  /api/vinyl               → public, list seeded albums
+  //   GET  /api/vinyl/:slug         → public, album detail
+  //   POST /api/vinyl/:id/play      → public, bump a vinyl share-page play
+  if (urlPath === "/api/vinyl/recognize" && req.method === "POST") {
+    if (!checkShareRate(req)) return json(res, 429, { error: "Rate limit exceeded" });
+    const body = await readBody(req);
+    const ahash = cleanText(body.ahash, 64).toLowerCase();
+    const dhash = cleanText(body.dhash, 64).toLowerCase();
+    if (!/^[0-9a-f]{16}$/.test(ahash) || !/^[0-9a-f]{16}$/.test(dhash)) {
+      return json(res, 400, { error: "Invalid hash" });
+    }
+    const match = db.matchVinylByHash(ahash, dhash, VINYL_MATCH_THRESHOLD);
+    if (!match) return json(res, 200, { match: null });
+    return json(res, 200, {
+      match: publicVinylRow(match.record),
+      dhash_dist: match.dhashDist,
+      ahash_dist: match.ahashDist,
+    });
+  }
+
+  if (urlPath === "/api/vinyl" && req.method === "GET") {
+    return json(res, 200, { records: db.listVinylRecords().map(publicVinylRow) });
+  }
+
+  const vinylDetail = urlPath.match(/^\/api\/vinyl\/([a-z0-9-]+)$/);
+  if (vinylDetail && req.method === "GET") {
+    const rec = db.getVinylRecord(vinylDetail[1]);
+    if (!rec) return json(res, 404, { error: "Album not found" });
+    return json(res, 200, { record: publicVinylRow(rec) });
+  }
+
+  const vinylPlay = urlPath.match(/^\/api\/vinyl\/(\d+)\/play$/);
+  if (vinylPlay && req.method === "POST") {
+    if (!checkCountRate(req)) return json(res, 429, { error: "Rate limit exceeded" });
+    const rec = db.incrementVinylPlay(Number(vinylPlay[1]));
+    if (!rec) return json(res, 404, { error: "Album not found" });
+    return json(res, 200, { ok: true, play_count: rec.play_count });
+  }
+
   if (urlPath === "/api/blog" && req.method === "POST") {
     if (!requireAuth()) return;
     const body = await readBody(req);
@@ -1659,6 +1792,22 @@ const server = http.createServer((req, res) => {
     const latest = db.getLatestTaggedCommit(repo.id);
     res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
     res.end(renderRecordingSharePage(req, repo, latest));
+    return;
+  }
+
+  // 黑胶档案 (Vinyl Archive) share page — a seeded album whose cover was
+  // recognized from a photo.  Reads vinyl_records (not music), renders the
+  // vintage record-card layout server-side (og:image = the cover art).
+  const vinylShare = urlPath.match(/^\/vinyl\/([a-z0-9-]+)$/);
+  if (vinylShare && req.method === "GET") {
+    const rec = db.getVinylRecord(vinylShare[1]);
+    if (!rec) {
+      res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
+      res.end("Not Found");
+      return;
+    }
+    res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+    res.end(renderVinylSharePage(req, rec));
     return;
   }
 

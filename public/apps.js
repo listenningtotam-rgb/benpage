@@ -6,23 +6,28 @@ const $ = (id) => document.getElementById(id);
 // ─── Gallery open / close ─────────────────────────────────
 const gallery = $("apps-gallery");
 const detail = $("app-detail");
-const panels = { calendar: $("app-calendar"), fx: $("app-fx"), rechub: $("app-rechub") };
+const panels = { calendar: $("app-calendar"), fx: $("app-fx"), rechub: $("app-rechub"), vinyl: $("app-vinyl") };
 
 document.querySelectorAll(".app-open").forEach((btn) => {
   btn.addEventListener("click", () => {
     const target = btn.dataset.target;
+    // Buttons that reuse .app-open purely for styling (e.g. in-app actions)
+    // carry no data-target — leave them to their own handlers.
+    if (!target) return;
     gallery.hidden = true;
     detail.hidden = false;
     Object.entries(panels).forEach(([k, el]) => { el.hidden = k !== target; });
 
     if (target === "calendar") initCalendar();
     if (target === "fx") initFx();
+    if (target === "vinyl") window.VinylArchive && window.VinylArchive.init();
   });
 });
 
 $("app-detail-close").addEventListener("click", () => {
   detail.hidden = true;
   gallery.hidden = false;
+  if (window.VinylArchive) window.VinylArchive.stop();
 });
 
 /* ── App 1: FX Holiday Calendar ─────────────────────────── */
