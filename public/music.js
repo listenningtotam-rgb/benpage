@@ -324,6 +324,9 @@ function renderTracks(tracks) {
     const playCount = Number(track.play_count) || 0;
     const seed = hashString((track.id != null ? track.id + ":" : "") + url + title);
     const bars = buildWaveform(seed);
+    // 原创 (original) vs Cover — set once when the recording was created.
+    const isCover = track.source_type === "cover";
+    const badge = `<span class="rc-badge ${isCover ? "rc-badge-cover" : "rc-badge-original"}">${isCover ? "Cover" : "原创"}</span>`;
 
     const el = document.createElement("div");
     el.className = "sc-track";
@@ -334,7 +337,10 @@ function renderTracks(tracks) {
       </button>
       <div class="sc-body">
         <div class="sc-top">
-          <span class="sc-title" title="${scEscapeHTML(title)}">${scEscapeHTML(title)}</span>
+          <span class="sc-left">
+            ${badge}
+            <span class="sc-title" title="${scEscapeHTML(title)}">${scEscapeHTML(title)}</span>
+          </span>
           <span class="sc-side">
             <span class="sc-time">0:00 / 0:00</span>
             <span class="sc-plays" title="Play count">▶ <span class="sc-plays-num">${playCount}</span> plays</span>

@@ -322,6 +322,7 @@ body {
 }
 
 .field input,
+.field select,
 .field textarea,
 .block-editor input,
 .block-editor textarea {
@@ -338,6 +339,7 @@ body {
 }
 
 .field input:focus,
+.field select:focus,
 .field textarea:focus,
 .block-editor input:focus,
 .block-editor textarea:focus {
@@ -485,6 +487,44 @@ body {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* Recording rows: 原创/Cover badge sits next to the title, the text itself
+   keeps the ellipsis. (Blog rows don't use this — plain .item-title.) */
+.music-title-row {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+}
+
+.music-title-text {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* The recording's source type — 原创 (original) vs Cover — matches the site's
+   rc-badge colors (purple = original, orange = cover). */
+.src-badge {
+  font-size: 0.6rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  border-radius: 999px;
+  padding: 0.14rem 0.5rem;
+  flex: 0 0 auto;
+}
+
+.src-badge-original {
+  color: #c8a2ff;
+  background: rgba(200, 162, 255, 0.12);
+  border: 1px solid rgba(200, 162, 255, 0.25);
+}
+
+.src-badge-cover {
+  color: #ff9e7a;
+  background: rgba(255, 158, 122, 0.12);
+  border: 1px solid rgba(255, 158, 122, 0.25);
 }
 
 .item-actions {

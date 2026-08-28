@@ -346,6 +346,15 @@ body {
   gap: 1rem;
 }
 
+/* Left cluster inside .sc-top: 原创/Cover badge + track title. */
+.sc-left {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+}
+
 .sc-title {
   font-size: 1rem;
   font-weight: 600;

@@ -4,6 +4,7 @@ const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
 const jwt = require("jsonwebtoken");
+const jpeg = require("jpeg-js");
 
 const PORT = process.env.PORT || 3000;
 const publicDir = path.join(__dirname, "public");
@@ -45,6 +46,10 @@ const PHOTO_DIR =
     ? "/var/www/static/photo"
     : path.join(__dirname, "data", "photos"));
 const PHOTO_URL_PREFIX = "/photo/";
+// Uploaded photos are content-addressed (each upload gets a unique
+// benpage_<stamp>_<rand>.jpg name and is never overwritten), so browsers can
+// cache them for a year without ever revalidating.
+const PHOTO_CACHE_CONTROL = "public, max-age=31536000, immutable";
 // Where uploaded recordings (music tracks) are stored.
 // Production: /home/www/static/recordings (served at https://<host>/recordings/...)
 // Local dev:  ./data/recordings           (served at http://localhost:3000/recordings/...)
@@ -280,6 +285,12 @@ const ALLOWED_IMAGE_EXT = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp", ".b
 // and the client-side check in public/admin.js.
 const MAX_UPLOAD_BYTES = 5 * 1024 * 1024;
 
+// Card-size thumbnail for blog grid covers. Covers render 170px tall, so a
+// 640px-long-edge JPEG is plenty (even on 2x displays) at a fraction of the
+// full 1920px upload size. Quality is jpeg-js's 0-100 scale.
+const CARD_THUMB_MAX_DIM = 640;
+const CARD_THUMB_QUALITY = 80;
+
 function sniffImageExt(buf) {
   if (!buf || buf.length < 12) return null;
   // PNG
@@ -296,6 +307,103 @@ function sniffImageExt(buf) {
   // BMP
   if (buf[0] === 0x42 && buf[1] === 0x4d) return ".bmp";
   return null;
+}
+
+/* ─── Card-size photo thumbnails ────────────────────────────────────────
+   Blog grid covers are tiny (170px tall) but uploads are resized to 1920px,
+   so the full original is wasted bandwidth. A *_card.jpg sibling is produced
+   at upload time and lazily for older photos (see the /photo/ handler). */
+function boxResizeRgba(rgba, sw, sh, ow, oh) {
+  const out = Buffer.alloc(ow * oh * 4);
+  for (let oy = 0; oy < oh; oy++) {
+    const ys = Math.floor((oy * sh) / oh);
+    const ye = Math.max(ys + 1, Math.floor(((oy + 1) * sh) / oh));
+    for (let ox = 0; ox < ow; ox++) {
+      const xs = Math.floor((ox * sw) / ow);
+      const xe = Math.max(xs + 1, Math.floor(((ox + 1) * sw) / ow));
+      let r = 0, g = 0, b = 0, a = 0, n = 0;
+      for (let y = ys; y < ye; y++) {
+        for (let x = xs; x < xe; x++) {
+          const i = (y * sw + x) * 4;
+          r += rgba[i];
+          g += rgba[i + 1];
+          b += rgba[i + 2];
+          a += rgba[i + 3];
+          n++;
+        }
+      }
+      const o = (oy * ow + ox) * 4;
+      out[o] = Math.round(r / n);
+      out[o + 1] = Math.round(g / n);
+      out[o + 2] = Math.round(b / n);
+      out[o + 3] = Math.round(a / n);
+    }
+  }
+  return out;
+}
+
+/* Card-size JPEG thumbnail from a full-size JPEG buffer, or null when the
+   source isn't a decodable JPEG or is already small enough. Best-effort:
+   every call site treats null as "no thumbnail available". */
+function makeCardThumb(buf) {
+  let img;
+  try {
+    img = jpeg.decode(buf, { useTArray: true, formatAsRGBA: true });
+  } catch (e) {
+    return null;
+  }
+  const scale = Math.min(1, CARD_THUMB_MAX_DIM / Math.max(img.width, img.height));
+  const w = Math.max(1, Math.round(img.width * scale));
+  const h = Math.max(1, Math.round(img.height * scale));
+  if (w === img.width && h === img.height) return null; // already small enough
+  try {
+    const rgba = boxResizeRgba(img.data, img.width, img.height, w, h);
+    const out = jpeg.encode({ data: rgba, width: w, height: h }, CARD_THUMB_QUALITY);
+    return Buffer.from(out.data);
+  } catch (e) {
+    return null;
+  }
+}
+
+/* ─── Static serving helpers (cache headers + revalidation) ──────────── */
+/* ETag from (size, mtimeMs): cheap, stable per file revision, and lets
+   browsers 304-revalidate instead of re-downloading the whole file. */
+function etagForStat(stat) {
+  return `"${stat.size.toString(16)}-${Math.round(stat.mtimeMs).toString(16)}"`;
+}
+
+function isNotModified(req, etag) {
+  const inm = req.headers["if-none-match"];
+  if (!inm || !etag) return false;
+  return inm.split(",").map((s) => s.trim()).includes(etag);
+}
+
+function serveFileWithCache(req, res, filePath, cacheControl) {
+  fs.stat(filePath, (statErr, stat) => {
+    if (statErr || !stat.isFile()) {
+      res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
+      res.end("Not Found");
+      return;
+    }
+    const etag = etagForStat(stat);
+    if (isNotModified(req, etag)) {
+      res.writeHead(304, { ETag: etag });
+      res.end();
+      return;
+    }
+    fs.readFile(filePath, (readErr, data) => {
+      if (readErr) {
+        res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
+        res.end("Not Found");
+        return;
+      }
+      const ext = path.extname(filePath).toLowerCase();
+      const headers = { "Content-Type": mimeTypes[ext] || "application/octet-stream", ETag: etag };
+      if (cacheControl) headers["Cache-Control"] = cacheControl;
+      res.writeHead(200, headers);
+      res.end(data);
+    });
+  });
 }
 
 // ─── Audio upload (raw binary body) ────────────────────────────────────
@@ -1250,8 +1358,24 @@ async function handleApi(req, res, urlPath) {
         console.error("upload write error:", err.message);
         return json(res, 500, { error: "Failed to save image" });
       }
+      // Card-size thumbnail (best-effort) so the blog grid downloads a small
+      // JPEG instead of the full 1920px original. Only JPEG uploads get one.
+      let cardUrl = null;
+      if (ext === ".jpg") {
+        const thumb = makeCardThumb(buf);
+        if (thumb) {
+          const thumbName = filename.replace(/\.jpg$/i, "_card.jpg");
+          try {
+            fs.writeFileSync(path.join(PHOTO_DIR, thumbName), thumb);
+            cardUrl = PHOTO_URL_PREFIX + thumbName;
+          } catch (e) {
+            console.error("thumb write error:", e.message);
+          }
+        }
+      }
       return json(res, 201, {
         url: PHOTO_URL_PREFIX + filename,
+        ...(cardUrl ? { card_url: cardUrl } : {}),
         size: buf.length,
       });
     });
@@ -1331,7 +1455,7 @@ async function handleApi(req, res, urlPath) {
     if (!title || !url) {
       return json(res, 400, { error: "Title and URL are required" });
     }
-    const track = db.createMusic({ title, url, sort_order: body.sort_order });
+    const track = db.createMusic({ title, url, sort_order: body.sort_order, source_type: body.source_type });
     return json(res, 201, track);
   }
 
@@ -1349,7 +1473,7 @@ async function handleApi(req, res, urlPath) {
       }
       const existing = db.getMusic(id);
       if (!existing) return json(res, 404, { error: "Track not found" });
-      return json(res, 200, db.updateMusic(id, { title, url, sort_order: body.sort_order }));
+      return json(res, 200, db.updateMusic(id, { title, url, sort_order: body.sort_order, source_type: body.source_type }));
     }
 
     if (req.method === "DELETE") {
@@ -1850,7 +1974,9 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // Uploaded photos (served from PHOTO_DIR, outside publicDir)
+  // Uploaded photos (served from PHOTO_DIR, outside publicDir). Photo URLs are
+  // unique per upload (benpage_<stamp>_<rand>.jpg), i.e. immutable — served
+  // with a one-year immutable cache so the browser never re-downloads them.
   if (urlPath.startsWith(PHOTO_URL_PREFIX)) {
     const photoPath = path.join(PHOTO_DIR, path.normalize(urlPath.slice(PHOTO_URL_PREFIX.length)));
     if (!photoPath.startsWith(path.resolve(PHOTO_DIR) + path.sep)) {
@@ -1858,16 +1984,43 @@ const server = http.createServer((req, res) => {
       res.end("Forbidden");
       return;
     }
-    fs.readFile(photoPath, (err, data) => {
-      if (err) {
-        res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
-        res.end("Not Found");
-        return;
-      }
-      const ext = path.extname(photoPath).toLowerCase();
-      res.writeHead(200, { "Content-Type": mimeTypes[ext] || "application/octet-stream" });
-      res.end(data);
-    });
+    // Lazy *_card.jpg: blog grid covers request a card-size thumbnail. When it
+    // hasn't been generated yet (photos uploaded before thumbnails existed),
+    // derive it once from the full-size source and cache it on disk.
+    const baseName = path.basename(photoPath);
+    const cardMatch = /^(.+)_card\.jpg$/i.exec(baseName);
+    if (cardMatch && /^benpage_[a-z0-9_-]+\.jpg$/i.test(cardMatch[1] + ".jpg")) {
+      const srcPath = path.join(PHOTO_DIR, cardMatch[1] + ".jpg");
+      fs.stat(photoPath, (statErr) => {
+        if (!statErr) {
+          serveFileWithCache(req, res, photoPath, PHOTO_CACHE_CONTROL);
+          return;
+        }
+        fs.readFile(srcPath, (srcErr, srcBuf) => {
+          if (srcErr) {
+            res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
+            res.end("Not Found");
+            return;
+          }
+          const thumb = makeCardThumb(srcBuf);
+          if (!thumb) {
+            res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
+            res.end("Not Found");
+            return;
+          }
+          fs.writeFile(photoPath, thumb, (writeErr) => {
+            if (writeErr) {
+              res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
+              res.end("Not Found");
+              return;
+            }
+            serveFileWithCache(req, res, photoPath, PHOTO_CACHE_CONTROL);
+          });
+        });
+      });
+      return;
+    }
+    serveFileWithCache(req, res, photoPath, PHOTO_CACHE_CONTROL);
     return;
   }
 
@@ -2029,26 +2182,16 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  fs.readFile(filePath, (err, data) => {
-    if (err) {
-      res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
-      res.end("Not Found");
-      return;
-    }
-
-    const ext = path.extname(filePath);
-    // HTML/JS/CSS: revalidate every load so a deploy is picked up immediately
-    // instead of browsers keeping the old recorder code (which caused WebM
-    // uploads to be rejected after the WAV migration). Other static files
-    // (images, fonts) keep the default (no explicit cache header).
-    const cacheControl = [".html", ".js", ".css", ".mjs"].includes(ext)
-      ? "no-cache"
-      : undefined;
-    const headers = { "Content-Type": mimeTypes[ext] || "application/octet-stream" };
-    if (cacheControl) headers["Cache-Control"] = cacheControl;
-    res.writeHead(200, headers);
-    res.end(data);
-  });
+  const ext = path.extname(filePath).toLowerCase();
+  // HTML/JS/CSS: revalidate every load so a deploy is picked up immediately
+  // instead of browsers keeping the old recorder code (which caused WebM
+  // uploads to be rejected after the WAV migration). The ETag still turns
+  // those revalidations into cheap 304s. Images/fonts/audio: cache for a day
+  // and revalidate on expiry.
+  const cacheControl = [".html", ".js", ".css", ".mjs"].includes(ext)
+    ? "no-cache"
+    : "public, max-age=86400";
+  serveFileWithCache(req, res, filePath, cacheControl);
 });
 
 // Auto-cleanup of generated recording files (conversion cache, stale

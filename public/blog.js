@@ -27,6 +27,13 @@ function escapeHTML(str) {
     .replace(/'/g, "&" + "#39;");
 }
 
+/* Same-site /photo/ JPEG covers get a card-size thumbnail (…_card.jpg) that
+   the server generates at upload time or on first request; any other cover
+   URL keeps its original form. */
+function thumbnailableCover(url) {
+  return /^\/photo\/benpage_[a-z0-9_-]+\.jpg$/i.test(url);
+}
+
 function fmtDate(iso) {
   const d = new Date(iso + "T00:00:00");
   if (isNaN(d)) return iso;
@@ -38,7 +45,7 @@ function renderBlocks(post) {
     if (b.type === "image") {
       return (
         `<figure class="blog-figure">` +
-          `<img class="blog-img" src="${escapeHTML(b.src)}" alt="${escapeHTML(b.alt || b.caption || "Blog image")}" loading="lazy" />` +
+          `<img class="blog-img" src="${escapeHTML(b.src)}" alt="${escapeHTML(b.alt || b.caption || "Blog image")}" loading="lazy" decoding="async" />` +
           (b.caption ? `<figcaption class="blog-figcaption">${escapeHTML(b.caption)}</figcaption>` : "") +
         `</figure>`
       );
@@ -134,8 +141,11 @@ function renderBlogGrid() {
         ? '<span class="blog-media-badge">▧ Photo</span>'
         : '<span class="blog-media-badge">✎ Words</span>';
 
+    // data-full keeps the original URL so a missing *_card.jpg can fall back
+    // to the full-size cover without a DB change.
+    const coverSrc = thumbnailableCover(cover) ? cover.replace(/\.jpg$/i, "_card.jpg") : cover;
     const coverHtml = cover
-      ? `<div class="blog-card-cover"><img src="${escapeHTML(cover)}" alt="${escapeHTML(post.title)}" loading="lazy" /></div>`
+      ? `<div class="blog-card-cover"><img src="${escapeHTML(coverSrc)}" alt="${escapeHTML(post.title)}" loading="lazy" decoding="async" data-full="${escapeHTML(cover)}" /></div>`
       : `<div class="blog-card-cover blog-card-cover-text">✎</div>`;
 
     const readCount = Number(post.read_count) || 0;
@@ -158,6 +168,28 @@ function renderBlogGrid() {
       </article>`
     );
   }).join("");
+
+  // Fall back to the full-size cover if a *_card.jpg thumbnail is missing
+  // (the request 404s and the error event swaps the src once). Non-local or
+  // non-JPEG covers already point at the full URL, so the guard is a no-op.
+  blogGrid.querySelectorAll(".blog-card-cover img[data-full]").forEach((img) => {
+    img.addEventListener(
+      "error",
+      () => {
+        const full = img.dataset.full;
+        if (full && img.getAttribute("src") !== full) img.src = full;
+      },
+      { once: true }
+    );
+  });
+
+  // The first card's cover is the LCP candidate: fetch it eagerly and at
+  // high priority; everything else stays lazy.
+  const firstCover = blogGrid.querySelector(".blog-card .blog-card-cover img");
+  if (firstCover) {
+    firstCover.loading = "eager";
+    firstCover.setAttribute("fetchpriority", "high");
+  }
 
   blogGrid.querySelectorAll(".blog-card").forEach((card) => {
     card.addEventListener("click", () => {

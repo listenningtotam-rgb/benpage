@@ -210,19 +210,21 @@ async function loadMusic() {
   }
 
   list.innerHTML = data.tracks
-    .map(
-      (t) => `
+    .map((t) => {
+      const isCover = t.source_type === "cover";
+      const badge = `<span class="src-badge ${isCover ? "src-badge-cover" : "src-badge-original"}">${isCover ? "Cover" : "原创"}</span>`;
+      return `
       <div class="item-card">
         <div class="item-info">
-          <div class="item-title">${escapeHTML(t.title)}</div>
+          <div class="item-title music-title-row">${badge}<span class="music-title-text">${escapeHTML(t.title)}</span></div>
           <div class="item-sub">${escapeHTML(t.url)} · ${t.commit_count != null ? t.commit_count + " commit" + (t.commit_count === 1 ? "" : "s") + " · " : ""}${t.play_count || 0} plays</div>
         </div>
         <div class="item-actions">
           <button type="button" class="btn btn-ghost btn-sm" data-action="edit-music" data-id="${t.id}">Edit</button>
           <button type="button" class="btn btn-danger btn-sm" data-action="delete-music" data-id="${t.id}">Delete</button>
         </div>
-      </div>`
-    )
+      </div>`;
+    })
     .join("");
 
   applyListPager(list, ".item-card");
@@ -235,6 +237,9 @@ function showMusicForm(track = null) {
   $("#music-title").value = track ? track.title : "";
   $("#music-url").value = track ? track.url : "";
   $("#music-sort").value = track ? track.sort_order : 0;
+  // 原创 (original) vs Cover — the new-recording form defaults to Cover;
+  // when editing, keep whatever the track already has.
+  $("#music-source-type").value = track ? (track.source_type === "cover" ? "cover" : "original") : "cover";
   $("#music-file").value = "";
   const statusEl = $("#music-upload-status");
   if (track && track.url) {
@@ -438,6 +443,7 @@ $("#music-form").addEventListener("submit", async (e) => {
     title: $("#music-title").value.trim(),
     url,
     sort_order: parseInt($("#music-sort").value, 10) || 0,
+    source_type: $("#music-source-type").value,
   };
   try {
     if (id) {
