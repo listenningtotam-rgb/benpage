@@ -2579,6 +2579,28 @@ body {
   max-width: 100%;
 }
 
+#vinyl-text-query {
+  flex: 1;
+  min-width: 220px;
+  background: rgba(6, 10, 30, 0.9);
+  color: #fff;
+  border: 1px solid rgba(126, 200, 227, 0.35);
+  border-radius: 8px;
+  padding: 0.45rem 0.6rem;
+  font-size: 0.85rem;
+}
+
+.vinyl-search-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.9rem;
+}
+
+.vinyl-search-item .vinyl-card-art img {
+  width: 120px;
+  height: 120px;
+}
+
 .vinyl-result {
   border-top: 1px solid rgba(255, 255, 255, 0.08);
   padding-top: 1.1rem;

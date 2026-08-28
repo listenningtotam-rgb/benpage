@@ -546,7 +546,8 @@ function listVinylRecords() {
   return db
     .prepare(
       `SELECT id, mbid, slug, title, artist, release_date, country, label,
-              catalog_number, cover_path, tracks_json, play_count, created_at
+              catalog_number, cover_path, tracks_json, play_count, created_at,
+              source, discogs_id
          FROM vinyl_records
         ORDER BY release_date ASC, title ASC`
     )
@@ -559,6 +560,43 @@ function getVinylRecord(slugOrId) {
     db.prepare("SELECT * FROM vinyl_records WHERE id = ?").get(slugOrId) ||
     null
   );
+}
+
+/* mbid lookup — used to keep a Discogs re-import idempotent (its slug is
+   reused instead of being suffixed repeatedly). */
+function getVinylRecordByMbid(mbid) {
+  return db.prepare("SELECT * FROM vinyl_records WHERE mbid = ?").get(mbid) || null;
+}
+
+/* Free-text archive search used when the Discogs token is missing (or as a
+   complement to it).  LIKE is escaped so user input cannot inject wildcards. */
+function searchVinylRecordsLocal(q) {
+  const tokens = String(q || "")
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean);
+  if (!tokens.length) return [];
+  const esc = (s) => s.replace(/[%_\\]/g, (c) => "\\" + c);
+  const params = {};
+  const clauses = tokens.map((t, i) => {
+    const k = `t${i}`;
+    params[k] = `%${esc(t)}%`;
+    return `(title LIKE @${k} ESCAPE '\\'
+         OR artist LIKE @${k} ESCAPE '\\'
+         OR label LIKE @${k} ESCAPE '\\'
+         OR catalog_number LIKE @${k} ESCAPE '\\')`;
+  });
+  return db
+    .prepare(
+      `SELECT id, mbid, slug, title, artist, release_date, country, label,
+              catalog_number, cover_path, tracks_json, play_count, created_at,
+              source, discogs_id
+         FROM vinyl_records
+        WHERE ${clauses.join(" AND ")}
+        ORDER BY release_date ASC, title ASC
+        LIMIT 20`
+    )
+    .all(params);
 }
 
 function upsertVinylRecord(r) {
@@ -575,14 +613,16 @@ function upsertVinylRecord(r) {
     ahash: String(r.ahash || ""),
     dhash: String(r.dhash || ""),
     tracks_json: JSON.stringify(Array.isArray(r.tracks) ? r.tracks : []),
+    source: String(r.source || "musicbrainz"),
+    discogs_id: r.discogs_id != null ? Number(r.discogs_id) : null,
   };
   db.prepare(
     `INSERT INTO vinyl_records
        (mbid, slug, title, artist, release_date, country, label, catalog_number,
-        cover_path, ahash, dhash, tracks_json)
+        cover_path, ahash, dhash, tracks_json, source, discogs_id)
      VALUES
        (@mbid, @slug, @title, @artist, @release_date, @country, @label,
-        @catalog_number, @cover_path, @ahash, @dhash, @tracks_json)
+        @catalog_number, @cover_path, @ahash, @dhash, @tracks_json, @source, @discogs_id)
      ON CONFLICT(mbid) DO UPDATE SET
         slug = excluded.slug,
         title = excluded.title,
@@ -594,7 +634,9 @@ function upsertVinylRecord(r) {
         cover_path = excluded.cover_path,
         ahash = excluded.ahash,
         dhash = excluded.dhash,
-        tracks_json = excluded.tracks_json`
+        tracks_json = excluded.tracks_json,
+        source = excluded.source,
+        discogs_id = excluded.discogs_id`
   ).run(rec);
   return getVinylRecord(rec.slug);
 }
@@ -736,6 +778,8 @@ module.exports = {
   incrementVinylPlay,
   listVinylRecords,
   getVinylRecord,
+  getVinylRecordByMbid,
+  searchVinylRecordsLocal,
   upsertVinylRecord,
   hammingDistance,
   matchVinylByHash,

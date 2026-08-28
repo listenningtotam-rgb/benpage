@@ -83,10 +83,10 @@
           </div>
         </article>
         <article class="app-card">
-          <div class="app-thumb"><div class="thumb-widget thumb-vinyl"><div class="thumb-vinyl-disc"><div class="thumb-vinyl-art"><img src="/vinyl-art/dark-side-of-the-moon.jpg" alt="" /></div><div class="thumb-vinyl-hole"></div></div><span class="thumb-vinyl-label">黑胶档案</span></div></div>
+          <div class="app-thumb"><div class="thumb-widget thumb-vinyl"><div class="thumb-vinyl-disc"><div class="thumb-vinyl-art"><img src="/vinyl-art/dark-side-of-the-moon.jpg" alt="" onerror="this.style.display='none'" /></div><div class="thumb-vinyl-hole"></div></div><span class="thumb-vinyl-label">黑胶档案</span></div></div>
           <div class="app-body">
             <h3 class="app-title">黑胶档案</h3>
-            <p class="app-desc">Vinyl Archive — 拍一张黑胶封面，识别出专辑、唱片公司、发行年份与完整曲目，并生成一张复古风分享页。</p>
+            <p class="app-desc">Vinyl Archive — 拍一张黑胶封面识别，或直接文字搜索 Discogs 唱片库；点击结果查看发行年份、艺术家、唱片公司、完整曲目，并生成一张复古风分享页（不保存到服务器）。</p>
             <button type="button" class="app-open" data-target="vinyl">Open App</button>
           </div>
         </article>
@@ -174,6 +174,13 @@
               <span class="vinyl-demo-row">
                 <select id="vinyl-demo"></select>
                 <button type="button" id="vinyl-demo-run" class="app-open">识别示例</button>
+              </span>
+            </div>
+            <div class="vinyl-demo">
+              <label for="vinyl-text-query">没有封面？直接输入文字描述（艺人 / 专辑 / 厂牌 / 编号），从 Discogs 唱片库搜索 — 点击结果查看详情（发行年份 / 艺术家 / 唱片公司 / 曲目），只做浏览，不保存到服务器：</label>
+              <span class="vinyl-demo-row">
+                <input type="text" id="vinyl-text-query" placeholder="例如：Michael Jackson Thriller 或厂牌编号…" />
+                <button type="button" id="vinyl-text-search-btn" class="app-open">🔍 文字搜索</button>
               </span>
             </div>
             <div id="vinyl-status" class="vinyl-status" aria-live="polite"></div>

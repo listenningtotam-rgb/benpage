@@ -112,6 +112,22 @@ const JWT_SECRET = loadJwtSecret();
 
 const db = require("./db");
 
+// ─── Discogs token (黑胶档案文字搜索) ────────────────────────────────
+// Discogs 的 /database/search 要求"任何用户"级别的认证。个人访问令牌在
+// https://www.discogs.com/settings/developers 免费生成(绑定你的账户,生成后
+// 只显示一次)。读取优先级: DISCOGS_TOKEN 环境变量 → data/.discogs-token 文件
+// (data/ 已被 gitignore)。未配置时服务照常启动,文字搜索自动退化为仅搜本地档案。
+const DISCOGS_TOKEN =
+  process.env.DISCOGS_TOKEN ||
+  (() => {
+    try {
+      return fs.readFileSync(path.join(dataDir, ".discogs-token"), "utf8").trim();
+    } catch (e) {
+      return "";
+    }
+  })();
+const discogs = require("./discogs")(DISCOGS_TOKEN, PUBLIC_URL);
+
 const mimeTypes = {
   ".html": "text/html; charset=utf-8",
   ".css": "text/css",
@@ -784,6 +800,12 @@ function publicVinylRow(row) {
   } catch (e) {
     tracks = [];
   }
+  // Canonical duration field in storage is `length` (ms); expose `length_ms`
+  // as an alias so both the frontend result card and the share page agree.
+  tracks = tracks.map((t) => ({
+    ...t,
+    length_ms: t.length_ms != null ? t.length_ms : t.length != null ? t.length : null,
+  }));
   return {
     id: row.id,
     slug: row.slug,
@@ -795,6 +817,8 @@ function publicVinylRow(row) {
     label: row.label,
     catalog_number: row.catalog_number,
     cover_path: row.cover_path,
+    source: row.source || "musicbrainz",
+    discogs_id: row.discogs_id != null ? Number(row.discogs_id) : null,
     tracks,
     play_count: Number(row.play_count) || 0,
     created_at: row.created_at,
@@ -857,6 +881,108 @@ function renderVinylSharePage(req, rec) {
     "    </footer>\n" +
     "  </div>\n" +
     '  <script src="/share-count.js"></script>\n' +
+    "\n</body>\n</html>\n"
+  );
+}
+
+/* Discogs reference share page — same vintage record-card layout as a
+   stored vinyl share, but rendered live from the Discogs API (no DB row,
+   no cover stored on this server).  WeChat scrapers still get real
+   og:title / og:description / og:image via the server-side fetch. */
+function renderVinylDiscogsSharePage(req, detail) {
+  const year = detail.year != null ? String(detail.year) : "";
+  const facts = [year, detail.country, detail.label, detail.catalog_number]
+    .filter(Boolean)
+    .join(" · ");
+  const description =
+    [detail.artist, year, detail.label].filter(Boolean).join(" · ") ||
+    "Discogs 唱片";
+  const head = renderSharePageHead({
+    req,
+    kind: "none",
+    id: "",
+    title: `${detail.title} — ${detail.artist}`,
+    description,
+    image: detail.cover_image, // absolute https URL — absUrl passes it through
+    type: "music.album",
+    url: "/vinyl/discogs/" + detail.discogs_id,
+  });
+
+  const trackRows = detail.tracks
+    .map(
+      (t, i) =>
+        `      <li class="vinyl-track"><span class="vinyl-track-num">${String(
+          t.position || i + 1
+        ).padStart(2, "0")}</span><span class="vinyl-track-title">${escHtml(
+          t.title
+        )}</span>${t.length_ms ? ` <span class="vinyl-track-len">${vinylFmtMs(t.length_ms)}</span>` : ""}</li>`
+    )
+    .join("\n");
+  const styleLine = [...(detail.genres || []), ...(detail.styles || [])]
+    .slice(0, 6)
+    .join(" · ");
+
+  return (
+    head +
+    '  <div class="share-page share-page-vinyl">\n' +
+    "    <header class=\"share-head\">\n" +
+    `      <a class="share-brand" href="/">${SITE_NAME}</a>\n` +
+    '      <span class="share-meta">Discogs · Vinyl Archive</span>\n' +
+    "    </header>\n" +
+    '    <section class="vinyl-record">\n' +
+    (detail.cover_image
+      ? `      <div class="vinyl-cover-wrap"><img class="vinyl-cover" src="${escHtml(
+          detail.cover_image
+        )}" alt="${escHtml(detail.title)} cover" /></div>\n`
+      : "") +
+    '      <div class="vinyl-info">\n' +
+    `        <h1 class="share-title vinyl-title">${escHtml(detail.title)}</h1>\n` +
+    `        <p class="vinyl-artist">${escHtml(detail.artist)}</p>\n` +
+    (facts ? `        <p class="vinyl-facts">${escHtml(facts)}</p>\n` : "") +
+    (styleLine ? `        <p class="vinyl-facts">${escHtml(styleLine)}</p>\n` : "") +
+    (detail.tracks.length
+      ? `        <ol class="vinyl-tracklist">\n${trackRows}\n        </ol>\n`
+      : "") +
+    "      </div>\n" +
+    "    </section>\n" +
+    "    <footer class=\"share-foot\">\n" +
+    `      <a href="/">返回 ${SITE_NAME} →</a>\n` +
+    '      <span class="share-stat">Discogs · Vinyl Archive</span>\n' +
+    "    </footer>\n" +
+    "  </div>\n" +
+    "\n</body>\n</html>\n"
+  );
+}
+
+function renderVinylDiscogsErrorPage(req, message) {
+  const head = renderSharePageHead({
+    req,
+    kind: "none",
+    id: "",
+    title: "Discogs 唱片暂时无法打开",
+    description: message,
+    image: "",
+    type: "website",
+    url: req.url,
+  });
+  return (
+    head +
+    '  <div class="share-page share-page-vinyl">\n' +
+    "    <header class=\"share-head\">\n" +
+    `      <a class="share-brand" href="/">${SITE_NAME}</a>\n` +
+    '      <span class="share-meta">Discogs · Vinyl Archive</span>\n' +
+    "    </header>\n" +
+    '    <section class="vinyl-record">\n' +
+    '      <div class="vinyl-info">\n' +
+    '        <h1 class="share-title vinyl-title">Discogs 唱片暂时无法打开</h1>\n' +
+    `        <p class="vinyl-artist">${escHtml(message)}</p>\n` +
+    "      </div>\n" +
+    "    </section>\n" +
+    "    <footer class=\"share-foot\">\n" +
+    `      <a href="/">返回 ${SITE_NAME} →</a>\n` +
+    '      <span class="share-stat">Discogs · Vinyl Archive</span>\n' +
+    "    </footer>\n" +
+    "  </div>\n" +
     "\n</body>\n</html>\n"
   );
 }
@@ -1461,9 +1587,11 @@ async function handleApi(req, res, urlPath) {
   // ── Vinyl Archive (黑胶档案) API ──────────────────────
   //   POST /api/vinyl/recognize     → public, match a photographed cover
   //                                   by perceptual hash (aHash + dHash)
-  //   GET  /api/vinyl               → public, list seeded albums
-  //   GET  /api/vinyl/:slug         → public, album detail
+  //   GET  /api/vinyl               → public, list archive albums
+  //   GET  /api/vinyl/:slug         → public, archive album detail
   //   POST /api/vinyl/:id/play      → public, bump a vinyl share-page play
+  //   GET  /api/vinyl/lookup        → public, live Discogs release detail
+  //                                   (fetched on demand, nothing is stored)
   if (urlPath === "/api/vinyl/recognize" && req.method === "POST") {
     if (!checkShareRate(req)) return json(res, 429, { error: "Rate limit exceeded" });
     const body = await readBody(req);
@@ -1485,6 +1613,28 @@ async function handleApi(req, res, urlPath) {
     return json(res, 200, { records: db.listVinylRecords().map(publicVinylRow) });
   }
 
+  // Live Discogs release detail — proxies /releases/{id} on demand.  This is
+  // a pure lookup: nothing is written to the DB and no cover is downloaded,
+  // so the server never stores Discogs data.  (Must sit before the
+  // /api/vinyl/:slug matcher below so "lookup" isn't treated as a slug.)
+  if (urlPath === "/api/vinyl/lookup" && req.method === "GET") {
+    if (!checkShareRate(req)) return json(res, 429, { error: "Rate limit exceeded" });
+    const raw = new URL(req.url, "http://localhost");
+    const discogsId = Number(raw.searchParams.get("discogs_id"));
+    if (!Number.isInteger(discogsId) || discogsId <= 0) {
+      return json(res, 400, { error: "无效的 discogs_id" });
+    }
+    if (!DISCOGS_TOKEN) {
+      return json(res, 400, { error: "Discogs token 未配置 — 请设置 DISCOGS_TOKEN 或 data/.discogs-token" });
+    }
+    try {
+      const detail = await discogs.detail(discogsId);
+      return json(res, 200, { detail });
+    } catch (e) {
+      return json(res, 502, { error: e.message || "Discogs 详情获取失败" });
+    }
+  }
+
   const vinylDetail = urlPath.match(/^\/api\/vinyl\/([a-z0-9-]+)$/);
   if (vinylDetail && req.method === "GET") {
     const rec = db.getVinylRecord(vinylDetail[1]);
@@ -1498,6 +1648,27 @@ async function handleApi(req, res, urlPath) {
     const rec = db.incrementVinylPlay(Number(vinylPlay[1]));
     if (!rec) return json(res, 404, { error: "Album not found" });
     return json(res, 200, { ok: true, play_count: rec.play_count });
+  }
+
+  //   POST /api/vinyl/search     → public, text search: local archive first,
+  //                                then Discogs (when a token is configured).
+  //                                Results are live; nothing is imported/stored.
+  if (urlPath === "/api/vinyl/search" && req.method === "POST") {
+    if (!checkShareRate(req)) return json(res, 429, { error: "Rate limit exceeded" });
+    const body = await readBody(req);
+    const q = cleanText(body.q, 200).trim();
+    if (!q) return json(res, 400, { error: "搜索词不能为空" });
+    const local = db.searchVinylRecordsLocal(q).map(publicVinylRow);
+    let external = [];
+    let externalError = null;
+    if (DISCOGS_TOKEN) {
+      try {
+        external = await discogs.search(q);
+      } catch (e) {
+        externalError = e.message; // local matches still returned
+      }
+    }
+    return json(res, 200, { local, external, externalEnabled: !!DISCOGS_TOKEN, externalError });
   }
 
   if (urlPath === "/api/blog" && req.method === "POST") {
@@ -1795,7 +1966,28 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // 黑胶档案 (Vinyl Archive) share page — a seeded album whose cover was
+  // Discogs reference share page — live-rendered from the Discogs API on
+  // every open (no DB record, nothing stored on this server).  Sharing a
+  // search result points here, so WeChat/QR link previews carry real title,
+  // year, artist, label and cover art.
+  const vinylDiscogsShare = urlPath.match(/^\/vinyl\/discogs\/(\d+)$/);
+  if (vinylDiscogsShare && req.method === "GET") {
+    const discogsId = Number(vinylDiscogsShare[1]);
+    res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+    if (!DISCOGS_TOKEN) {
+      res.end(renderVinylDiscogsErrorPage(req, "Discogs token 未配置 — 请设置 DISCOGS_TOKEN 或 data/.discogs-token。"));
+      return;
+    }
+    discogs
+      .detail(discogsId)
+      .then((detail) => res.end(renderVinylDiscogsSharePage(req, detail)))
+      .catch((e) =>
+        res.end(renderVinylDiscogsErrorPage(req, e.message || "Discogs 详情获取失败，请稍后再试。"))
+      );
+    return;
+  }
+
+  // 黑胶档案 (Vinyl Archive) share page — a stored album whose cover was
   // recognized from a photo.  Reads vinyl_records (not music), renders the
   // vintage record-card layout server-side (og:image = the cover art).
   const vinylShare = urlPath.match(/^\/vinyl\/([a-z0-9-]+)$/);
