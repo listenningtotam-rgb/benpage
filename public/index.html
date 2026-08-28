@@ -159,28 +159,15 @@
 
         <div id="app-vinyl" class="app-panel" hidden>
           <h3 class="app-panel-title">黑胶档案 · Vinyl Archive</h3>
-          <p class="cal-caption">拍一张黑胶封面（或从相册选一张），应用会计算它的感知哈希并与档案中的专辑比对 —— 认出专辑后展示唱片公司、发行年份与完整曲目，并生成一张复古分享页。</p>
+          <p class="cal-caption">浏览已归档的黑胶专辑，或输入文字描述（艺人 / 专辑 / 厂牌 / 编号）从 Discogs 唱片库搜索 —— 点击结果查看发行年份、唱片公司、完整曲目，并生成一张复古分享页。</p>
 
           <div class="vinyl-stage" id="vinyl-stage">
-            <video id="vinyl-video" autoplay playsinline muted hidden></video>
-            <div id="vinyl-preview" class="vinyl-preview" hidden></div>
-            <div class="vinyl-actions" id="vinyl-actions">
-              <button type="button" id="vinyl-camera" class="app-open">📷 拍照识别</button>
-              <button type="button" id="vinyl-file" class="app-open">🖼 从相册选择</button>
-              <input type="file" id="vinyl-file-input" accept="image/*" hidden />
-            </div>
             <div class="vinyl-demo">
-              <label for="vinyl-demo">没有黑胶在手？用一张已归档的封面试试：</label>
-              <span class="vinyl-demo-row">
-                <select id="vinyl-demo"></select>
-                <button type="button" id="vinyl-demo-run" class="app-open">识别示例</button>
-              </span>
-            </div>
-            <div class="vinyl-demo">
-              <label for="vinyl-text-query">没有封面？直接输入文字描述（艺人 / 专辑 / 厂牌 / 编号），从 Discogs 唱片库搜索 — 点击结果查看详情（发行年份 / 艺术家 / 唱片公司 / 曲目），只做浏览，不保存到服务器：</label>
+              <label for="vinyl-text-query">直接输入文字描述（艺人 / 专辑 / 厂牌 / 编号），从 Discogs 唱片库搜索 — 点击结果查看详情（发行年份 / 艺术家 / 唱片公司 / 曲目），只做浏览，不保存到服务器：</label>
               <span class="vinyl-demo-row">
                 <input type="text" id="vinyl-text-query" placeholder="例如：Michael Jackson Thriller 或厂牌编号…" />
                 <button type="button" id="vinyl-text-search-btn" class="app-open">🔍 文字搜索</button>
+                <button type="button" id="vinyl-browse-btn" class="app-open">📚 浏览档案</button>
               </span>
             </div>
             <div id="vinyl-status" class="vinyl-status" aria-live="polite"></div>

@@ -3,10 +3,9 @@
  * Box-averaged downscale to a grayscale luma grid (canvas-smoothing
  * approximation), luma = 0.299R + 0.587G + 0.114B, producing the exact same
  * 64-bit aHash + dHash hex as:
- *   - public/vinyl.js (browser, photographs the cover)   — same math by hand
  *   - seed-vinyl.js    (MusicBrainz seed pipeline)
  * so every imported record — MusicBrainz seed OR Discogs text-search import —
- * is recognized by the same /api/vinyl/recognize matcher.
+ * carries the same perceptual hashes (stored at import time for reference).
  * ---------------------------------------------------------------------- */
 
 const jpeg = require("jpeg-js");

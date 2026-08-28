@@ -539,9 +539,9 @@ function deleteBlogPost(id) {
 }
 
 /* ── Vinyl Archive (黑胶档案) ─────────────────────────── */
-/* Seeded album records recognized from photographed covers. A record is a
-   normalized MusicBrainz release: metadata + cover path + perceptual hashes
-   (64-bit aHash/dHash hex) used to match a photographed cover. */
+/* Seeded album records imported via MusicBrainz / Discogs. A record is a
+   normalized release: metadata + cover path + perceptual hashes
+   (64-bit aHash/dHash hex) stored at import time. */
 function listVinylRecords() {
   return db
     .prepare(
@@ -639,36 +639,6 @@ function upsertVinylRecord(r) {
         discogs_id = excluded.discogs_id`
   ).run(rec);
   return getVinylRecord(rec.slug);
-}
-
-/* Hamming distance between two 64-bit perceptual hashes ("0x" + 16 hex). */
-function hammingDistance(a, b) {
-  let x = BigInt("0x" + a) ^ BigInt("0x" + b);
-  let count = 0;
-  while (x) {
-    count += Number(x & 1n);
-    x >>= 1n;
-  }
-  return count;
-}
-
-/* Best matching vinyl record for a client-supplied (ahash, dhash) pair.
-   dHash (difference hash) is the primary key — it is robust to flat color /
-   exposure shifts, so it holds up when a photographed cover is compared
-   against the clean seed art.  Returns null when nothing is close enough. */
-function matchVinylByHash(ahash, dhash, threshold = 14) {
-  const rows = db
-    .prepare("SELECT id, slug, title, artist, cover_path, ahash, dhash FROM vinyl_records")
-    .all();
-  let best = null;
-  for (const row of rows) {
-    const dh = hammingDistance(row.dhash, dhash);
-    if (best && dh >= best.dhashDist) continue;
-    const ah = hammingDistance(row.ahash, ahash);
-    best = { record: row, dhashDist: dh, ahashDist: ah };
-  }
-  if (!best || best.dhashDist > threshold) return null;
-  return best;
 }
 
 /* ── Play / read counters ─────────────────────────────── */
@@ -781,8 +751,6 @@ module.exports = {
   getVinylRecordByMbid,
   searchVinylRecordsLocal,
   upsertVinylRecord,
-  hammingDistance,
-  matchVinylByHash,
   createShareLink,
   getShareLink,
   incrementShareLinkHit,

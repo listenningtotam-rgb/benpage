@@ -137,8 +137,7 @@ async function ensureCover(entry) {
 /* ── Perceptual hashing ───────────────────────────────────────────── */
 /* Box-averaged grayscale grids + aHash/dHash live in ./vinyl-hash.js,
    shared with the Discogs import path (discogs.js) so every archived
-   record is recognized by the same /api/vinyl/recognize matcher.
-   public/vinyl.js mirrors the same math by hand in the browser. */
+   record carries the same perceptual hashes. */
 function computeHashes(filePath) {
   return computeHashesFromBuffer(fs.readFileSync(filePath));
 }

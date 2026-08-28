@@ -509,10 +509,6 @@ const COUNT_MAX_REQ = 30; // per IP per minute
 const COUNT_WINDOW_MS = 60 * 1000;
 const countHits = new Map();
 
-// Maximum dHash Hamming distance for a photographed cover to be accepted as
-// a match (64 bits; identical images = 0, unrelated covers are usually > 24).
-const VINYL_MATCH_THRESHOLD = 14;
-
 function checkCountRate(req) {
   const key = req.socket.remoteAddress || "?";
   const now = Date.now();
@@ -1709,30 +1705,11 @@ async function handleApi(req, res, urlPath) {
   }
 
   // ── Vinyl Archive (黑胶档案) API ──────────────────────
-  //   POST /api/vinyl/recognize     → public, match a photographed cover
-  //                                   by perceptual hash (aHash + dHash)
   //   GET  /api/vinyl               → public, list archive albums
   //   GET  /api/vinyl/:slug         → public, archive album detail
   //   POST /api/vinyl/:id/play      → public, bump a vinyl share-page play
   //   GET  /api/vinyl/lookup        → public, live Discogs release detail
   //                                   (fetched on demand, nothing is stored)
-  if (urlPath === "/api/vinyl/recognize" && req.method === "POST") {
-    if (!checkShareRate(req)) return json(res, 429, { error: "Rate limit exceeded" });
-    const body = await readBody(req);
-    const ahash = cleanText(body.ahash, 64).toLowerCase();
-    const dhash = cleanText(body.dhash, 64).toLowerCase();
-    if (!/^[0-9a-f]{16}$/.test(ahash) || !/^[0-9a-f]{16}$/.test(dhash)) {
-      return json(res, 400, { error: "Invalid hash" });
-    }
-    const match = db.matchVinylByHash(ahash, dhash, VINYL_MATCH_THRESHOLD);
-    if (!match) return json(res, 200, { match: null });
-    return json(res, 200, {
-      match: publicVinylRow(match.record),
-      dhash_dist: match.dhashDist,
-      ahash_dist: match.ahashDist,
-    });
-  }
-
   if (urlPath === "/api/vinyl" && req.method === "GET") {
     return json(res, 200, { records: db.listVinylRecords().map(publicVinylRow) });
   }
@@ -2140,9 +2117,9 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // 黑胶档案 (Vinyl Archive) share page — a stored album whose cover was
-  // recognized from a photo.  Reads vinyl_records (not music), renders the
-  // vintage record-card layout server-side (og:image = the cover art).
+  // 黑胶档案 (Vinyl Archive) share page — a stored album from the archive.
+  // Reads vinyl_records (not music), renders the vintage record-card layout
+  // server-side (og:image = the cover art).
   const vinylShare = urlPath.match(/^\/vinyl\/([a-z0-9-]+)$/);
   if (vinylShare && req.method === "GET") {
     const rec = db.getVinylRecord(vinylShare[1]);
