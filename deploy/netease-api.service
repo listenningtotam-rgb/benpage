@@ -1,0 +1,42 @@
+# benpage — NeteaseCloudMusicApi sidecar (resolves CDN URLs for the
+# Recordings tab's NetEase Cloud Music playback source).
+#
+# The sidecar listens ONLY on 127.0.0.1 — never expose it publicly.
+#
+#   sudo cp deploy/netease-api.service /etc/systemd/system/netease-api.service
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now netease-api
+#   sudo systemctl status netease-api
+#
+# Optional: higher-quality playback with your own account — run the QR login
+# flow (see deploy/netease-setup.md §4); the session cookies persist in the
+# sidecar process.
+
+[Unit]
+Description=NeteaseCloudMusicApi sidecar for benpage
+After=network.target
+
+[Service]
+Type=simple
+User=www-data
+Group=www-data
+Environment=PORT=3001
+# 若 node 是 nvm 装的(全局 bin 在 ~/.nvm/versions/node/…), systemd 的默认 PATH
+# 里没有它, www-data 也读不到 /home/<user>, 服务会立刻失败("command not found")。
+# 这种情况请把下面 ExecStart 换成绝对路径, 例如:
+#   ExecStart=/usr/bin/env PORT=3001 /home/<user>/.nvm/versions/node/v22.14.0/bin/NeteaseCloudMusicApi
+# 或者改用系统 node: curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash - && sudo apt-get install -y nodejs && sudo npm i -g NeteaseCloudMusicApi
+ExecStart=/usr/bin/env PORT=3001 NeteaseCloudMusicApi
+# 以服务用户身份提前确认命令在 PATH 中, 否则 systemctl start 直接报出清晰原因。
+ExecStartPre=/bin/sh -c 'command -v NeteaseCloudMusicApi >/dev/null 2>&1 || { echo "NeteaseCloudMusicApi 命令不在服务用户 PATH 中 —— 先执行: sudo npm i -g NeteaseCloudMusicApi; 若 node 为 nvm 安装, 把 ExecStart 改成绝对路径(见文件内注释)"; exit 1; }'
+Restart=on-failure
+RestartSec=5
+# If the global npm install lives somewhere else, use the absolute path, e.g.
+#   ExecStart=/usr/bin/env PORT=3001 /usr/local/bin/NeteaseCloudMusicApi
+# Hardening — this process only makes outbound https calls to NetEase.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+
+[Install]
+WantedBy=multi-user.target
