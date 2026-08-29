@@ -166,6 +166,22 @@ function getCachedNeteaseUrl(songId) {
   return rec.url;
 }
 
+// 启动时异步探测一次网易云 sidecar, 把"远程部署后网易云不可用"在启动日志里
+// 立刻暴露出来(而不是等到后台"从网易云导入"时才报 502)。探测只打本机 127.0.0.1,
+// 3 秒超时, 不阻塞启动。
+async function checkNeteaseSidecar() {
+  try {
+    await netease.ping();
+    console.log(`  → NetEase sidecar OK at ${netease.API_BASE}`);
+  } catch (err) {
+    console.log(`  → NetEase sidecar NOT reachable at ${netease.API_BASE}: ${err.message}`);
+    console.log(
+      "    (网易云导入/播放源不可用。在服务器上安装并启动: " +
+        "npm i -g NeteaseCloudMusicApi && PORT=3001 NeteaseCloudMusicApi — 详见 deploy/netease-setup.md)"
+    );
+  }
+}
+
 const mimeTypes = {
   ".html": "text/html; charset=utf-8",
   ".css": "text/css",
@@ -2317,4 +2333,5 @@ server.listen(PORT, HOST, () => {
   } else if (!process.env.JWT_SECRET) {
     console.log(`  → JWT secret loaded from ${JWT_SECRET_FILE} (set JWT_SECRET env var to override)`);
   }
+  checkNeteaseSidecar();
 });
