@@ -26,6 +26,25 @@
     if (statusEl) statusEl.textContent = msg || "";
   }
 
+  /* CSP 'script-src self' 禁止 inline onerror 属性（哈希对事件属性无效），
+   * 统一改用 addEventListener 监听图片加载失败：
+   *   mode === "display"    → display:none     （首页静态缩略图）
+   *   其它（默认 visibility）→ visibility:hidden（Discogs 结果卡片） */
+  function hideImgOnError(img, mode) {
+    if (!img) return;
+    var apply = function () {
+      if (mode === "display") img.style.display = "none";
+      else img.style.visibility = "hidden";
+    };
+    img.addEventListener("error", apply);
+    // 图片若已加载完成且失败（缓存/瞬时失败），error 事件可能已错过，兜底检查。
+    if (img.complete && img.naturalWidth === 0) apply();
+  }
+
+  /* 首页黑胶缩略图（static HTML 中的 img）：加载失败时隐藏。
+   * 脚本位于 <body> 末尾执行，DOM 已就绪。 */
+  hideImgOnError(document.querySelector(".thumb-vinyl-art img"), "display");
+
   /* ── Setup (idempotent — called every time the panel opens) ──────── */
   function initVinyl() {
     if (!statusEl) {
@@ -248,7 +267,7 @@
       escHtml(art) +
       '" alt="' +
       escHtml(d.title) +
-      ' cover" onerror="this.style.visibility=\'hidden\';" /></div>' +
+      ' cover" /></div>' +
       '<div class="vinyl-card-info">' +
       '<p class="vinyl-card-title">' +
       escHtml(d.title) +
@@ -269,6 +288,8 @@
       "</div>";
 
     resultEl.hidden = false;
+    // Discogs 结果卡片封面加载失败时隐藏（替代模板里的 inline onerror，被 CSP 拦截）。
+    hideImgOnError(resultEl.querySelector(".vinyl-card-art img"), "visibility");
     $("vinyl-share-btn").addEventListener("click", function () {
       var sharePath = "/vinyl/discogs/" + d.discogs_id;
       if (window.openShareDialog) {
@@ -331,6 +352,8 @@
       "</div>";
 
     resultEl.hidden = false;
+    // 档案卡片封面加载失败时隐藏（本地封面缺失时不留破图）。
+    hideImgOnError(resultEl.querySelector(".vinyl-card-art img"), "visibility");
     $("vinyl-share-btn").addEventListener("click", function () {
       if (window.openShareDialog) {
         window.openShareDialog({
