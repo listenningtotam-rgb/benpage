@@ -133,6 +133,39 @@ const DISCOGS_TOKEN =
   })();
 const discogs = require("./discogs")(DISCOGS_TOKEN, PUBLIC_URL);
 
+// ─── 网易云音乐 sidecar client ─────────────────────────────────────────
+// 通过本机 NeteaseCloudMusicApi (默认 127.0.0.1:3001) 解析歌曲 CDN 直链。
+// 音频字节由浏览器直接从网易云 CDN 拉取(本站只回 302), 不耗本站流量。
+// 未安装 sidecar 时服务照常启动, 仅"网易云导入 / 网易云播放源"不可用。
+const netease = require("./netease");
+
+// ─── 网易云 CDN 直链内存缓存 ─────────────────────────────────────────
+// /song/url/v1 返回的 CDN 直链通常有效 20-40 分钟(expi 字段)。缓存一段时间,
+// 避免每次播放都打 sidecar。键 = 网易云歌曲 id, TTL 10 分钟。
+const NETEASE_CACHE_TTL_MS = 10 * 60 * 1000;
+const neteaseUrlCache = new Map();
+
+function cacheNeteaseUrl(songId, url) {
+  neteaseUrlCache.set(songId, { url, expiresAt: Date.now() + NETEASE_CACHE_TTL_MS });
+  // 简单防膨胀: 超过 200 条时顺手清掉已过期项。
+  if (neteaseUrlCache.size > 200) {
+    const now = Date.now();
+    for (const [k, v] of neteaseUrlCache) {
+      if (now > v.expiresAt) neteaseUrlCache.delete(k);
+    }
+  }
+}
+
+function getCachedNeteaseUrl(songId) {
+  const rec = neteaseUrlCache.get(songId);
+  if (!rec) return null;
+  if (Date.now() > rec.expiresAt) {
+    neteaseUrlCache.delete(songId);
+    return null;
+  }
+  return rec.url;
+}
+
 const mimeTypes = {
   ".html": "text/html; charset=utf-8",
   ".css": "text/css",
@@ -674,6 +707,17 @@ function siteBase(req) {
   return base.replace(/\/+$/, "");
 }
 
+/* Host shown in the "from <host>" branding on share pages (e.g. benyan.ink).
+   PUBLIC_URL's host wins so the brand stays canonical even when the page is
+   reached via an IP or a staging host. */
+function siteHost(req) {
+  try {
+    return new URL(siteBase(req)).host;
+  } catch (e) {
+    return String(req.headers.host || "").split(":")[0];
+  }
+}
+
 function absUrl(req, p) {
   const s = String(p || "").trim();
   if (/^https?:\/\//i.test(s)) return s;
@@ -802,6 +846,7 @@ function renderBlogSharePage(req, post) {
     "    </article>\n" +
     "    <footer class=\"share-foot\">\n" +
     `      <span class="share-stat">👁 ${Number(post.read_count) || 0} reads</span>\n` +
+    `      <span class="share-from">from <a href="/">${escHtml(siteHost(req))}</a></span>\n` +
     `      <a href="/">返回 ${SITE_NAME} →</a>\n` +
     "    </footer>\n" +
     "  </div>\n" +
@@ -876,6 +921,7 @@ function renderTrackSharePage(req, kind, track, latest, urlPath) {
     audioHtml +
     "    </section>\n" +
     "    <footer class=\"share-foot\">\n" +
+    `      <span class="share-from">from <a href="/">${escHtml(siteHost(req))}</a></span>\n` +
     `      <a href="/">返回 ${SITE_NAME} →</a>\n` +
     "    </footer>\n" +
     "  </div>\n" +
@@ -980,6 +1026,7 @@ function renderVinylSharePage(req, rec) {
     "      </div>\n" +
     "    </section>\n" +
     "    <footer class=\"share-foot\">\n" +
+    `      <span class="share-from">from <a href="/">${escHtml(siteHost(req))}</a></span>\n` +
     `      <a href="/">返回 ${SITE_NAME} →</a>\n` +
     '      <span class="share-stat">黑胶档案 · Vinyl Archive</span>\n' +
     "    </footer>\n" +
@@ -1050,6 +1097,7 @@ function renderVinylDiscogsSharePage(req, detail) {
     "      </div>\n" +
     "    </section>\n" +
     "    <footer class=\"share-foot\">\n" +
+    `      <span class="share-from">from <a href="/">${escHtml(siteHost(req))}</a></span>\n` +
     `      <a href="/">返回 ${SITE_NAME} →</a>\n` +
     '      <span class="share-stat">Discogs · Vinyl Archive</span>\n' +
     "    </footer>\n" +
@@ -1083,6 +1131,7 @@ function renderVinylDiscogsErrorPage(req, message) {
     "      </div>\n" +
     "    </section>\n" +
     "    <footer class=\"share-foot\">\n" +
+    `      <span class="share-from">from <a href="/">${escHtml(siteHost(req))}</a></span>\n` +
     `      <a href="/">返回 ${SITE_NAME} →</a>\n` +
     '      <span class="share-stat">Discogs · Vinyl Archive</span>\n' +
     "    </footer>\n" +
@@ -1427,6 +1476,55 @@ async function handleApi(req, res, urlPath) {
       });
     });
     return;
+  }
+
+  // ── NetEase Cloud Music (网易云播放源) ─────────────────────────
+  // GET /api/netease/audio/<songId> → 302 到网易云 CDN 音频直链。
+  // 音频字节由浏览器直接从网易云 CDN 拉取 —— 本站服务器只负责用 sidecar
+  // 解析 CDN 地址再回一个重定向, 全程零音频流量。CDN 直链支持 Range
+  // (206), 因此 Recordings 波形图的 seek 不受影响。
+  const neteaseAudio = urlPath.match(/^\/api\/netease\/audio\/(\d+)$/);
+  if (neteaseAudio && req.method === "GET") {
+    if (!checkProxyRate(req)) return json(res, 429, { error: "Rate limit exceeded" });
+    const songId = Number(neteaseAudio[1]);
+    let cdnUrl = getCachedNeteaseUrl(songId);
+    if (!cdnUrl) {
+      try {
+        cdnUrl = await netease.getSongUrl(songId);
+      } catch (err) {
+        console.error(`netease resolve error → song ${songId}:`, err.message);
+        return json(res, 502, { error: "无法解析网易云歌曲地址" });
+      }
+      if (cdnUrl) cacheNeteaseUrl(songId, cdnUrl);
+    }
+    if (!cdnUrl) {
+      return json(res, 404, {
+        error: "该歌曲暂不可播放（可能需要 VIP 登录，或在管理后台配置 sidecar 账号）",
+      });
+    }
+    // 302 到 CDN。Cache-Control 不设长缓存: CDN 链接有时效(expi 20-40 分钟),
+    // 每次播放重新解析成本几乎为零(sidecar 是本机请求), 宁可不缓存。
+    res.writeHead(302, {
+      Location: cdnUrl,
+      "Cache-Control": "no-store",
+    });
+    res.end();
+    return;
+  }
+
+  // GET /api/netease/search?keywords=… (仅登录后台) — 管理后台"从网易云导入"。
+  if (urlPath === "/api/netease/search" && req.method === "GET") {
+    if (!requireAuth()) return;
+    const raw = new URL(req.url, "http://localhost");
+    const keywords = cleanText(raw.searchParams.get("keywords"), 100);
+    if (!keywords) return json(res, 400, { error: "keywords is required" });
+    try {
+      const results = await netease.search(keywords);
+      return json(res, 200, { results });
+    } catch (err) {
+      console.error("netease search error:", err.message);
+      return json(res, 502, { error: err.message });
+    }
   }
 
   // ── Music API ─────────────────────────────────────────
@@ -2147,6 +2245,20 @@ const server = http.createServer((req, res) => {
     db.incrementShareLinkHit(link.code);
     res.writeHead(302, { Location: link.url, "Cache-Control": "no-store" });
     res.end();
+    return;
+  }
+
+  // Public site config (tiny JS) — exposes the canonical origin to the
+  // frontend so share links are always built on the PUBLIC_URL domain. The
+  // QR / copy / short-link share URL derives from it, which is what WeChat
+  // Moments shows under the card as "via <domain>". no-store: must never
+  // serve a stale origin.
+  if (urlPath === "/site-config.js" && req.method === "GET") {
+    res.writeHead(200, {
+      "Content-Type": "application/javascript; charset=utf-8",
+      "Cache-Control": "no-store",
+    });
+    res.end(`window.SITE_URL=${JSON.stringify(siteBase(req)).replace(/</g, "\\u003c")};`);
     return;
   }
 

@@ -241,6 +241,7 @@ function showMusicForm(track = null) {
   // when editing, keep whatever the track already has.
   $("#music-source-type").value = track ? (track.source_type === "cover" ? "cover" : "original") : "cover";
   $("#music-file").value = "";
+  resetNeteasePanel();
   const statusEl = $("#music-upload-status");
   if (track && track.url) {
     setUploadStatus(statusEl, "ok", "✓ " + track.url);
@@ -254,7 +255,19 @@ function hideMusicForm() {
   $("#music-form-wrap").hidden = true;
   $("#music-url").value = "";
   $("#music-file").value = "";
+  resetNeteasePanel();
   setUploadStatus($("#music-upload-status"), null);
+}
+
+/* Close and clear the NetEase import panel (called when opening/closing the form). */
+function resetNeteasePanel() {
+  neteaseResults = [];
+  const wrap = $("#netease-search-wrap");
+  if (wrap) {
+    wrap.hidden = true;
+    $("#netease-keywords").value = "";
+    $("#netease-results").innerHTML = "";
+  }
 }
 
 $("#music-add-btn").addEventListener("click", () => showMusicForm());
@@ -431,12 +444,84 @@ $("#music-file").addEventListener("change", async (e) => {
   }
 });
 
+/* ── 网易云导入 (播放源直连网易云 CDN, 不占本站流量) ───────────── */
+let neteaseResults = []; // 最近一次搜索结果, 供点击选取
+
+function fmtDuration(ms) {
+  const total = Math.round(Number(ms) / 1000);
+  if (!isFinite(total) || total <= 0) return "";
+  return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, "0")}`;
+}
+
+async function runNeteaseSearch() {
+  const kw = $("#netease-keywords").value.trim();
+  const resultsEl = $("#netease-results");
+  if (!kw) {
+    resultsEl.innerHTML = '<p class="empty-note">请输入歌名或歌手。</p>';
+    return;
+  }
+  resultsEl.innerHTML = '<p class="empty-note">搜索中…</p>';
+  try {
+    const data = await api(`/api/netease/search?keywords=${encodeURIComponent(kw)}`);
+    neteaseResults = data.results || [];
+    if (!neteaseResults.length) {
+      resultsEl.innerHTML =
+        '<p class="empty-note">没有找到结果 — 试试「歌手名 + 歌名」。</p>';
+      return;
+    }
+    resultsEl.innerHTML = neteaseResults
+      .map((r, i) => {
+        const dur = fmtDuration(r.duration_ms);
+        const meta = [r.artists, r.album, dur].filter(Boolean).join(" · ");
+        return `<button type="button" class="netease-result" data-index="${i}">
+          <span class="netease-result-name">${escapeHTML(r.name)}</span>
+          <span class="netease-result-artist">${escapeHTML(meta)}</span>
+        </button>`;
+      })
+      .join("");
+    resultsEl.querySelectorAll(".netease-result").forEach((btn) => {
+      btn.addEventListener("click", () => pickNeteaseResult(Number(btn.dataset.index)));
+    });
+  } catch (err) {
+    resultsEl.innerHTML = `<p class="empty-note">✗ ${escapeHTML(err.message)}</p>`;
+  }
+}
+
+function pickNeteaseResult(index) {
+  const r = neteaseResults[index];
+  if (!r || !r.id) return;
+  $("#music-title").value = `${r.name}${r.artists ? " - " + r.artists : ""}`;
+  // Recordings 播放器只认 player.url —— 存本站 302 端点即可, 前端零改动。
+  $("#music-url").value = `/api/netease/audio/${r.id}`;
+  $("#music-source-type").value = "cover";
+  $("#netease-search-wrap").hidden = true;
+  setUploadStatus(
+    $("#music-upload-status"),
+    "ok",
+    `✓ 已选定网易云播放源 (song #${r.id}) — 音频将直连网易云 CDN`
+  );
+}
+
+$("#netease-toggle-btn").addEventListener("click", () => {
+  const wrap = $("#netease-search-wrap");
+  wrap.hidden = !wrap.hidden;
+  if (!wrap.hidden) $("#netease-keywords").focus();
+});
+
+$("#netease-search-btn").addEventListener("click", runNeteaseSearch);
+$("#netease-keywords").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") {
+    e.preventDefault();
+    runNeteaseSearch();
+  }
+});
+
 $("#music-form").addEventListener("submit", async (e) => {
   e.preventDefault();
   const id = $("#music-id").value;
   const url = $("#music-url").value.trim();
   if (!url) {
-    alert("Please upload an audio file first.");
+    alert("Please upload an audio file or import from NetEase first.");
     return;
   }
   const payload = {

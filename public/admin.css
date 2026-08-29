@@ -588,6 +588,59 @@ body {
   background: rgba(255, 143, 143, 0.12);
 }
 
+/* ── NetEase Cloud Music import panel ───────────────────── */
+.netease-search {
+  margin-top: 0.55rem;
+  grid-column: 1 / -1;
+}
+
+.netease-search input[type="text"] {
+  flex: 1;
+  min-width: 0;
+  padding: 0.4rem 0.6rem;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  background: rgba(255, 255, 255, 0.05);
+  color: rgba(255, 255, 255, 0.9);
+  font-size: 0.85rem;
+}
+
+.netease-results {
+  margin-top: 0.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.netease-result {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  text-align: left;
+  padding: 0.45rem 0.6rem;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.05);
+  color: rgba(255, 255, 255, 0.9);
+  cursor: pointer;
+  font-size: 0.85rem;
+}
+
+.netease-result:hover {
+  background: rgba(255, 255, 255, 0.12);
+  border-color: rgba(255, 255, 255, 0.3);
+}
+
+.netease-result-name {
+  font-weight: 600;
+}
+
+.netease-result-artist {
+  font-size: 0.75rem;
+  color: rgba(255, 255, 255, 0.5);
+}
+
+
 .blk-upload-row {
   display: flex;
   align-items: center;

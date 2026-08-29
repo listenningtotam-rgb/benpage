@@ -89,7 +89,13 @@
     currentTitle = String(opts.title || "");
     var path = String(opts.path || "");
     if (!/^\//.test(path)) return;
-    currentUrl = window.location.origin + path;
+    // Canonical public origin exposed by /site-config.js (PUBLIC_URL on the
+    // server). Using it keeps shared links on the public domain even when the
+    // page was opened via an IP or a staging host — WeChat Moments shows the
+    // shared link's domain as "via <domain>", so it must be the public one.
+    var siteOrigin = String(window.SITE_URL || "").replace(/\/+$/, "");
+    if (!/^https?:\/\//.test(siteOrigin)) siteOrigin = window.location.origin;
+    currentUrl = siteOrigin + path;
 
     if (!modal) build();
     modal.hidden = false;

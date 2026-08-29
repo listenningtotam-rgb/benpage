@@ -155,6 +155,25 @@ a:hover {
   font-weight: 600;
 }
 
+/* "from <host>" branding on the share page footer — the on-page equivalent
+   of the small source line WeChat Moments renders under a shared link card
+   ("via <domain>"). Host comes from PUBLIC_URL (see siteHost in server.js). */
+.share-from {
+  font-size: 0.78rem;
+  color: rgba(255, 255, 255, 0.35);
+  letter-spacing: 0.02em;
+}
+.share-from a {
+  color: rgba(255, 255, 255, 0.6);
+  font-weight: 600;
+  text-decoration: none;
+  border-bottom: 1px dotted rgba(255, 255, 255, 0.35);
+}
+.share-from a:hover {
+  color: #fff;
+  border-bottom-color: rgba(255, 255, 255, 0.7);
+}
+
 .share-stat {
   font-family: "SF Mono", "Menlo", monospace;
   font-size: 0.8rem;

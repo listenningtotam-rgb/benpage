@@ -2159,6 +2159,21 @@ body {
   border: 1px solid rgba(255, 158, 122, 0.25);
 }
 
+/* Playback source imported from NetEase Cloud Music — shown next to the
+   原创/Cover badge on the Recordings list. NetEase brand red. The badge is
+   also a link that opens the song's page on music.163.com. */
+.rc-badge-netease {
+  color: #ff7a6e;
+  background: rgba(231, 64, 47, 0.14);
+  border: 1px solid rgba(231, 64, 47, 0.32);
+  text-decoration: none;
+}
+.rc-badge-netease:hover {
+  color: #fff;
+  background: rgba(231, 64, 47, 0.85);
+  border-color: rgba(231, 64, 47, 0.85);
+}
+
 .rc-commit-meta {
   display: flex;
   align-items: center;

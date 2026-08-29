@@ -97,6 +97,19 @@
             </div>
             <input type="hidden" id="music-url" />
           </div>
+          <div class="field">
+            <span class="field-label">Or import from NetEase Cloud Music <span class="field-hint">(播放源直连网易云 CDN，不占用本站流量；需要服务器已部署 sidecar)</span></span>
+            <div class="upload-row">
+              <button type="button" class="btn btn-ghost btn-sm" id="netease-toggle-btn">🎵 从网易云导入</button>
+            </div>
+            <div id="netease-search-wrap" class="netease-search" hidden>
+              <div class="upload-row">
+                <input type="text" id="netease-keywords" placeholder="歌名 / 歌手…" />
+                <button type="button" class="btn btn-ghost btn-sm" id="netease-search-btn">搜索</button>
+              </div>
+              <div id="netease-results" class="netease-results"></div>
+            </div>
+          </div>
           <label class="field">Order (lower = higher on list)
             <input type="number" id="music-sort" value="0" />
           </label>

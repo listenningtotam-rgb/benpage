@@ -327,6 +327,13 @@ function renderTracks(tracks) {
     // 原创 (original) vs Cover — set once when the recording was created.
     const isCover = track.source_type === "cover";
     const badge = `<span class="rc-badge ${isCover ? "rc-badge-cover" : "rc-badge-original"}">${isCover ? "Cover" : "原创"}</span>`;
+    // 来自网易云音乐的播放源 (url 是本站 /api/netease/audio/<id> 302 端点)。
+    // 徽章同时是外链：跳转到这首歌的网易云网页。
+    const NETEASE_PREFIX = "/api/netease/audio/";
+    const isNetease = url.startsWith(NETEASE_PREFIX);
+    const neteaseBadge = isNetease
+      ? `<a class="rc-badge rc-badge-netease" href="https://music.163.com/#/song?id=${encodeURIComponent(url.slice(NETEASE_PREFIX.length))}" target="_blank" rel="noopener noreferrer" title="在网易云音乐打开这首歌">from 网易云音乐</a>`
+      : "";
 
     const el = document.createElement("div");
     el.className = "sc-track";
@@ -339,6 +346,7 @@ function renderTracks(tracks) {
         <div class="sc-top">
           <span class="sc-left">
             ${badge}
+            ${neteaseBadge}
             <span class="sc-title" title="${scEscapeHTML(title)}">${scEscapeHTML(title)}</span>
           </span>
           <span class="sc-side">
