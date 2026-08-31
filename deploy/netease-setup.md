@@ -97,16 +97,21 @@ every other `/api/` path, and the 302 Location header points at NetEase's CDN
   3. Smoke test: `curl -s http://127.0.0.1:3001/` — if this doesn't return the
      sidecar index page, fix the service first, then restart benpage (its
      startup log prints `NetEase sidecar OK at …` when reachable).
-- **`command not found` when starting the service:** node was installed with
-  **nvm**, so the global bin (`~/.nvm/…/bin/NeteaseCloudMusicApi`) is not in
-  systemd's PATH and `www-data` can't read `/home/<user>` anyway. Fix: use the
-  absolute path in `ExecStart=` (see comments in `deploy/netease-api.service`),
-  or install system node + reinstall globally:
+- **`command not found` / 预检提示不在 PATH 时：** node 是用 **nvm** 装的，systemd 的 PATH 里没有 nvm 的 bin，且 `www-data` 读不到 `/home/<user>/.nvm`（权限 700）。最省心的修法是用系统 node：
   ```bash
   curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
   sudo apt-get install -y nodejs
   sudo npm install -g NeteaseCloudMusicApi
   sudo systemctl restart netease-api
+  ```
+  想保留 nvm 也行——把 unit 里的 `User/Group` 改成 nvm 属主，并加一行
+  `Environment=PATH=<nvm bin 目录>:/usr/local/bin:/usr/bin:/bin`（nvm bin 目录用
+  `readlink -f "$(which node)"` 的父目录）；`ExecStart` 保持默认即可。
+  预检 `ExecStartPre` 只告警不阻断，即使 PATH 里没有命令也会继续启动，方便绝对
+  路径/自定义 User 的部署。查路径：
+  ```bash
+  readlink -f "$(which node)"   # 例: /home/ubuntu/.nvm/versions/node/v22.14.0/bin/node
+  npm root -g                   # 例: /home/ubuntu/.nvm/versions/node/v22.14.0/lib/node_modules
   ```
 - **benpage in Docker/container:** `127.0.0.1` inside a container is the
   container itself. Either run the sidecar in the same container/network

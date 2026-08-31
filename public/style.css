@@ -2014,6 +2014,15 @@ body {
   flex: 0 0 auto;
 }
 
+/* REC HUB — a repo card whose sound is playing swaps its play button for a
+   pause button (the two SVGs are rendered side by side, shown/hidden here). */
+.rc-repo.playing .rc-play .sc-ico-play  { display: none; }
+.rc-repo.playing .rc-play .sc-ico-pause { display: block; }
+.rc-repo.playing .rc-play {
+  background: #ff7a2f;
+  box-shadow: 0 0 0 3px rgba(255, 122, 47, 0.28), 0 2px 10px rgba(255, 85, 0, 0.35);
+}
+
 .rc-repo-main {
   flex: 1;
   min-width: 0;
@@ -2174,6 +2183,15 @@ body {
   border-color: rgba(231, 64, 47, 0.85);
 }
 
+/* A recording that belongs to a band (migration 014) — private to that
+   band's members. Teal so it reads as "collaborative" next to the 原创/Cover
+   badges. */
+.rc-badge-band {
+  color: #7ee0c8;
+  background: rgba(126, 224, 200, 0.1);
+  border: 1px solid rgba(126, 224, 200, 0.3);
+}
+
 .rc-commit-meta {
   display: flex;
   align-items: center;
@@ -2241,6 +2259,12 @@ body {
   width: 30px;
   height: 30px;
 }
+
+/* Commit-row play button: ▶ at rest, ⏸ while that commit is the one sounding */
+.rc-commit-play .rc-cp-pause { display: none; }
+.rc-commit.playing .rc-commit-play .rc-cp-play  { display: none; }
+.rc-commit.playing .rc-commit-play .rc-cp-pause { display: inline; }
+.rc-commit.playing .rc-commit-play { color: #ff7a2f; }
 
 .rc-commit-delete {
   width: 30px;
@@ -2453,6 +2477,89 @@ body {
   font-size: 0.72rem;
   color: rgba(255, 255, 255, 0.35);
   margin-top: -0.2rem;
+}
+
+/* Invite-code login row (guest toolbar) */
+.hub-login-form {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.hub-login-form input {
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 8px;
+  color: #fff;
+  padding: 0.45rem 0.7rem;
+  font-size: 0.85rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  width: 11rem;
+  font-family: inherit;
+}
+
+.hub-login-form input:focus {
+  outline: none;
+  border-color: rgba(126, 200, 227, 0.6);
+}
+
+.hub-login-error {
+  font-size: 0.78rem;
+  color: #ff5f56;
+  width: 100%;
+}
+
+/* Copyright notice in the New Recording modal */
+.rc-note {
+  font-size: 0.72rem;
+  line-height: 1.5;
+  color: rgba(255, 212, 121, 0.85);
+  background: rgba(255, 212, 121, 0.08);
+  border: 1px solid rgba(255, 212, 121, 0.22);
+  border-radius: 8px;
+  padding: 0.55rem 0.7rem;
+  margin: 0.6rem 0 0.9rem;
+}
+
+/* First-login profile form */
+.rc-field-label {
+  display: block;
+  font-size: 0.78rem;
+  letter-spacing: 0.05em;
+  color: rgba(255, 255, 255, 0.6);
+  margin-bottom: 0.35rem;
+}
+
+.rc-band-picker {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(11rem, 1fr));
+  gap: 0.45rem;
+}
+
+.rc-check {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.85rem;
+  color: rgba(255, 255, 255, 0.85);
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 8px;
+  padding: 0.5rem 0.7rem;
+  cursor: pointer;
+  user-select: none;
+}
+
+.rc-check input {
+  accent-color: #7ec8e3;
+}
+
+.rc-modal-error {
+  font-size: 0.8rem;
+  color: #ff5f56;
+  margin: 0.5rem 0;
+  min-height: 1em;
 }
 
 .empty-note {

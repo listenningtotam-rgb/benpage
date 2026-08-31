@@ -533,6 +533,26 @@ body {
   flex-shrink: 0;
 }
 
+/* Invite-code rows (admin Invites tab) */
+.invite-title {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+}
+
+.invite-code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 1rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  color: #7ee0a3;
+  background: rgba(126, 224, 163, 0.08);
+  border: 1px dashed rgba(126, 224, 163, 0.35);
+  border-radius: 6px;
+  padding: 0.2rem 0.55rem;
+}
+
 /* ── Upload / image preview styles ─────────────────────── */
 .upload-row {
   display: flex;

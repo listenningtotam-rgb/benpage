@@ -1322,6 +1322,22 @@ function getAuthUser(req) {
   return db.getUserAuth(payload.sub);
 }
 
+/* Unambiguous invite-code alphabet (same rules as share codes: no 0/O/1/I/l)
+   so codes are easy to read aloud and type on a phone. */
+const INVITE_ALPHABET =
+  "23456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+
+function makeInviteCode() {
+  for (let attempt = 0; attempt < 8; attempt++) {
+    let code = "";
+    for (let i = 0; i < 8; i++) {
+      code += INVITE_ALPHABET[crypto.randomInt(INVITE_ALPHABET.length)];
+    }
+    if (!db.getInviteByCode(code)) return code;
+  }
+  throw new Error("Could not generate a unique invite code");
+}
+
 // ─── API Router ────────────────────────────────────────────────────────
 async function handleApi(req, res, urlPath) {
   // Auth
@@ -1349,6 +1365,51 @@ async function handleApi(req, res, urlPath) {
       token: signToken(user),
       user,
       must_change_password: !!user.must_change_password,
+    });
+  }
+
+  // Invite-code login — the code itself is the credential for band members
+  // (no password). First use creates the account and binds the code + its
+  // band; later uses log the same account straight back in.
+  if (urlPath === "/api/auth/invite-login" && req.method === "POST") {
+    const body = await readBody(req);
+    const code = cleanText(body.code, 64);
+    if (!code) {
+      return json(res, 400, { error: "Invite code is required" });
+    }
+    const key = loginKey(req, "invite:" + code);
+    const lim = checkLoginRate(key);
+    if (!lim.ok) {
+      const minutes = Math.ceil(lim.retryAfter / 60) || 1;
+      return json(res, 429, {
+        error: `Too many attempts. Try again in ${minutes} minute(s).`,
+      });
+    }
+    const invite = db.getInviteByCode(code);
+    if (!invite) {
+      recordLoginFailure(key);
+      return json(res, 401, { error: "Invalid invite code" });
+    }
+    let user;
+    let firstLogin = false;
+    if (invite.used_by) {
+      user = db.getUserAuth(invite.used_by);
+      if (!user) {
+        recordLoginFailure(key);
+        return json(res, 401, { error: "Invite code is no longer valid" });
+      }
+    } else {
+      // First claim — create the account, mark the code used and auto-join
+      // its band. The profile is completed by the follow-up profile form.
+      firstLogin = true;
+      user = db.getUserAuth(db.createUserFromInvite(code).id);
+      db.claimInviteForUser(invite.id, user.id);
+      user = db.getUserAuth(user.id); // membership (bands) changed above
+    }
+    return json(res, 200, {
+      token: signToken(user),
+      user,
+      first_login: firstLogin,
     });
   }
 
@@ -1387,6 +1448,135 @@ async function handleApi(req, res, urlPath) {
     }
     return true;
   };
+
+  const requireAdmin = (opts = {}) => {
+    if (!requireAuth(opts)) return false;
+    if (!authUser.is_admin) {
+      json(res, 403, { error: "Admin access required" });
+      return false;
+    }
+    return true;
+  };
+
+  // Band members must complete their profile (nickname/email/bands) before
+  // they can create or edit recordings.
+  const requireProfile = (opts = {}) => {
+    if (!requireAuth(opts)) return false;
+    if (!authUser.profile_complete) {
+      json(res, 403, { error: "Profile setup required", code: "PROFILE_SETUP_REQUIRED" });
+      return false;
+    }
+    return true;
+  };
+
+  // ── Profile & bands (REC HUB membership) ───────────────
+  // First-login profile: display name, email, and which bands to join.
+  if (urlPath === "/api/auth/profile" && req.method === "POST") {
+    if (!requireAuth()) return;
+    const body = await readBody(req);
+    const nickname = cleanText(body.nickname, 60);
+    const email = String(body.email || "").trim().toLowerCase();
+    if (!nickname) return json(res, 400, { error: "Nickname is required" });
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email)) {
+      return json(res, 400, { error: "A valid email address is required" });
+    }
+    const rawBandIds = Array.isArray(body.band_ids) ? body.band_ids : [];
+    const bandIds = [];
+    for (const bid of rawBandIds) {
+      const id = Number(bid);
+      if (Number.isInteger(id) && id > 0 && db.getBand(id)) bandIds.push(id);
+    }
+    if (!bandIds.length) return json(res, 400, { error: "Choose at least one band" });
+    const user = db.setUserProfile(authUser.id, { nickname, email, bandIds });
+    return json(res, 200, { user });
+  }
+
+  // Every band a signed-in user may browse/join.
+  if (urlPath === "/api/bands" && req.method === "GET") {
+    if (!requireAuth()) return;
+    return json(res, 200, { bands: db.listBands() });
+  }
+
+  // ── Bands & invites management (admin only) ────────────
+  if (urlPath === "/api/admin/bands" && req.method === "GET") {
+    if (!requireAdmin()) return;
+    const bands = db.listBands().map((b) => ({ ...b, members: db.listBandMembers(b.id) }));
+    return json(res, 200, { bands });
+  }
+
+  if (urlPath === "/api/admin/bands" && req.method === "POST") {
+    if (!requireAdmin()) return;
+    const body = await readBody(req);
+    const name = cleanText(body.name, 80);
+    const description = cleanText(body.description, 500);
+    if (!name) return json(res, 400, { error: "Band name is required" });
+    if (db.getBandByName(name)) {
+      return json(res, 400, { error: "A band with that name already exists" });
+    }
+    const band = db.createBand({ name, description, created_by: authUser.id });
+    return json(res, 201, { band });
+  }
+
+  const adminBandDeleteMatch = urlPath.match(/^\/api\/admin\/bands\/(\d+)$/);
+  if (adminBandDeleteMatch && req.method === "DELETE") {
+    if (!requireAdmin()) return;
+    const band = db.getBand(Number(adminBandDeleteMatch[1]));
+    if (!band) return json(res, 404, { error: "Band not found" });
+    db.deleteBand(band.id);
+    return json(res, 200, { ok: true });
+  }
+
+  if (adminBandDeleteMatch && (req.method === "PUT" || req.method === "PATCH")) {
+    if (!requireAdmin()) return;
+    const band = db.getBand(Number(adminBandDeleteMatch[1]));
+    if (!band) return json(res, 404, { error: "Band not found" });
+    const body = await readBody(req);
+    const name = cleanText(body.name, 80);
+    if (!name) return json(res, 400, { error: "Band name is required" });
+    const dup = db.getBandByName(name);
+    if (dup && dup.id !== band.id) {
+      return json(res, 400, { error: "A band with that name already exists" });
+    }
+    const updated = db.updateBand(band.id, {
+      name,
+      description: cleanText(body.description, 500),
+    });
+    return json(res, 200, { band: updated });
+  }
+
+  if (urlPath === "/api/admin/invites" && req.method === "GET") {
+    if (!requireAdmin()) return;
+    return json(res, 200, { invites: db.listInviteCodes() });
+  }
+
+  if (urlPath === "/api/admin/invites" && req.method === "POST") {
+    if (!requireAdmin()) return;
+    const body = await readBody(req);
+    const band = db.getBand(Number(body.band_id));
+    if (!band) return json(res, 400, { error: "Pick a valid band" });
+    const invite = db.createInviteCode({
+      code: makeInviteCode(),
+      band_id: band.id,
+      created_by: authUser.id,
+    });
+    return json(res, 201, { invite });
+  }
+
+  const adminInviteDeleteMatch = urlPath.match(/^\/api\/admin\/invites\/(\d+)$/);
+  if (adminInviteDeleteMatch && req.method === "DELETE") {
+    if (!requireAdmin()) return;
+    const invite = db.getInviteCode(Number(adminInviteDeleteMatch[1]));
+    if (!invite) return json(res, 404, { error: "Invite not found" });
+    db.deleteInviteCode(invite.id);
+    return json(res, 200, { ok: true });
+  }
+
+  // Member accounts + the bands each belongs to (useful for auditing).
+  if (urlPath === "/api/admin/users" && req.method === "GET") {
+    if (!requireAdmin()) return;
+    const users = db.listUsers().map((u) => ({ ...u, bands: db.listUserBands(u.id) }));
+    return json(res, 200, { users });
+  }
 
   // ── Photo upload (raw binary image body) ─────────────
   if (urlPath === "/api/upload" && req.method === "POST") {
@@ -1599,28 +1789,39 @@ async function handleApi(req, res, urlPath) {
   // `recording_repos` are the hub's OWN projects — a separate library from
   // the Recordings `music` table (split in migration 011). Every take is a
   // recording_commits row on the repo.
-  //   GET  /api/recordings                  → public, all repos + commits
-  //   POST /api/recordings                  → admin, init a new recording
+  //   GET  /api/recordings                  → public, repos the viewer can see
+  //   POST /api/recordings                  → member, init a new recording
   //   POST /api/recordings/:id/play         → public, bump a repo's play count
-  //   GET/POST /api/recordings/:id/commits  → public list / admin add commit
-  //   PATCH /api/recordings/:id/commits/:cid → admin, update commit volume
-  //   POST /api/recordings/:id/commits/:cid/tag → admin, tag as next version
-  //   DELETE /api/recordings/:id/commits/:cid → admin, delete a commit
-  //   DELETE /api/recordings/:id            → admin, remove repo + commits
+  //   GET/POST /api/recordings/:id/commits  → public list / member add commit
+  //   PATCH /api/recordings/:id/commits/:cid → member, update commit volume
+  //   POST /api/recordings/:id/commits/:cid/tag → member, tag as next version
+  //   DELETE /api/recordings/:id/commits/:cid → member, delete a commit
+  //   DELETE /api/recordings/:id            → member, remove repo + commits
+  // Banded repos (band_id set) are visible + editable only by their members /
+  // admin; legacy repos (band_id NULL) stay public but admin-only to edit.
   if (urlPath === "/api/recordings" && req.method === "GET") {
-    const repos = db.listRecordingRepos();
+    const repos = db.listRecordingReposForUser(
+      authUser ? authUser.id : null,
+      authUser ? authUser.is_admin : false
+    );
     for (const repo of repos) {
       repo.commits = db.listRecordingCommits(repo.id);
+      repo.can_edit = db.canEditRepo(authUser, repo);
     }
     return json(res, 200, { repos });
   }
 
   if (urlPath === "/api/recordings" && req.method === "POST") {
-    if (!requireAuth()) return;
+    if (!requireProfile()) return;
     const body = await readBody(req);
     const title = cleanText(body.title, 300);
     const message = cleanText(body.message, 500) || "Initial recording";
     const url = cleanText(body.url, 1000);
+    const band = db.getBand(Number(body.band_id));
+    if (!band) return json(res, 400, { error: "A valid band is required" });
+    if (!authUser.is_admin && !db.isUserInBand(authUser.id, band.id)) {
+      return json(res, 403, { error: "You are not a member of this band" });
+    }
     if (!title || !url) {
       return json(res, 400, { error: "Title and audio URL are required" });
     }
@@ -1631,6 +1832,7 @@ async function handleApi(req, res, urlPath) {
       // 原创 (original) vs Cover — the owner picks this once in the New
       // Recording form; only those two values are ever stored.
       source_type: body.source_type === "cover" ? "cover" : "original",
+      band_id: band.id,
     });
     const commit = db.createRecordingCommit({
       repo_id: repo.id,
@@ -1641,19 +1843,25 @@ async function handleApi(req, res, urlPath) {
       end_time: parseFloat(body.end_time),
       mode: "single",
       volume: parseFloat(body.volume),
-      contributor: cleanText(body.contributor, 60) || authUser.username,
+      contributor: cleanText(body.contributor, 60) || authUser.nickname || authUser.username,
       version: 1, // the initial commit is always the recording's first version
+      recorded_by: authUser.id,
     });
     return json(res, 201, { repo: db.getRecordingRepo(repo.id), commit });
   }
 
   // Play-count increment — public (visitors bump it), host-gated + rate-limited.
+  // Banded repos are private: only their members / admin may bump them.
   const recordingPlayMatch = urlPath.match(/^\/api\/recordings\/(\d+)\/play$/);
   if (recordingPlayMatch && req.method === "POST") {
     if (!checkCountRate(req)) return json(res, 429, { error: "Rate limit exceeded" });
-    const repo = db.incrementRecordingRepoPlay(Number(recordingPlayMatch[1]));
+    const repo = db.getRecordingRepo(Number(recordingPlayMatch[1]));
     if (!repo) return json(res, 404, { error: "Recording not found" });
-    return json(res, 200, { ok: true, play_count: repo.play_count });
+    if (repo.band_id != null && !db.canEditRepo(authUser, repo)) {
+      return json(res, 403, { error: "This recording is private to its band" });
+    }
+    const updated = db.incrementRecordingRepoPlay(repo.id);
+    return json(res, 200, { ok: true, play_count: updated.play_count });
   }
 
   const repoCommitsMatch = urlPath.match(/^\/api\/recordings\/(\d+)\/commits$/);
@@ -1663,11 +1871,17 @@ async function handleApi(req, res, urlPath) {
     if (!repo) return json(res, 404, { error: "Recording not found" });
 
     if (req.method === "GET") {
+      if (repo.band_id != null && !db.canEditRepo(authUser, repo)) {
+        return json(res, 403, { error: "This recording is private to its band" });
+      }
       return json(res, 200, { repo, commits: db.listRecordingCommits(repoId) });
     }
 
     if (req.method === "POST") {
-      if (!requireAuth()) return;
+      if (!requireProfile()) return;
+      if (!db.canEditRepo(authUser, repo)) {
+        return json(res, 403, { error: "You are not a member of this recording's band" });
+      }
       const body = await readBody(req);
       const message = cleanText(body.message, 500);
       const url = cleanText(body.url, 1000);
@@ -1691,7 +1905,8 @@ async function handleApi(req, res, urlPath) {
         mode: body.mode === "single" ? "single" : "overlay",
         volume: parseFloat(body.volume),
         lead: parseFloat(body.lead),
-        contributor: cleanText(body.contributor, 60) || authUser.username,
+        contributor: cleanText(body.contributor, 60) || authUser.nickname || authUser.username,
+        recorded_by: authUser.id,
       });
       return json(res, 201, { commit });
     }
@@ -1699,11 +1914,14 @@ async function handleApi(req, res, urlPath) {
 
   const commitPatchMatch = urlPath.match(/^\/api\/recordings\/(\d+)\/commits\/(\d+)$/);
   if (commitPatchMatch && req.method === "PATCH") {
-    if (!requireAuth()) return;
+    if (!requireProfile()) return;
     const repoId = Number(commitPatchMatch[1]);
     const commitId = Number(commitPatchMatch[2]);
     const repo = db.getRecordingRepo(repoId);
     if (!repo) return json(res, 404, { error: "Recording not found" });
+    if (!db.canEditRepo(authUser, repo)) {
+      return json(res, 403, { error: "You are not a member of this recording's band" });
+    }
     const existing = db.getRecordingCommit(commitId);
     if (!existing || existing.repo_id !== repoId) {
       return json(res, 404, { error: "Commit not found in this recording" });
@@ -1718,11 +1936,14 @@ async function handleApi(req, res, urlPath) {
   }
 
   if (commitPatchMatch && req.method === "DELETE") {
-    if (!requireAuth()) return;
+    if (!requireProfile()) return;
     const repoId = Number(commitPatchMatch[1]);
     const commitId = Number(commitPatchMatch[2]);
     const repo = db.getRecordingRepo(repoId);
     if (!repo) return json(res, 404, { error: "Recording not found" });
+    if (!db.canEditRepo(authUser, repo)) {
+      return json(res, 403, { error: "You are not a member of this recording's band" });
+    }
     const existing = db.getRecordingCommit(commitId);
     if (!existing || existing.repo_id !== repoId) {
       return json(res, 404, { error: "Commit not found in this recording" });
@@ -1744,11 +1965,14 @@ async function handleApi(req, res, urlPath) {
 
   const commitTagMatch = urlPath.match(/^\/api\/recordings\/(\d+)\/commits\/(\d+)\/tag$/);
   if (commitTagMatch && req.method === "POST") {
-    if (!requireAuth()) return;
+    if (!requireProfile()) return;
     const repoId = Number(commitTagMatch[1]);
     const commitId = Number(commitTagMatch[2]);
     const repo = db.getRecordingRepo(repoId);
     if (!repo) return json(res, 404, { error: "Recording not found" });
+    if (!db.canEditRepo(authUser, repo)) {
+      return json(res, 403, { error: "You are not a member of this recording's band" });
+    }
     const existing = db.getRecordingCommit(commitId);
     if (!existing || existing.repo_id !== repoId) {
       return json(res, 404, { error: "Commit not found in this recording" });
@@ -1760,10 +1984,13 @@ async function handleApi(req, res, urlPath) {
 
   const repoDeleteMatch = urlPath.match(/^\/api\/recordings\/(\d+)$/);
   if (repoDeleteMatch && req.method === "DELETE") {
-    if (!requireAuth()) return;
+    if (!requireProfile()) return;
     const repoId = Number(repoDeleteMatch[1]);
     const repo = db.getRecordingRepo(repoId);
     if (!repo) return json(res, 404, { error: "Recording not found" });
+    if (!db.canEditRepo(authUser, repo)) {
+      return json(res, 403, { error: "You are not a member of this recording's band" });
+    }
     // Collect the audio files this recording owns (the repo's own file plus
     // every commit's) so the files can be removed once nothing else references
     // them — mirroring the per-commit delete. Shared URLs are left alone.
@@ -2118,6 +2345,27 @@ const server = http.createServer((req, res) => {
   // Uploaded recordings (served from RECORDING_DIR, outside publicDir).
   // Streamed with HTTP Range support so <audio> can seek on larger files.
   if (urlPath.startsWith(RECORDING_URL_PREFIX)) {
+    // Banded recordings are private: their raw audio files are only served to
+    // band members / admin. The native <audio> element can't send the
+    // Authorization header, so the hub appends ?token=<JWT> when playing a
+    // banded file (playNativeTrack / decodeLayer). Legacy public files are
+    // unaffected. token= is accepted for <audio> playback only — it is the
+    // user's own short-lived JWT, never shared with other pages.
+    const fileRepo = db.findRepoForAudioUrl(urlPath);
+    if (fileRepo && fileRepo.band_id != null) {
+      let viewer = getAuthUser(req);
+      if (!viewer) {
+        const q = new URL(req.url, "http://localhost");
+        const token = q.searchParams.get("token");
+        const payload = token ? verifyToken(token) : null;
+        if (payload && payload.sub) viewer = db.getUserAuth(payload.sub);
+      }
+      if (!viewer || !db.canEditRepo(viewer, fileRepo)) {
+        res.writeHead(403);
+        res.end("Forbidden");
+        return;
+      }
+    }
     const recPath = path.join(RECORDING_DIR, path.normalize(urlPath.slice(RECORDING_URL_PREFIX.length)));
     if (!recPath.startsWith(path.resolve(RECORDING_DIR) + path.sep)) {
       res.writeHead(403);
@@ -2203,6 +2451,16 @@ const server = http.createServer((req, res) => {
       res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
       res.end("Not Found");
       return;
+    }
+    // Banded recordings are private to their band — no public share page.
+    if (repo.band_id != null) {
+      const viewer = getAuthUser(req);
+      const allowed = viewer && db.canEditRepo(viewer, repo);
+      if (!allowed) {
+        res.writeHead(403, { "Content-Type": "text/plain; charset=utf-8" });
+        res.end("This recording is private to its band. Log in on the REC HUB to listen.");
+        return;
+      }
     }
     const latest = db.getLatestTaggedCommit(repo.id);
     res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });

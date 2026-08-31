@@ -127,7 +127,7 @@ function ensureAdmin() {
   if (!row) {
     const pw = randomPassword();
     db.prepare(
-      "INSERT INTO users (username, pass_hash, must_change_password) VALUES (?, ?, 1)"
+      "INSERT INTO users (username, pass_hash, must_change_password, is_admin, profile_complete) VALUES (?, ?, 1, 1, 1)"
     ).run(ADMIN_USERNAME, hashPassword(pw));
     writeAdminPasswordFile(pw);
     console.log(`[db] Created default admin user '${ADMIN_USERNAME}'.`);
@@ -147,6 +147,13 @@ function ensureAdmin() {
     console.log(`[db] Detected the old default admin password — it was ROTATED to a random one.`);
     console.log(`[db] New password saved to ${ADMIN_PASSWORD_FILE}. Change it on first login.`);
   }
+
+  // Whatever state the account was in, the admin user IS the site admin —
+  // keep the role flag + full profile set after migration 014 introduced them
+  // (legacy DBs default to is_admin = 0 on existing rows).
+  db.prepare(
+    "UPDATE users SET is_admin = 1, profile_complete = 1 WHERE id = ? AND (is_admin != 1 OR profile_complete != 1)"
+  ).run(row.id);
 }
 
 /* ── Password hashing (PBKDF2, no extra deps) ──────────── */
@@ -170,17 +177,42 @@ function findUserByUsername(username) {
   return db.prepare("SELECT * FROM users WHERE username = ?").get(username);
 }
 
+/* Shape of a user object the rest of the app sees. Always carries the
+   membership list (bands the user joined) so the UI can render band badges
+   without an extra request. `is_admin`/`profile_complete`/`nickname`/`email`
+   come from migration 014 (NULL/0 on legacy rows until the profile is set). */
+function toPublicUser(row) {
+  if (!row) return null;
+  const bands = db
+    .prepare(
+      `SELECT b.id, b.name
+         FROM band_members m
+         JOIN bands b ON b.id = m.band_id
+        WHERE m.user_id = ?
+        ORDER BY b.name ASC`
+    )
+    .all(row.id);
+  return {
+    id: row.id,
+    username: row.username,
+    nickname: row.nickname,
+    email: row.email,
+    is_admin: !!row.is_admin,
+    profile_complete: !!row.profile_complete,
+    must_change_password: !!row.must_change_password,
+    bands,
+  };
+}
+
 function authUser(username, password) {
   const user = findUserByUsername(username);
   if (!user) return null;
   if (!verifyPassword(password, user.pass_hash)) return null;
-  return { id: user.id, username: user.username, must_change_password: !!user.must_change_password };
+  return toPublicUser(user);
 }
 
 function getUserAuth(id) {
-  const user = db.prepare("SELECT * FROM users WHERE id = ?").get(id);
-  if (!user) return null;
-  return { id: user.id, username: user.username, must_change_password: !!user.must_change_password };
+  return toPublicUser(db.prepare("SELECT * FROM users WHERE id = ?").get(id));
 }
 
 function verifyUserPassword(id, password) {
@@ -194,6 +226,170 @@ function changePassword(id, newPassword) {
     hashPassword(newPassword),
     id
   );
+}
+
+/* ── Bands (乐队) ──────────────────────────────────────── */
+/* Migration 014: a recording_repos row belongs to a band (band_id) and is
+   visible/editable only by that band's members (band_members) or the admin.
+   Legacy rows keep band_id NULL and stay public, as before. */
+
+function listBands() {
+  return db
+    .prepare(
+      `SELECT b.*,
+              (SELECT COUNT(*) FROM band_members m WHERE m.band_id = b.id) AS member_count
+         FROM bands b
+        ORDER BY b.name ASC`
+    )
+    .all();
+}
+
+function getBand(id) {
+  return db.prepare("SELECT * FROM bands WHERE id = ?").get(id) || null;
+}
+
+function getBandByName(name) {
+  return db.prepare("SELECT * FROM bands WHERE name = ?").get(name) || null;
+}
+
+function createBand({ name, description, created_by }) {
+  const info = db
+    .prepare("INSERT INTO bands (name, description, created_by) VALUES (?, ?, ?)")
+    .run(name, description || "", created_by || null);
+  return getBand(info.lastInsertRowid);
+}
+
+function updateBand(id, { name, description }) {
+  db.prepare("UPDATE bands SET name = ?, description = ? WHERE id = ?").run(
+    name,
+    description || "",
+    id
+  );
+  return getBand(id);
+}
+
+function deleteBand(id) {
+  // Repos referencing the band keep their files but become legacy/public
+  // (band_id → NULL); memberships and invite codes go away (CASCADE).
+  db.prepare("UPDATE recording_repos SET band_id = NULL WHERE band_id = ?").run(id);
+  db.prepare("DELETE FROM band_members WHERE band_id = ?").run(id);
+  db.prepare("DELETE FROM invite_codes WHERE band_id = ?").run(id);
+  db.prepare("DELETE FROM bands WHERE id = ?").run(id);
+}
+
+function addBandMember(bandId, userId) {
+  db.prepare("INSERT OR IGNORE INTO band_members (band_id, user_id) VALUES (?, ?)").run(bandId, userId);
+}
+
+function isUserInBand(userId, bandId) {
+  return !!db
+    .prepare("SELECT 1 FROM band_members WHERE band_id = ? AND user_id = ?")
+    .get(bandId, userId);
+}
+
+function listBandMembers(bandId) {
+  return db
+    .prepare(
+      `SELECT u.id, u.username, u.nickname, u.email, u.created_at
+         FROM band_members m
+         JOIN users u ON u.id = m.user_id
+        WHERE m.band_id = ?
+        ORDER BY COALESCE(u.nickname, u.username) ASC`
+    )
+    .all(bandId);
+}
+
+function listUserBands(userId) {
+  return db
+    .prepare(
+      `SELECT b.id, b.name, b.description
+         FROM band_members m
+         JOIN bands b ON b.id = m.band_id
+        WHERE m.user_id = ?
+        ORDER BY b.name ASC`
+    )
+    .all(userId);
+}
+
+function listUsers() {
+  return db
+    .prepare(
+      `SELECT u.id, u.username, u.nickname, u.email, u.is_admin, u.profile_complete, u.created_at
+         FROM users u
+        ORDER BY u.id ASC`
+    )
+    .all();
+}
+
+/* ── Invite codes (邀请码) ─────────────────────────────── */
+/* The invite code IS the login credential for band members (no password):
+   first use creates the account, binds it to the code and auto-joins the
+   code's band; the same code logs the same account back in again. */
+
+function getInviteCode(id) {
+  return db.prepare("SELECT * FROM invite_codes WHERE id = ?").get(id) || null;
+}
+
+function getInviteByCode(code) {
+  return db.prepare("SELECT * FROM invite_codes WHERE code = ?").get(code) || null;
+}
+
+function createInviteCode({ code, band_id, created_by }) {
+  const info = db
+    .prepare("INSERT INTO invite_codes (code, band_id, created_by) VALUES (?, ?, ?)")
+    .run(code, band_id, created_by || null);
+  return getInviteCode(info.lastInsertRowid);
+}
+
+function deleteInviteCode(id) {
+  db.prepare("DELETE FROM invite_codes WHERE id = ?").run(id);
+}
+
+function listInviteCodes() {
+  return db
+    .prepare(
+      `SELECT ic.*, b.name AS band_name,
+              u.nickname AS used_nickname, u.username AS used_username
+         FROM invite_codes ic
+         LEFT JOIN bands b ON b.id = ic.band_id
+         LEFT JOIN users u ON u.id = ic.used_by
+        ORDER BY ic.id DESC`
+    )
+    .all();
+}
+
+/* Create the account behind an invite code. The username is derived from the
+   code (codes are unique), the pass_hash is an unguessable random string the
+   user never needs — logging in is done by re-presenting the code. */
+function createUserFromInvite(code) {
+  const username = "invite_" + String(code).toLowerCase();
+  const info = db
+    .prepare("INSERT INTO users (username, pass_hash, profile_complete) VALUES (?, ?, 0)")
+    .run(username, hashPassword(crypto.randomBytes(24).toString("hex")));
+  return db.prepare("SELECT * FROM users WHERE id = ?").get(info.lastInsertRowid);
+}
+
+/* Bind a code to its user and auto-join the code's band. */
+function claimInviteForUser(inviteId, userId) {
+  db.prepare("UPDATE invite_codes SET used_by = ?, used_at = datetime('now') WHERE id = ?").run(
+    userId,
+    inviteId
+  );
+  const invite = getInviteCode(inviteId);
+  if (invite && invite.band_id) addBandMember(invite.band_id, userId);
+}
+
+/* First-login profile: the user's display name, contact email, and every
+   band they want to join (the invite-bound band is pre-selected and included
+   in the client's form). Returns the fresh public user object. */
+function setUserProfile(userId, { nickname, email, bandIds }) {
+  db.prepare("UPDATE users SET nickname = ?, email = ?, profile_complete = 1 WHERE id = ?").run(
+    nickname,
+    email,
+    userId
+  );
+  for (const bandId of bandIds) addBandMember(bandId, userId);
+  return getUserAuth(userId);
 }
 
 /* ── Music (Recordings tab) ────────────────────────────── */
@@ -259,29 +455,78 @@ function deleteMusic(id) {
    ('overlay'). */
 
 function getRecordingRepo(id) {
-  return db.prepare("SELECT * FROM recording_repos WHERE id = ?").get(id) || null;
+  return (
+    db
+      .prepare(
+        `SELECT r.*, b.name AS band_name
+           FROM recording_repos r
+           LEFT JOIN bands b ON b.id = r.band_id
+          WHERE r.id = ?`
+      )
+      .get(id) || null
+  );
 }
 
 function listRecordingRepos() {
   return db
     .prepare(
-      `SELECT r.*,
+      `SELECT r.*, b.name AS band_name,
               (SELECT COUNT(*) FROM recording_commits c WHERE c.repo_id = r.id) AS commit_count,
               (SELECT c.id         FROM recording_commits c WHERE c.repo_id = r.id ORDER BY c.id DESC LIMIT 1) AS head_commit_id,
               (SELECT c.message    FROM recording_commits c WHERE c.repo_id = r.id ORDER BY c.id DESC LIMIT 1) AS head_message,
               (SELECT c.url        FROM recording_commits c WHERE c.repo_id = r.id ORDER BY c.id DESC LIMIT 1) AS head_url,
               (SELECT c.created_at FROM recording_commits c WHERE c.repo_id = r.id ORDER BY c.id DESC LIMIT 1) AS head_created_at
          FROM recording_repos r
+         LEFT JOIN bands b ON b.id = r.band_id
         ORDER BY r.sort_order ASC, r.id DESC`
     )
     .all();
 }
 
-function createRecordingRepo({ title, url, sort_order, source_type }) {
+/* Repos a viewer is allowed to see: legacy public recordings (band_id NULL)
+   are always listed; banded repos only to their members, admins see all. */
+function listRecordingReposForUser(userId, isAdmin) {
+  let where = "r.band_id IS NULL";
+  let params = [];
+  if (isAdmin) {
+    where = "1 = 1";
+  } else if (userId) {
+    where = "r.band_id IS NULL OR r.band_id IN (SELECT band_id FROM band_members WHERE user_id = ?)";
+    params = [userId];
+  }
+  return db
+    .prepare(
+      `SELECT r.*, b.name AS band_name,
+              (SELECT COUNT(*) FROM recording_commits c WHERE c.repo_id = r.id) AS commit_count,
+              (SELECT c.id         FROM recording_commits c WHERE c.repo_id = r.id ORDER BY c.id DESC LIMIT 1) AS head_commit_id,
+              (SELECT c.message    FROM recording_commits c WHERE c.repo_id = r.id ORDER BY c.id DESC LIMIT 1) AS head_message,
+              (SELECT c.url        FROM recording_commits c WHERE c.repo_id = r.id ORDER BY c.id DESC LIMIT 1) AS head_url,
+              (SELECT c.created_at FROM recording_commits c WHERE c.repo_id = r.id ORDER BY c.id DESC LIMIT 1) AS head_created_at
+         FROM recording_repos r
+         LEFT JOIN bands b ON b.id = r.band_id
+        WHERE ${where}
+        ORDER BY r.sort_order ASC, r.id DESC`
+    )
+    .all(...params);
+}
+
+/* Whether a user may edit a repo's takes (record / re-record / volume /
+   delete / tag): band members for banded repos, admin everywhere. Legacy
+   public repos (band_id NULL) stay admin-only, exactly like before. */
+function canEditRepo(user, repo) {
+  if (!user) return false;
+  if (user.is_admin) return true;
+  if (!repo || repo.band_id == null) return false;
+  return isUserInBand(user.id, repo.band_id);
+}
+
+function createRecordingRepo({ title, url, sort_order, source_type, band_id }) {
   const order = Number.isInteger(sort_order) ? sort_order : 0;
   const info = db
-    .prepare("INSERT INTO recording_repos (title, url, sort_order, source_type) VALUES (?, ?, ?, ?)")
-    .run(title, url, order, cleanSourceType(source_type));
+    .prepare(
+      "INSERT INTO recording_repos (title, url, sort_order, source_type, band_id) VALUES (?, ?, ?, ?, ?)"
+    )
+    .run(title, url, order, cleanSourceType(source_type), band_id || null);
   return getRecordingRepo(info.lastInsertRowid);
 }
 
@@ -338,11 +583,11 @@ function cleanContributor(v) {
   return s || ADMIN_USERNAME;
 }
 
-function createRecordingCommit({ repo_id, parent_id, message, url, start_time, end_time, mode, volume, lead, contributor, version }) {
+function createRecordingCommit({ repo_id, parent_id, message, url, start_time, end_time, mode, volume, lead, contributor, version, recorded_by }) {
   const info = db
     .prepare(
-      `INSERT INTO recording_commits (repo_id, parent_id, message, url, start_time, end_time, mode, volume, lead, contributor, "version")
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO recording_commits (repo_id, parent_id, message, url, start_time, end_time, mode, volume, lead, contributor, "version", recorded_by)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .run(
       repo_id,
@@ -355,7 +600,8 @@ function createRecordingCommit({ repo_id, parent_id, message, url, start_time, e
       clampCommitVolume(volume),
       clampCommitLead(lead),
       cleanContributor(contributor),
-      Number.isInteger(version) && version > 0 ? version : null
+      Number.isInteger(version) && version > 0 ? version : null,
+      recorded_by || null
     );
   return getRecordingCommit(info.lastInsertRowid);
 }
@@ -431,6 +677,19 @@ function isRecordingUrlReferenced(url) {
   if (db.prepare("SELECT 1 FROM recording_repos WHERE url = ? LIMIT 1").get(url)) return true;
   if (db.prepare("SELECT 1 FROM music WHERE url = ? LIMIT 1").get(url)) return true;
   return false;
+}
+
+/* The repo an uploaded audio file belongs to, when one exists. Used to gate
+   raw /recordings/… file serving: banded files are only reachable by band
+   members / admin; files that only a legacy (public) repo or a music track
+   references stay open. */
+function findRepoForAudioUrl(url) {
+  if (!url) return null;
+  const commit = db.prepare("SELECT repo_id FROM recording_commits WHERE url = ? LIMIT 1").get(url);
+  if (commit) return getRecordingRepo(commit.repo_id);
+  const repo = db.prepare("SELECT id FROM recording_repos WHERE url = ? LIMIT 1").get(url);
+  if (repo) return getRecordingRepo(repo.id);
+  return null;
 }
 
 function deleteRecordingCommits(repoId) {
@@ -715,16 +974,38 @@ module.exports = {
   getUserAuth,
   verifyUserPassword,
   changePassword,
+  listBands,
+  getBand,
+  getBandByName,
+  createBand,
+  updateBand,
+  deleteBand,
+  addBandMember,
+  isUserInBand,
+  listBandMembers,
+  listUserBands,
+  listUsers,
+  getInviteCode,
+  getInviteByCode,
+  createInviteCode,
+  deleteInviteCode,
+  listInviteCodes,
+  createUserFromInvite,
+  claimInviteForUser,
+  setUserProfile,
   listMusic,
   getMusic,
   createMusic,
   updateMusic,
   deleteMusic,
   listRecordingRepos,
+  listRecordingReposForUser,
   getRecordingRepo,
   createRecordingRepo,
   deleteRecordingRepo,
   updateRecordingRepoUrl,
+  canEditRepo,
+  findRepoForAudioUrl,
   listRecordingCommits,
   getRecordingCommit,
   createRecordingCommit,

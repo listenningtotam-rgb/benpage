@@ -23,16 +23,40 @@
 
 const hubRootEl = document.getElementById("rec-hub-root");
 
-const TOKEN_KEY = "benpage_admin_token"; // same key as public/admin.js
+const TOKEN_KEY = "benpage_admin_token";      // same key as public/admin.js
+const HUB_TOKEN_KEY = "benpage_hub_token";    // member invite-code session
 
 const hub = {
   repos: [],
   commits: new Map(),     // repoId -> [commit...]
   expanded: null,         // repoId of the expanded commit history
   checkedOut: null,       // { repoId, commitId }
-  admin: false,
-  user: null,
+  playing: null,          // { repoId, commitId } of the commit currently sounding
+  admin: false,           // true when the signed-in user is the site admin
+  user: null,             // { id, username, nickname, email, is_admin, profile_complete, bands }
 };
+
+function getHubToken() {
+  return localStorage.getItem(HUB_TOKEN_KEY) || localStorage.getItem(TOKEN_KEY);
+}
+
+/* Display name of the signed-in user (their profile nickname when set). */
+function displayName(u) {
+  if (!u) return "";
+  return u.nickname || u.username || "";
+}
+
+/* Server audio files for banded recordings require the session JWT — the raw
+   URL would otherwise be publicly fetchable. The native <audio> element can't
+   send the Authorization header, so the token rides along as ?token=<JWT> for
+   those files (harmless for public ones, ignored by the server). blob: URLs
+   never take a query param. */
+function audioUrl(url) {
+  if (!url || url.indexOf("blob:") === 0 || url.indexOf("/recordings/") !== 0) return url;
+  const token = getHubToken();
+  if (!token) return url;
+  return url + (url.indexOf("?") >= 0 ? "&" : "?") + "token=" + encodeURIComponent(token);
+}
 
 /* ── Helpers ───────────────────────────────────────────── */
 /* scEscapeHTML is prefixed to avoid clashing with blog.js's escapeHTML */
@@ -71,7 +95,7 @@ function fmtRange(c) {
 
 /* ── API / auth ────────────────────────────────────────── */
 async function hubApi(path, options = {}) {
-  const token = localStorage.getItem(TOKEN_KEY);
+  const token = getHubToken();
   const headers = Object.assign({}, options.headers || {});
   if (token) headers.Authorization = `Bearer ${token}`;
   const res = await fetch(path, Object.assign({}, options, { headers }));
@@ -88,14 +112,14 @@ async function hubApi(path, options = {}) {
 async function refreshAuth() {
   hub.admin = false;
   hub.user = null;
-  const token = localStorage.getItem(TOKEN_KEY);
+  const token = getHubToken();
   if (!token) return;
   try {
     const data = await hubApi("/api/auth/me");
-    hub.admin = true;
     hub.user = data.user;
+    hub.admin = !!data.user.is_admin;
   } catch (_) {
-    /* token expired/invalid → guest view */
+    /* token expired/invalid → guest view (stored tokens stay for re-login) */
   }
 }
 
@@ -111,24 +135,41 @@ async function loadHub() {
     return;
   }
   renderHub();
+  // First login (invite code used for the first time): profile not complete
+  // yet → show the setup form. The invite-bound band is already joined.
+  if (hub.user && !hub.user.profile_complete) {
+    showProfileSetup().catch((err) => {
+      if (hubRootEl) {
+        hubRootEl.innerHTML = `<p class="empty-note">⚠ ${scEscapeHTML(err.message)}</p>`;
+      }
+    });
+  }
 }
 
 /* ── Rendering ─────────────────────────────────────────── */
 function renderHub() {
   if (!hubRootEl) return;
+  const loggedIn = !!hub.user;
+  const profileDone = loggedIn && !!hub.user.profile_complete;
   const toolbar = `
     <div class="hub-toolbar">
       ${
-        hub.admin
+        loggedIn
           ? `<div class="hub-admin">
-               <span class="hub-admin-user">● ${scEscapeHTML(
-                 (hub.user && (hub.user.username || hub.user.name)) || "admin"
-               )}</span>
-               <button type="button" class="rc-btn rc-btn-primary" id="new-recording-btn">+ New Recording</button>
+               <span class="hub-admin-user">${hub.user.is_admin ? "●" : "👤"} ${scEscapeHTML(displayName(hub.user))}${hub.user.is_admin ? " · admin" : ""}</span>
+               <button type="button" class="rc-btn rc-btn-ghost" id="hub-logout-btn">Sign out</button>
+               ${profileDone ? `<button type="button" class="rc-btn rc-btn-primary" id="new-recording-btn">+ New Recording</button>` : `<span class="hub-login-note">complete your profile to record</span>`}
              </div>`
-          : `<div class="hub-login-note">Sign in to record takes &nbsp;·&nbsp; <a href="/admin.html">admin →</a></div>`
+          : `<div class="hub-admin">
+               <form class="hub-login-form" id="hub-login-form" autocomplete="off">
+                 <input type="text" id="hub-invite-input" placeholder="Invite code" maxlength="64" />
+                 <button type="submit" class="rc-btn rc-btn-primary">Sign in</button>
+               </form>
+               <span class="hub-login-note">Sign in with your band's invite code to record takes &nbsp;·&nbsp; <a href="/admin.html">admin →</a></span>
+               <span class="hub-login-error" id="hub-login-error"></span>
+             </div>`
       }
-      <div class="studio-bar" id="studio-bar" ${hub.admin ? "" : "hidden"}>
+      <div class="studio-bar" id="studio-bar" ${profileDone ? "" : "hidden"}>
         <span class="studio-checkout" id="studio-checkout">Nothing checked out — click a commit to record over it</span>
         <button type="button" class="rc-btn rc-btn-record" id="record-take-btn" disabled>● Record Take</button>
         <select id="studio-device" class="studio-device" title="Microphone used for takes — pick the real mic, not a loopback/stereo-mix device"></select>
@@ -145,8 +186,59 @@ function renderHub() {
     <div id="repo-list" class="repo-list"></div>`;
   hubRootEl.innerHTML = toolbar;
   attachRepoListEvents();
-  if (hub.admin) {
-    document.getElementById("new-recording-btn").addEventListener("click", openNewRecording);
+
+  const loginForm = document.getElementById("hub-login-form");
+  if (loginForm) {
+    loginForm.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const code = document.getElementById("hub-invite-input").value.trim();
+      const errEl = document.getElementById("hub-login-error");
+      if (!code) {
+        errEl.textContent = "Enter your invite code.";
+        return;
+      }
+      errEl.textContent = "";
+      try {
+        const data = await hubApi("/api/auth/invite-login", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ code }),
+        });
+        localStorage.setItem(HUB_TOKEN_KEY, data.token);
+        hub.user = data.user;
+        hub.admin = !!data.user.is_admin;
+        if (!data.user.profile_complete) {
+          renderHub();
+          showProfileSetup().catch((err2) => {
+            const e2 = document.getElementById("hub-login-error");
+            if (e2) e2.textContent = err2.message;
+          });
+        } else {
+          await loadHub();
+        }
+      } catch (err) {
+        errEl.textContent = err.message;
+      }
+    });
+  }
+
+  const logoutBtn = document.getElementById("hub-logout-btn");
+  if (logoutBtn) {
+    logoutBtn.addEventListener("click", () => {
+      localStorage.removeItem(HUB_TOKEN_KEY);
+      localStorage.removeItem(TOKEN_KEY);
+      hub.user = null;
+      hub.admin = false;
+      hub.checkedOut = null;
+      closeAudio();
+      loadHub();
+    });
+  }
+
+  const newBtn = document.getElementById("new-recording-btn");
+  if (newBtn) newBtn.addEventListener("click", openNewRecording);
+
+  if (profileDone) {
     document.getElementById("record-take-btn").addEventListener("click", startTakeRecording);
     document.getElementById("stop-playback-btn").addEventListener("click", stopPlayback);
     const phonesEl = document.getElementById("studio-phones");
@@ -172,7 +264,7 @@ function renderRepos() {
   const list = document.getElementById("repo-list");
   if (!list) return;
   if (!hub.repos.length) {
-    list.innerHTML = `<p class="empty-note">No recordings yet${hub.admin ? " — start one above." : "."}</p>`;
+    list.innerHTML = `<p class="empty-note">No recordings yet${hub.user ? " — start one above." : "."}</p>`;
     updateStudioBar();
     return;
   }
@@ -181,6 +273,22 @@ function renderRepos() {
   hub.repos.forEach((repo) => frag.appendChild(renderRepoCard(repo)));
   list.appendChild(frag);
   updateStudioBar();
+  syncPlayState();
+}
+
+/* Keep the repo-card play buttons in sync with what is currently sounding:
+   the card's orange button swaps to a pause glyph and its label flips. */
+function syncPlayState() {
+  const p = hub.playing;
+  document.querySelectorAll(".rc-repo").forEach((card) => {
+    const btn = card.querySelector(".sc-play");
+    if (!btn) return;
+    const repoId = Number(btn.dataset.repo);
+    const active = !!(p && p.repoId === repoId);
+    card.classList.toggle("playing", active);
+    const title = (card.querySelector(".rc-repo-title") || {}).textContent || "";
+    btn.setAttribute("aria-label", (active ? "Pause " : "Play ") + title.trim());
+  });
 }
 
 /* 原创 (original) vs Cover badge — set once when the recording is created,
@@ -194,6 +302,7 @@ function renderRepoCard(repo) {
   const commits = hub.commits.get(repo.id) || [];
   const head = commits[commits.length - 1] || null;
   const expanded = hub.expanded === repo.id;
+  const canEdit = !!repo.can_edit;
   const card = document.createElement("div");
   card.className = "rc-repo";
   card.innerHTML = `
@@ -206,16 +315,17 @@ function renderRepoCard(repo) {
         <div class="rc-repo-title">${scEscapeHTML(repo.title)}</div>
         <div class="rc-repo-meta">
           ${sourceBadge(repo.source_type)}
+          ${repo.band_name ? `<span class="rc-badge rc-badge-band" title="Private to this band">🎸 ${scEscapeHTML(repo.band_name)}</span>` : ""}
           ${commits.length} commit${commits.length === 1 ? "" : "s"}
           ${head ? ` · HEAD ${commitHash(head.id)} ${scEscapeHTML(head.message)}` : ""}
           · ${Number(repo.play_count) || 0} plays
         </div>
       </div>
       <div class="rc-repo-actions">
-        <button type="button" class="rc-icon-btn" data-action="share-repo" data-repo="${repo.id}" title="Share">↗</button>
+        ${repo.band_id ? "" : `<button type="button" class="rc-icon-btn" data-action="share-repo" data-repo="${repo.id}" title="Share">↗</button>`}
         <button type="button" class="rc-icon-btn" data-action="toggle-repo" data-repo="${repo.id}" title="Commit history">${expanded ? "▾" : "▸"}</button>
         ${
-          hub.admin
+          canEdit
             ? `<button type="button" class="rc-icon-btn rc-repo-delete" data-action="delete-repo" data-repo="${repo.id}" title="Delete this recording and all its commits">🗑</button>`
             : ""
         }
@@ -232,16 +342,18 @@ function renderRepoCard(repo) {
 
 function renderCommitRows(repo, commits) {
   if (!commits.length) return `<p class="empty-note">No commits yet.</p>`;
+  const canEdit = !!repo.can_edit;
   return commits
     .map((c) => {
       const checkedOut =
         hub.checkedOut && hub.checkedOut.repoId === repo.id && hub.checkedOut.commitId === c.id;
       const isOverlay = c.mode === "overlay";
+      const isPlaying = !!(hub.playing && hub.playing.repoId === repo.id && hub.playing.commitId === c.id);
       // Next version number a tag button would assign (the server is
       // authoritative — this is just for the tooltip).
       const nextVersion = commits.reduce((m, x) => Math.max(m, Number(x.version) || 0), 0) + 1;
       return `
-        <div class="rc-commit ${checkedOut ? "checked-out" : ""}" data-commit="${c.id}">
+        <div class="rc-commit ${checkedOut ? "checked-out" : ""} ${isPlaying ? "playing" : ""}" data-commit="${c.id}">
           <div class="rc-commit-main" data-action="select-commit" data-repo="${repo.id}" data-commit="${c.id}">
             <div class="rc-commit-line">
               <span class="rc-hash">${commitHash(c.id)}</span>
@@ -257,7 +369,7 @@ function renderCommitRows(repo, commits) {
                 <span class="rc-date">${fmtStamp(c.created_at)}</span>
                 <span class="rc-contributor">· 👤 ${scEscapeHTML(c.contributor || "admin")}</span>
               </span>
-              ${hub.admin
+              ${canEdit
                 ? `<label class="rc-vol" title="Balance this take against the parent — 100% is unchanged">
                      <span>vol</span>
                      <input type="range" data-action="set-volume" data-repo="${repo.id}" data-commit="${c.id}" min="0" max="200" step="5" value="${Math.round(commitVolume(c) * 100)}" />
@@ -267,14 +379,14 @@ function renderCommitRows(repo, commits) {
               ${checkedOut ? `<span class="rc-checked">✓ checked out</span>` : ""}
             </div>
           </div>
-          <button type="button" class="rc-icon-btn rc-commit-play" data-action="play-commit" data-repo="${repo.id}" data-commit="${c.id}" title="Play this commit">▶</button>
+          <button type="button" class="rc-icon-btn rc-commit-play" data-action="play-commit" data-repo="${repo.id}" data-commit="${c.id}" title="Play this commit"><span class="rc-cp-play">▶</span><span class="rc-cp-pause">⏸</span></button>
           ${
-            hub.admin && c.version == null
+            canEdit && c.version == null
               ? `<button type="button" class="rc-icon-btn rc-commit-tag" data-action="tag-commit" data-repo="${repo.id}" data-commit="${c.id}" title="Tag this commit as the next public version (v${nextVersion}.0) — the share link will play it">🏷</button>`
               : ""
           }
           ${
-            hub.admin
+            canEdit
               ? `<button type="button" class="rc-icon-btn rc-commit-delete" data-action="delete-commit" data-repo="${repo.id}" data-commit="${c.id}" title="Delete this commit">🗑</button>`
               : ""
           }
@@ -294,8 +406,15 @@ function attachRepoListEvents() {
     const action = btn.dataset.action;
     const repoId = Number(btn.dataset.repo);
     const findCommit = (id) => (hub.commits.get(repoId) || []).find((x) => x.id === id) || null;
+    const repo = hub.repos.find((r) => r.id === repoId) || null;
+    const canEdit = !!(repo && repo.can_edit);
 
     if (action === "play-repo") {
+      // A repo whose sound is already playing becomes a pause control.
+      if (hub.playing && hub.playing.repoId === repoId) {
+        stopPlayback();
+        return;
+      }
       const commits = hub.commits.get(repoId) || [];
       const head = commits[commits.length - 1];
       if (head) playCommit(head);
@@ -303,16 +422,21 @@ function attachRepoListEvents() {
       hub.expanded = hub.expanded === repoId ? null : repoId;
       renderRepos();
     } else if (action === "share-repo") {
-      const repo = hub.repos.find((r) => r.id === repoId);
       if (repo && typeof window.openShareDialog === "function") {
         window.openShareDialog({ title: repo.title, path: `/recording/${repoId}` });
       }
     } else if (action === "play-commit") {
       const c = findCommit(Number(btn.dataset.commit));
-      if (c) playCommit(c);
+      if (!c) return;
+      // The playing commit's own row button becomes a pause control.
+      if (hub.playing && hub.playing.commitId === c.id) {
+        stopPlayback();
+        return;
+      }
+      playCommit(c);
     } else if (action === "tag-commit") {
       const c = findCommit(Number(btn.dataset.commit));
-      if (!c || !hub.admin || c.version != null) return;
+      if (!c || !canEdit || c.version != null) return;
       const next = (hub.commits.get(repoId) || []).reduce((m, x) => Math.max(m, Number(x.version) || 0), 0) + 1;
       if (!window.confirm(`Tag ${commitHash(c.id)} as the next public version (v${next}.0)? The share link will play this version.`)) return;
       hubApi(`/api/recordings/${repoId}/commits/${c.id}/tag`, { method: "POST" })
@@ -320,7 +444,7 @@ function attachRepoListEvents() {
         .catch((err) => alert(err.message));
     } else if (action === "delete-commit") {
       const c = findCommit(Number(btn.dataset.commit));
-      if (!c || !hub.admin) return;
+      if (!c || !canEdit) return;
       if (!window.confirm(`Delete commit ${commitHash(c.id)} "${c.message}"? This cannot be undone.`)) return;
       const playing = document.querySelector(".rc-commit.playing");
       if (playing && Number(playing.dataset.commit) === c.id) stopPlayback();
@@ -333,8 +457,7 @@ function attachRepoListEvents() {
         })
         .catch((err) => alert(err.message));
     } else if (action === "delete-repo") {
-      if (!hub.admin) return;
-      const repo = hub.repos.find((r) => r.id === repoId);
+      if (!canEdit) return;
       if (!repo) return;
       const commits = hub.commits.get(repoId) || [];
       const plural = commits.length === 1 ? "commit" : "commits";
@@ -352,7 +475,7 @@ function attachRepoListEvents() {
     } else if (action === "select-commit") {
       const c = findCommit(Number(btn.dataset.commit));
       if (!c) return;
-      if (hub.admin) {
+      if (canEdit) {
         hub.checkedOut = { repoId, commitId: c.id };
         updateStudioBar();
         renderRepos(); // refresh the ✓ highlight
@@ -370,8 +493,10 @@ function attachRepoListEvents() {
   });
   list.addEventListener("change", async (e) => {
     const input = e.target.closest("[data-action='set-volume']");
-    if (!input || !hub.admin) return;
+    if (!input) return;
     const repoId = Number(input.dataset.repo);
+    const repo = hub.repos.find((r) => r.id === repoId);
+    if (!repo || !repo.can_edit) return;
     const commitId = Number(input.dataset.commit);
     try {
       const data = await hubApi(`/api/recordings/${repoId}/commits/${commitId}`, {
@@ -393,25 +518,31 @@ function attachRepoListEvents() {
 function updateStudioBar() {
   const bar = document.getElementById("studio-bar");
   if (!bar) return;
-  if (!hub.admin) {
+  const loggedIn = !!hub.user && !!hub.user.profile_complete;
+  if (!loggedIn) {
     bar.hidden = true;
     return;
   }
   bar.hidden = false;
   const label = document.getElementById("studio-checkout");
   const btn = document.getElementById("record-take-btn");
+  const repo = hub.checkedOut
+    ? hub.repos.find((r) => r.id === hub.checkedOut.repoId) || null
+    : null;
   if (!hub.checkedOut) {
     label.textContent = "Nothing checked out — click a commit to record over it";
     btn.disabled = true;
+  } else if (!repo || !repo.can_edit) {
+    label.textContent = "This recording belongs to another band — you can't record over it";
+    btn.disabled = true;
   } else {
-    const repo = hub.repos.find((r) => r.id === hub.checkedOut.repoId);
     const c = (hub.commits.get(hub.checkedOut.repoId) || []).find(
       (x) => x.id === hub.checkedOut.commitId
     );
-    label.textContent = `Checked out: ${repo ? repo.title + " " : ""}${c ? commitHash(c.id) + " · " + c.message : ""}`;
+    label.textContent = `Checked out: ${repo.title + " "}${c ? commitHash(c.id) + " · " + c.message : ""}`;
     btn.disabled = false;
   }
-  if (hub.admin && (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia)) {
+  if (loggedIn && (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia)) {
     btn.title = "Mic is blocked — this page must be served over HTTPS";
     setStudioStatus("⚠ Microphone blocked: this page is on plain http — serve it over HTTPS to record takes.", true);
   }
@@ -504,7 +635,8 @@ async function decodeLayer(ctx, url) {
   const hit = bufferCache.get(url);
   if (hit) return { kind: "buffer", buffer: hit };
   // blob: URLs ignore cache mode and Safari rejects the cache option on them.
-  const res = await fetch(url, url.indexOf("blob:") === 0 ? {} : { cache: "no-cache" });
+  // Banded files need the session JWT — appended by audioUrl() (see above).
+  const res = await fetch(audioUrl(url), url.indexOf("blob:") === 0 ? {} : { cache: "no-cache" });
   if (!res.ok) throw new Error("Could not load audio: " + url);
   const ab = await res.arrayBuffer();
   const buffer = await decodeAudioCompat(ctx, ab);
@@ -531,6 +663,8 @@ function closeAudio() {
   audioEngine.sources = [];
   audioEngine.elements = [];
   document.querySelectorAll(".rc-commit.playing").forEach((el) => el.classList.remove("playing"));
+  hub.playing = null;
+  syncPlayState();
 }
 
 /* Ordered root → commit, each with the offset where it sits on the parent's
@@ -694,6 +828,8 @@ async function playCommit(commit, extra) {
   }
   const row = document.querySelector(`.rc-commit[data-commit="${commit.id}"]`);
   if (row) row.classList.add("playing");
+  hub.playing = { repoId: commit.repo_id, commitId: commit.id };
+  syncPlayState();
   if (failed.length) {
     setStudioStatus("⚠ " + failed.length + " layer(s) couldn't be decoded for playback on this browser — " + failed[0].message, true);
   } else {
@@ -714,7 +850,7 @@ function playNativeTrack(commit, extra, reason) {
     return;
   }
   const row = document.querySelector(`.rc-commit[data-commit="${commit.id}"]`);
-  const el = new Audio(url);
+  const el = new Audio(audioUrl(url));
   el.preload = "auto";
   let started = false;
   const showErr = () => {
@@ -727,6 +863,8 @@ function playNativeTrack(commit, extra, reason) {
     if (started) return;
     started = true; // audio is actually sounding — only now may the row go blue
     if (row) row.classList.add("playing");
+    hub.playing = { repoId: commit.repo_id, commitId: commit.id };
+    syncPlayState();
     setStudioStatus(`▶ playing ${commitHash(commit.id)} (browser audio)`);
   };
   el.onended = () => { if (started) stopPlayback(); };
@@ -879,6 +1017,8 @@ async function playIOSMix(commit, extra) {
     if (!live()) return;
     started = true; // audio is actually sounding — only now may the row go blue
     if (row) row.classList.add("playing");
+    hub.playing = { repoId: commit.repo_id, commitId: commit.id };
+    syncPlayState();
     setStudioStatus(`▶ playing ${commitHash(commit.id)} (rendered mix)`);
   };
   el.onended = () => { if (started) stopPlayback(); };
@@ -1718,7 +1858,7 @@ function openTakePreview() {
   // uses it directly; the `+ lead` keeps the formula correct for legacy
   // commits whose blob started after a pre-roll.
   const start = (isFinite(studio.takeStartGuess) && studio.takeStartGuess > 0 ? studio.takeStartGuess : 0) + (studio.lead || 0);
-  const contributorDefault = (hub.user && (hub.user.username || hub.user.name)) || "admin";
+  const contributorDefault = displayName(hub.user) || "admin";
   const warnings = [];
   if (typeof studio.takeLevel === "number" && studio.takeLevel < 0.002) {
     warnings.push("This take decoded as silent / very quiet — the mic may not have captured your voice (a known iOS mic issue). Re-record, and check the iPhone isn’t muted.");
@@ -1925,6 +2065,66 @@ async function uploadBlob(blob) {
 }
 
 
+/* ── First-login profile setup (invite-code account) ───── */
+/* The invite code creates the account and auto-joins its band. This form
+   collects the display name / email and lets the user tick every band they
+   also belong to (the invite-bound band is already joined, pre-checked). */
+async function showProfileSetup() {
+  const bandsData = await hubApi("/api/bands");
+  const bands = bandsData.bands || [];
+  const myBandIds = new Set((hub.user && hub.user.bands || []).map((b) => b.id));
+  const bandOptions = bands
+    .map(
+      (b) => `
+        <label class="rc-check">
+          <input type="checkbox" class="profile-band-cb" value="${b.id}" ${myBandIds.has(b.id) ? "checked" : ""} />
+          <span>${scEscapeHTML(b.name)}</span>
+        </label>`
+    )
+    .join("");
+  showModal(`
+    <h3 class="rc-modal-title">Welcome — set up your profile</h3>
+    <p class="rc-modal-sub">Your invite-code account is ready. Recordings in the REC HUB are private to the bands you join.</p>
+    <label class="rc-field">Nickname
+      <input type="text" id="profile-nickname" maxlength="60" placeholder="How your name appears on takes" />
+    </label>
+    <label class="rc-field">Email
+      <input type="email" id="profile-email" maxlength="200" placeholder="you@example.com" />
+    </label>
+    <div class="rc-field">
+      <span class="rc-field-label">Bands <span class="rc-hint">(the band from your invite is already selected — tick any others you belong to)</span></span>
+      <div class="rc-band-picker" id="profile-bands">${bandOptions || '<p class="rc-hint">No bands exist yet — ask the admin to create one.</p>'}</div>
+    </div>
+    <p class="rc-modal-error" id="profile-error"></p>
+    <div class="rc-modal-actions">
+      <button type="button" class="rc-btn rc-btn-primary" id="profile-save-btn">Save profile</button>
+    </div>
+  `, (overlay) => {
+    overlay.querySelector("#profile-save-btn").addEventListener("click", async () => {
+      const nickname = overlay.querySelector("#profile-nickname").value.trim();
+      const email = overlay.querySelector("#profile-email").value.trim();
+      const bandIds = Array.from(overlay.querySelectorAll(".profile-band-cb:checked")).map((cb) => Number(cb.value));
+      const errEl = overlay.querySelector("#profile-error");
+      if (!nickname) { errEl.textContent = "Please enter a nickname."; return; }
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email)) { errEl.textContent = "Please enter a valid email."; return; }
+      if (!bandIds.length) { errEl.textContent = "Choose at least one band."; return; }
+      try {
+        const data = await hubApi("/api/auth/profile", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ nickname, email, band_ids: bandIds }),
+        });
+        hub.user = data.user;
+        hub.admin = !!data.user.is_admin;
+        closeModal();
+        await loadHub();
+      } catch (err) {
+        errEl.textContent = err.message;
+      }
+    });
+  });
+}
+
 /* ── New recording (init repo) ─────────────────────────── */
 let newRecBlob = null;     // Blob when the source was recorded from mic
 let newRecUrl = null;      // /recordings/... URL when uploaded, or blob: URL
@@ -1934,12 +2134,28 @@ let newRecTimer = null;
 let newRecStart = 0;
 let newRecDuration = 0;
 
-function openNewRecording() {
+async function openNewRecording() {
   newRecBlob = null;
   newRecUrl = null;
-  const contributorDefault = (hub.user && (hub.user.username || hub.user.name)) || "admin";
+  const contributorDefault = displayName(hub.user) || "admin";
+  // Members pick one of their own bands; admins may pick any band.
+  const allBands = hub.admin
+    ? await hubApi("/api/bands").then((d) => d.bands || []).catch(() => [])
+    : (hub.user && hub.user.bands) || [];
+  const bandOptions = allBands
+    .map(
+      (b) => `<option value="${b.id}">${scEscapeHTML(b.name)}</option>`
+    )
+    .join("");
   showModal(`
     <h3 class="rc-modal-title">New Recording</h3>
+    ${
+      bandOptions
+        ? `<label class="rc-field">Band <span class="rc-hint">(recording is private to this band's members)</span>
+        <select id="new-band">${bandOptions}</select>
+      </label>`
+        : `<p class="rc-hint" style="color:#ffd479">No bands yet — ask the admin to create one (admin page → Bands).</p>`
+    }
     <label class="rc-field">Title
       <input type="text" id="new-title" maxlength="300" placeholder="e.g. Midnight Dreams" />
     </label>
@@ -1963,9 +2179,10 @@ function openNewRecording() {
     </div>
     <p class="rc-source-status" id="new-source-status">Choose an audio source.</p>
     <div class="rc-timer-wrap" id="new-timer-wrap" hidden><span class="rc-timer" id="new-timer">0:00</span></div>
+    <p class="rc-note">注意：上传录音，即用户承诺拥有录音全部版权及授权；禁止上传侵权、违规音频，谢谢。</p>
     <div class="rc-modal-actions">
       <button type="button" class="rc-btn rc-btn-ghost" id="new-cancel-btn">Cancel</button>
-      <button type="button" class="rc-btn rc-btn-primary" id="new-create-btn">Create Recording</button>
+      <button type="button" class="rc-btn rc-btn-primary" id="new-create-btn" ${bandOptions ? "" : "disabled"}>Create Recording</button>
     </div>
   `, (overlay) => {
     overlay.querySelector("#new-file-btn").addEventListener("click", () => {
@@ -2077,6 +2294,9 @@ async function createNewRecording(overlay) {
   const message = overlay.querySelector("#new-message").value.trim() || "Initial recording";
   const contributor = overlay.querySelector("#new-contributor").value.trim();
   const sourceType = overlay.querySelector("#new-source-type").value;
+  const bandEl = overlay.querySelector("#new-band");
+  const bandId = bandEl ? Number(bandEl.value) : null;
+  if (!bandId) { alert("Please choose a band for this recording."); return; }
   if (!title) { alert("Please enter a title."); return; }
   if (!newRecUrl) { alert("Please upload or record an audio source first."); return; }
   const btn = overlay.querySelector("#new-create-btn");
@@ -2090,7 +2310,7 @@ async function createNewRecording(overlay) {
     await hubApi("/api/recordings", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ title, message, url, sort_order: 0, contributor, source_type: sourceType }),
+      body: JSON.stringify({ title, message, url, sort_order: 0, contributor, source_type: sourceType, band_id: bandId }),
     });
     cancelNewRec();
     closeModal();

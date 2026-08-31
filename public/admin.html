@@ -64,6 +64,8 @@
     <nav class="dash-tabs">
       <button type="button" class="dash-tab active" data-tab="music">Music</button>
       <button type="button" class="dash-tab" data-tab="blog">Blog</button>
+      <button type="button" class="dash-tab" data-tab="bands">Bands</button>
+      <button type="button" class="dash-tab" data-tab="invites">Invites</button>
       <button type="button" class="dash-tab" data-tab="settings">Settings</button>
     </nav>
 
@@ -203,6 +205,60 @@
           <button type="submit" class="btn btn-primary">Update Password</button>
         </div>
       </form>
+    </section>
+
+    <!-- Bands Tab (REC HUB 乐队) -->
+    <section id="tab-bands" class="dash-panel" hidden>
+      <div class="panel-head">
+        <h2>Bands（乐队）</h2>
+        <button type="button" class="btn btn-primary" id="band-add-btn">+ Add Band</button>
+      </div>
+
+      <div id="band-form-wrap" class="form-wrap" hidden>
+        <h3 id="band-form-title">Add Band</h3>
+        <form id="band-form">
+          <input type="hidden" id="band-id" />
+          <label class="field">Band name
+            <input type="text" id="band-name" required maxlength="80" placeholder="e.g. 回声乐队" />
+          </label>
+          <label class="field">Description
+            <textarea id="band-description" rows="2" maxlength="500" placeholder="Optional note about this band"></textarea>
+          </label>
+          <p class="field-hint">REC HUB recordings are private to their band. Band members join through invite codes (Invites tab) or by selecting the band in their own profile.</p>
+          <p id="band-status" class="upload-status" hidden></p>
+          <div class="form-actions">
+            <button type="submit" class="btn btn-primary">Save Band</button>
+            <button type="button" class="btn btn-ghost" id="band-cancel-btn">Cancel</button>
+          </div>
+        </form>
+      </div>
+
+      <div id="band-list" class="list"></div>
+    </section>
+
+    <!-- Invites Tab (REC HUB 邀请码) -->
+    <section id="tab-invites" class="dash-panel" hidden>
+      <div class="panel-head">
+        <h2>Invite Codes（邀请码）</h2>
+        <button type="button" class="btn btn-primary" id="invite-add-btn">+ New Invite Code</button>
+      </div>
+
+      <div id="invite-form-wrap" class="form-wrap" hidden>
+        <h3>New Invite Code</h3>
+        <form id="invite-form">
+          <label class="field">Band
+            <select id="invite-band" required></select>
+          </label>
+          <p class="field-hint">The code IS the login credential: the first person to use it creates their account and auto-joins this band. The same code logs that same account back in.</p>
+          <p id="invite-status" class="upload-status" hidden></p>
+          <div class="form-actions">
+            <button type="submit" class="btn btn-primary">Generate</button>
+            <button type="button" class="btn btn-ghost" id="invite-cancel-btn">Cancel</button>
+          </div>
+        </form>
+      </div>
+
+      <div id="invite-list" class="list"></div>
     </section>
   </div>
 

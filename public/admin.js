@@ -165,9 +165,165 @@ document.querySelectorAll(".dash-tab").forEach((tab) => {
     document.querySelectorAll(".dash-tab").forEach((t) => t.classList.remove("active"));
     tab.classList.add("active");
     document.querySelectorAll(".dash-panel").forEach((p) => (p.hidden = true));
-    $("#tab-" + tab.dataset.tab).hidden = false;
+    $(".dash-panel#tab-" + tab.dataset.tab).hidden = false;
   });
 });
+
+/* ── Bands (REC HUB 乐队) ──────────────────────────────── */
+async function loadBands() {
+  const data = await api("/api/admin/bands");
+  const list = $("#band-list");
+  const bands = data.bands || [];
+  if (!bands.length) {
+    list.innerHTML =
+      '<p class="empty-note">No bands yet — create one above. Band members join via invite codes.</p>';
+    return;
+  }
+  list.innerHTML = bands
+    .map((b) => {
+      const members = (b.members || [])
+        .map((m) => escapeHTML(m.nickname || m.username))
+        .join(", ");
+      const sub = [
+        `${b.member_count || 0} member${b.member_count === 1 ? "" : "s"}`,
+        b.description ? escapeHTML(b.description) : "",
+      ]
+        .filter(Boolean)
+        .join(" · ");
+      return `
+      <div class="item-card">
+        <div class="item-info">
+          <div class="item-title">${escapeHTML(b.name)}</div>
+          <div class="item-sub">${sub}</div>
+          ${members ? `<div class="item-sub">Members: ${members}</div>` : ""}
+        </div>
+        <div class="item-actions">
+          <button type="button" class="btn btn-danger btn-sm" data-action="delete-band" data-id="${b.id}">Delete</button>
+        </div>
+      </div>`;
+    })
+    .join("");
+  applyListPager(list, ".item-card");
+}
+
+function showBandForm(band = null) {
+  $("#band-form-wrap").hidden = false;
+  $("#band-form-title").textContent = band ? "Edit Band" : "Add Band";
+  $("#band-id").value = band ? band.id : "";
+  $("#band-name").value = band ? band.name : "";
+  $("#band-description").value = band ? band.description || "" : "";
+  setUploadStatus($("#band-status"), null);
+  $("#band-name").focus();
+}
+
+function hideBandForm() {
+  $("#band-form-wrap").hidden = true;
+  $("#band-form").reset();
+}
+
+$("#band-add-btn").addEventListener("click", () => showBandForm());
+
+$("#band-cancel-btn").addEventListener("click", hideBandForm);
+
+$("#band-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const id = $("#band-id").value;
+  const payload = {
+    name: $("#band-name").value.trim(),
+    description: $("#band-description").value.trim(),
+  };
+  try {
+    if (id) {
+      // The admin API has no band rename endpoint — keep it additive/simple.
+      await api(`/api/admin/bands/${id}`, { method: "PUT", body: JSON.stringify(payload) });
+    } else {
+      await api("/api/admin/bands", { method: "POST", body: JSON.stringify(payload) });
+    }
+    hideBandForm();
+    await loadBands();
+  } catch (err) {
+    setUploadStatus($("#band-status"), "err", "✗ " + err.message);
+  }
+});
+
+/* ── Invite codes (REC HUB 邀请码) ─────────────────────── */
+async function loadInvites() {
+  const data = await api("/api/admin/invites");
+  const list = $("#invite-list");
+  const invites = data.invites || [];
+  if (!invites.length) {
+    list.innerHTML =
+      '<p class="empty-note">No invite codes yet — generate one for a band. The first person to use a code creates their account.</p>';
+    return;
+  }
+  list.innerHTML = invites
+    .map((inv) => {
+      const used = inv.used_by
+        ? `used by ${escapeHTML(inv.used_nickname || inv.used_username || "?")}`
+        : "unused";
+      const copyBtn = inv.used_by
+        ? ""
+        : `<button type="button" class="btn btn-ghost btn-sm invite-copy" data-code="${escapeHTML(inv.code)}" title="Copy invite code">Copy</button>`;
+      return `
+      <div class="item-card">
+        <div class="item-info">
+          <div class="item-title invite-title">
+            <code class="invite-code">${escapeHTML(inv.code)}</code>
+            <span class="src-badge">${escapeHTML(inv.band_name || "?")}</span>
+          </div>
+          <div class="item-sub">${used} · created ${escapeHTML(String(inv.created_at || ""))}</div>
+        </div>
+        <div class="item-actions">
+          ${copyBtn}
+          <button type="button" class="btn btn-danger btn-sm" data-action="delete-invite" data-id="${inv.id}">Delete</button>
+        </div>
+      </div>`;
+    })
+    .join("");
+  applyListPager(list, ".item-card");
+}
+
+async function showInviteForm() {
+  const data = await api("/api/admin/bands");
+  const select = $("#invite-band");
+  select.innerHTML = data.bands
+    .map((b) => `<option value="${b.id}">${escapeHTML(b.name)}</option>`)
+    .join("");
+  if (!data.bands.length) {
+    setUploadStatus($("#invite-status"), "err", "✗ Create a band first.");
+    return;
+  }
+  $("#invite-form-wrap").hidden = false;
+  setUploadStatus($("#invite-status"), null);
+  select.focus();
+}
+
+function hideInviteForm() {
+  $("#invite-form-wrap").hidden = true;
+  $("#invite-form").reset();
+}
+
+$("#invite-add-btn").addEventListener("click", showInviteForm);
+
+$("#invite-cancel-btn").addEventListener("click", hideInviteForm);
+
+$("#invite-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const statusEl = $("#invite-status");
+  setUploadStatus(statusEl, "uploading", "Generating…");
+  try {
+    const data = await api("/api/admin/invites", {
+      method: "POST",
+      body: JSON.stringify({ band_id: Number($("#invite-band").value) }),
+    });
+    setUploadStatus(statusEl, "ok", `✓ New code: ${data.invite.code}`);
+    hideInviteForm();
+    await loadInvites();
+  } catch (err) {
+    setUploadStatus(statusEl, "err", "✗ " + err.message);
+  }
+});
+
 
 /* ── Music CRUD ────────────────────────────────────────── */
 /* Collapse an admin list (#music-list / #blog-list) to the first
@@ -922,11 +1078,43 @@ listsContainer.addEventListener("click", async (e) => {
       alert(err.message);
     }
   }
+
+  if (action === "delete-band") {
+    if (!confirm("Delete this band? Its recordings stay but become public, and its invite codes stop working.")) return;
+    try {
+      await api(`/api/admin/bands/${id}`, { method: "DELETE" });
+      await loadBands();
+    } catch (err) {
+      alert(err.message);
+    }
+  }
+
+  if (action === "delete-invite") {
+    if (!confirm("Delete this invite code? The linked account keeps its bands.")) return;
+    try {
+      await api(`/api/admin/invites/${id}`, { method: "DELETE" });
+      await loadInvites();
+    } catch (err) {
+      alert(err.message);
+    }
+  }
+
+  const copyBtn = e.target.closest(".invite-copy");
+  if (copyBtn) {
+    try {
+      await navigator.clipboard.writeText(copyBtn.dataset.code);
+      const old = copyBtn.textContent;
+      copyBtn.textContent = "✓ Copied";
+      setTimeout(() => (copyBtn.textContent = old), 1500);
+    } catch (err) {
+      alert("Copy failed: " + err.message);
+    }
+  }
 });
 
 /* ── Init ──────────────────────────────────────────────── */
 async function loadAll() {
-  await Promise.all([loadMusic(), loadBlog()]);
+  await Promise.all([loadMusic(), loadBlog(), loadBands(), loadInvites()]);
 }
 
 function escapeHTML(str) {
