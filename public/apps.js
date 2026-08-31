@@ -8,27 +8,64 @@ const gallery = $("apps-gallery");
 const detail = $("app-detail");
 const panels = { calendar: $("app-calendar"), fx: $("app-fx"), rechub: $("app-rechub"), vinyl: $("app-vinyl") };
 
+// Direct-access URLs — every app also lives at https://<domain>/{path}
+// (server serves the single-page index.html shell; see server.js APP_PATHS).
+// Visiting one auto-opens that app as a standalone page.
+const APP_PATHS = {
+  "/calendar": { key: "calendar", title: "FX Holiday Calendar" },
+  "/fx":       { key: "fx",       title: "FX Market Watch" },
+  "/rec-hub":  { key: "rechub",   title: "REC HUB" },
+  "/vinyl":    { key: "vinyl",    title: "黑胶档案 · Vinyl Archive" },
+};
+
+function openApp(target, opts = {}) {
+  gallery.hidden = true;
+  detail.hidden = false;
+  Object.entries(panels).forEach(([k, el]) => { el.hidden = k !== target; });
+
+  if (target === "calendar") initCalendar();
+  if (target === "fx") initFx();
+  if (target === "vinyl") window.VinylArchive && window.VinylArchive.init();
+
+  if (opts.standalone) {
+    document.body.classList.add("app-standalone");
+    if (opts.title) document.title = `${opts.title} · BEN 言`;
+    const apps = $("apps");
+    if (apps && apps.scrollIntoView) apps.scrollIntoView();
+    else window.scrollTo(0, 0);
+  }
+}
+
 document.querySelectorAll(".app-open").forEach((btn) => {
   btn.addEventListener("click", () => {
     const target = btn.dataset.target;
     // Buttons that reuse .app-open purely for styling (e.g. in-app actions)
     // carry no data-target — leave them to their own handlers.
     if (!target) return;
-    gallery.hidden = true;
-    detail.hidden = false;
-    Object.entries(panels).forEach(([k, el]) => { el.hidden = k !== target; });
-
-    if (target === "calendar") initCalendar();
-    if (target === "fx") initFx();
-    if (target === "vinyl") window.VinylArchive && window.VinylArchive.init();
+    openApp(target);
   });
 });
 
 $("app-detail-close").addEventListener("click", () => {
+  if (document.body.classList.contains("app-standalone")) {
+    // Standalone app page (domain/{path}) — closing leaves the app.
+    window.location.href = "/";
+    return;
+  }
   detail.hidden = true;
   gallery.hidden = false;
   if (window.VinylArchive) window.VinylArchive.stop();
 });
+
+// Open the app when the page was loaded at one of its direct paths. Runs
+// after DOM ready so vinyl.js (loaded after apps.js) has defined
+// window.VinylArchive before we may call into it.
+function bootFromPath() {
+  const hit = APP_PATHS[location.pathname];
+  if (hit) openApp(hit.key, { standalone: true, title: hit.title });
+}
+if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", bootFromPath);
+else bootFromPath();
 
 /* ── App 1: FX Holiday Calendar ─────────────────────────── */
 const CURRENCY_NAMES = {

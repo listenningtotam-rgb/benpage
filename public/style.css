@@ -1042,6 +1042,26 @@ body {
   transform: scale(0.96);
 }
 
+.app-actions {
+  display: flex;
+  align-items: center;
+  gap: 1.1rem;
+  margin-top: 0.2rem;
+}
+
+.app-direct {
+  font-size: 0.78rem;
+  color: rgba(255,255,255,0.45);
+  text-decoration: none;
+  letter-spacing: 0.03em;
+  white-space: nowrap;
+  transition: color 0.2s ease;
+}
+
+.app-direct:hover {
+  color: #7ec8e3;
+}
+
 /* App detail panel */
 #app-detail {
   width: 100%;
@@ -1080,6 +1100,29 @@ body {
   font-weight: 700;
   letter-spacing: 0.05em;
   margin-bottom: 1.4rem;
+}
+
+/* Direct app URLs (https://<domain>/{path}) — show only the app itself:
+   hide every other section so the panel reads as a standalone app page. */
+body.app-standalone .section:not(#apps) {
+  display: none;
+}
+
+body.app-standalone #nav-links,
+body.app-standalone #hint,
+body.app-standalone .scroll-indicator {
+  display: none;
+}
+
+body.app-standalone #apps {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+
+body.app-standalone #app-detail {
+  max-width: 980px;
 }
 
 /* FX Holiday Calendar */

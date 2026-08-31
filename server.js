@@ -9,6 +9,19 @@ const jpeg = require("jpeg-js");
 const PORT = process.env.PORT || 3000;
 const publicDir = path.join(__dirname, "public");
 
+// App direct-access paths — every app in the Apps gallery gets a clean
+// /{path} route (https://<domain>/<path>) based on its name. All apps live
+// in the single-page index.html shell; public/apps.js (APP_PATHS) opens the
+// matching panel for the current pathname. /admin serves the same standalone
+// console as /admin.html, just at a cleaner URL.
+const APP_PATHS = {
+  "/calendar": "index.html", // FX Holiday Calendar
+  "/fx": "index.html",       // FX Market Watch
+  "/rec-hub": "index.html",  // REC HUB
+  "/vinyl": "index.html",    // Vinyl Archive — exact path only; /vinyl/:slug stays a share page
+  "/admin": "admin.html",    // Admin console
+};
+
 // Hosts/domain that are allowed to call the API.
 // - localhost / 127.0.0.1 / ::1 are always allowed (local dev, curl on the box).
 // - ALLOWED_HOSTS: comma-separated hostnames, e.g. "example.com,www.example.com"
@@ -2533,6 +2546,13 @@ const server = http.createServer((req, res) => {
       "Cache-Control": "no-store",
     });
     res.end(`window.SITE_URL=${JSON.stringify(siteBase(req)).replace(/</g, "\\u003c")};`);
+    return;
+  }
+
+  // App direct-access pages — https://<domain>/{path} opens the app directly
+  // (same single-page index.html shell; apps.js auto-opens the right panel).
+  if ((req.method === "GET" || req.method === "HEAD") && APP_PATHS[urlPath]) {
+    serveFileWithCache(req, res, path.join(publicDir, APP_PATHS[urlPath]), "no-cache");
     return;
   }
 
