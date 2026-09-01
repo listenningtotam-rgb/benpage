@@ -1045,11 +1045,26 @@ async function playIOSMix(commit, extra) {
   if (commit.repo_id) countRepoPlay(commit.repo_id);
 }
 
+/* One OfflineAudioContext reused for decode-only work across every iOS render.
+   decodeAudioData is stateless, so a single decoder serves all renders. iOS
+   caps WebAudio contexts (~4/page) and an OfflineAudioContext that stays
+   referenced is never released by the runtime, so the old per-play `dec` +
+   `mix` pair leaked TWO contexts per playback. After a record session (root
+   play → take analysis → "with original" preview) the FIRST play of the
+   freshly-committed overlay created two more and blew the cap — the render
+   threw and playback fell back to the commit's own file (the solo take only).
+   The second play worked because iOS had meanwhile collected the completed
+   render contexts. Reusing the decoder keeps every play at ONE new context
+   (the mix), which is transient: it drops out of scope once rendered and is
+   collected by the engine (OAC has no close() on spec-compliant engines; see
+   the finally below). */
+let iosMixDecoder = null;
+
 /* Decode every chain layer, render the mix offline, and return a WAV Blob. */
 async function renderIOSMixBlob(commit, extra) {
   const RATE = 44100;
   const OAC = window.OfflineAudioContext || window.webkitOfflineAudioContext;
-  const dec = new OAC(2, 1, RATE); // decoder only — its length is irrelevant
+  const dec = iosMixDecoder || (iosMixDecoder = new OAC(2, 1, RATE)); // decoder only — its length is irrelevant
   const layers = [];
   for (const { commit: c, offset } of buildChain(commit)) {
     const layer = await decodeLayer(dec, c.url);
@@ -1082,24 +1097,33 @@ async function renderIOSMixBlob(commit, extra) {
   }
   const len = Math.min(600, Math.max(1, total)) * RATE; // ≤ 10 min safety cap
   const mix = new OAC(2, Math.ceil(len), RATE);
-  for (const l of layers) {
-    const bufDur = l.buffer.duration || 0;
-    const readOff = l.readOff >= bufDur ? Math.max(0, bufDur - 0.001) : l.readOff;
-    const readDur = l.dur != null ? l.dur : Math.max(0.05, bufDur - readOff);
-    const src = mix.createBufferSource();
-    src.buffer = l.buffer;
-    const g = mix.createGain();
-    g.gain.value = isFinite(l.gain) && l.gain >= 0 ? Math.min(3, l.gain) : 1;
-    src.connect(g);
-    g.connect(mix.destination);
-    src.start(l.offset, readOff, readDur);
+  try {
+    for (const l of layers) {
+      const bufDur = l.buffer.duration || 0;
+      const readOff = l.readOff >= bufDur ? Math.max(0, bufDur - 0.001) : l.readOff;
+      const readDur = l.dur != null ? l.dur : Math.max(0.05, bufDur - readOff);
+      const src = mix.createBufferSource();
+      src.buffer = l.buffer;
+      const g = mix.createGain();
+      g.gain.value = isFinite(l.gain) && l.gain >= 0 ? Math.min(3, l.gain) : 1;
+      src.connect(g);
+      g.connect(mix.destination);
+      src.start(l.offset, readOff, readDur);
+    }
+    const rendered = await renderOffline(mix);
+    const ch0 = rendered.getChannelData(0);
+    const ch1 = rendered.numberOfChannels > 1 ? rendered.getChannelData(1) : ch0;
+    const blob = encodeWavStereo(ch0, ch1, RATE);
+    if (!blob) throw new Error("mix encode produced nothing");
+    return blob;
+  } finally {
+    // Best-effort release of the render context: OfflineAudioContext inherits
+    // BaseAudioContext (not AudioContext), so close() is absent on
+    // spec-compliant engines and this is a no-op there — the context is simply
+    // left to GC after its render completes. Some engines do expose it
+    // (analyzeTake guards the same way), so calling it can only help.
+    try { if (typeof mix.close === "function") mix.close().catch(() => {}); } catch (_) {}
   }
-  const rendered = await renderOffline(mix);
-  const ch0 = rendered.getChannelData(0);
-  const ch1 = rendered.numberOfChannels > 1 ? rendered.getChannelData(1) : ch0;
-  const blob = encodeWavStereo(ch0, ch1, RATE);
-  if (!blob) throw new Error("mix encode produced nothing");
-  return blob;
 }
 
 /* "Take only" preview. Native <audio> with a blob: URL is unreliable on iOS
