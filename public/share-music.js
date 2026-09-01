@@ -43,6 +43,23 @@
     }
   };
 
+  // The visitor must NEVER hear the raw solo take while we render the mix: it
+  // sounds wrong ("where's the backing?") and the old code then paused it and
+  // demanded a second tap, which read as "mixing failed". Blank the src right
+  // away so the first audible play is the layered mix. (The raw file stays in
+  // the HTML for no-JS, and is restored below if the render fails.)
+  var rawSrc = audio.getAttribute("src");
+  // Any interaction while rendering (a tap on the player, the page, a scroll)
+  // is treated as "the visitor wants to listen" — when the mix is ready we try
+  // to start it for them. The native player's own click doesn't reliably reach
+  // the <audio> element once its src is blank, so watch the document instead.
+  var wantsPlay = false;
+  var onInteract = function () { wantsPlay = true; };
+  document.addEventListener("pointerdown", onInteract, { capture: true, passive: true });
+  audio.removeAttribute("src");
+  try { audio.load(); } catch (_) {}
+  status("⏳ rendering the layered mix…");
+
   /* decodeAudioData has promise and callback flavors; wrap both so we always
      settle with an AudioBuffer or an error (see public/music.js). */
   function decodeAudioCompat(ctx, ab) {
@@ -173,23 +190,25 @@
 
   renderMix()
     .then(function (mixUrl) {
-      // The visitor may have already hit play on the raw take while we were
-      // rendering — pause it so the swap doesn't yank the sound away mid-take.
-      var wasPlaying = !audio.paused && !audio.ended;
-      if (wasPlaying) {
-        try { audio.pause(); } catch (_) {}
-      }
       audio.removeAttribute("data-render");
+      document.removeEventListener("pointerdown", onInteract, { capture: true });
       audio.src = mixUrl;
-      if (wasPlaying) {
-        status("▶ mix ready — press play for the layered version");
-      } else {
-        status("");
+      status("");
+      // The visitor tapped/clicked while it was rendering — start the mix for
+      // them. A rejected play() (autoplay policy, or the gesture has long
+      // expired) just leaves the native control armed for the next tap.
+      if (wantsPlay) {
+        audio.play().catch(function () {
+          status("▶ tap play for the layered version");
+        });
       }
     })
     .catch(function () {
-      // Non-fatal: keep the version's own file as the fallback.
+      // Non-fatal: restore the version's own file as the fallback.
       audio.removeAttribute("data-render");
+      document.removeEventListener("pointerdown", onInteract, { capture: true });
+      audio.src = rawSrc || "";
+      try { audio.load(); } catch (_) {}
       status("");
     });
 })();
