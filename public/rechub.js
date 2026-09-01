@@ -173,6 +173,14 @@ function renderHub() {
         <span class="studio-checkout" id="studio-checkout">Nothing checked out — click a commit to record over it</span>
         <button type="button" class="rc-btn rc-btn-record" id="record-take-btn" disabled>● Record Take</button>
         <select id="studio-device" class="studio-device" title="Microphone used for takes — pick the real mic, not a loopback/stereo-mix device"></select>
+        <select id="studio-channel" class="studio-device" title="Which input channel to record + monitor: Left = interface input 1, Right = interface input 2, L+R = full mix (default). A single-channel device ignores this.">
+          <option value="both" ${inputChannelForTake() === "both" ? "selected" : ""}>L+R</option>
+          <option value="L" ${inputChannelForTake() === "L" ? "selected" : ""}>L(1)</option>
+          <option value="R" ${inputChannelForTake() === "R" ? "selected" : ""}>R(2)</option>
+        </select>
+        <label class="studio-phones" title="Hear your input live while recording. Wear headphones — an open speaker will feedback; your interface's hardware Direct Monitor button is zero-latency and tighter than this browser monitor.">
+          <input type="checkbox" id="studio-monitor" ${monitorForTake() ? "checked" : ""} /> 监听
+        </label>
         <label class="studio-phones" title="Headphones? Records the raw mic with the browser's echo canceller / noise suppressor turned off — the clearest take.">
           <input type="checkbox" id="studio-phones" ${localStorage.getItem(STUDIO_PHONES_KEY) === "1" ? "checked" : ""} /> Headphones
         </label>
@@ -239,13 +247,25 @@ function renderHub() {
   if (newBtn) newBtn.addEventListener("click", openNewRecording);
 
   if (profileDone) {
-    document.getElementById("record-take-btn").addEventListener("click", startTakeRecording);
+    document.getElementById("record-take-btn").addEventListener("click", openRecordSetup);
     document.getElementById("stop-playback-btn").addEventListener("click", stopPlayback);
     const phonesEl = document.getElementById("studio-phones");
     if (phonesEl) {
       phonesEl.checked = localStorage.getItem(STUDIO_PHONES_KEY) === "1";
       phonesEl.addEventListener("change", () =>
         localStorage.setItem(STUDIO_PHONES_KEY, phonesEl.checked ? "1" : "0")
+      );
+    }
+    const chanEl = document.getElementById("studio-channel");
+    if (chanEl) {
+      chanEl.addEventListener("change", () =>
+        localStorage.setItem(STUDIO_CHANNEL_KEY, chanEl.value)
+      );
+    }
+    const monitorEl = document.getElementById("studio-monitor");
+    if (monitorEl) {
+      monitorEl.addEventListener("change", () =>
+        localStorage.setItem(STUDIO_MONITOR_KEY, monitorEl.checked ? "1" : "0")
       );
     }
     const noBackingEl = document.getElementById("studio-no-backing");
@@ -255,7 +275,7 @@ function renderHub() {
         localStorage.setItem(STUDIO_MUTE_BACKING_KEY, noBackingEl.checked ? "1" : "0")
       );
     }
-    populateMicDevices();
+    populateMicDevices("studio-device");
   }
   renderRepos();
 }
@@ -1295,12 +1315,15 @@ function stopPlayback() {
 /* A take session: the checked-out commit's chain is used as backing — unless
    "No backing" is ticked in the studio bar, in which case the song is muted
    and the take is a cappella to the count-in ticks. Either way ONLY the dry
-   mic is recorded: the backing is never routed into the take and the mic is
-   never routed to the speakers (no monitoring), so playback cannot get into
-   the take. Previewing/committing is done afterwards. */
+   mic is recorded: the backing is never routed into the take, and the mic is
+   routed to the speakers only when the optional monitor is on — an output-only
+   parallel path (monitorInput), so it can never leak into the recorded take.
+   Previewing/committing is done afterwards. */
 const studio = {
   stream: null,
   recorder: null,
+  monitor: null, // { src, splitter, gain } live monitor — output-only, never recorded
+  pick: "both",  // input channel resolved for this session: "both" | "L" | "R"
   blob: null,
   blobUrl: null,
   takeDuration: 0,
@@ -1364,6 +1387,25 @@ const RECORD_AUDIO_CONSTRAINTS = {
 
 const STUDIO_PHONES_KEY = "studio_headphones";
 const STUDIO_MUTE_BACKING_KEY = "studio_mute_backing";
+const STUDIO_CHANNEL_KEY = "studio_input_channel";
+const STUDIO_MONITOR_KEY = "studio_monitor";
+
+/* Level of the optional input monitor (0..1). The monitor is a parallel
+   output-only path — the take recorder's sink gain stays pinned to 0, so
+   monitoring can never leak into the WAV. */
+const MONITOR_VOLUME = 0.7;
+
+/* Which input channel to record + monitor: "both" (full mix, the default),
+   "L" (interface input 1) or "R" (interface input 2). Set in the studio bar
+   and the record-setup dialog; read by both the take and new-recording paths. */
+function inputChannelForTake() {
+  const v = localStorage.getItem(STUDIO_CHANNEL_KEY);
+  return v === "L" || v === "R" ? v : "both";
+}
+
+function monitorForTake() {
+  return localStorage.getItem(STUDIO_MONITOR_KEY) === "1";
+}
 
 /* Mute the backing during a take? Default ON ("always"): with the song not
    playing, nothing can bleed from the speakers into the mic, so the take is
@@ -1381,17 +1423,20 @@ function muteBackingForTake() {
    cancel), turn them OFF and record the raw mic. Only when the backing is
    actually playing through speakers do they stay ON — they're the only defense
    against backing bleed. */
-function takeMicConstraints() {
+function takeMicConstraints(pick) {
+  // Picking a specific side (L/R) needs BOTH channels delivered — with 1 we'd
+  // only ever see the downmix and could not separate input 1 from input 2.
+  const channelCount = pick !== "both" ? 2 : 1;
   if (isIOS()) {
     // iOS Safari can return a silent capture when echo cancellation / AGC are
     // forced off, and its own DSP is solid — so on iOS keep the browser
     // defaults on regardless of the headphone / "No backing" flags.
     return { ...RECORD_AUDIO_CONSTRAINTS };
   }
-  if (localStorage.getItem(STUDIO_PHONES_KEY) === "1" || muteBackingForTake()) {
-    return { echoCancellation: false, noiseSuppression: false, autoGainControl: false, channelCount: 1 };
+  if (monitorForTake() || localStorage.getItem(STUDIO_PHONES_KEY) === "1" || muteBackingForTake()) {
+    return { echoCancellation: false, noiseSuppression: false, autoGainControl: false, channelCount };
   }
-  return { ...RECORD_AUDIO_CONSTRAINTS };
+  return { ...RECORD_AUDIO_CONSTRAINTS, channelCount };
 }
 
 /* iOS Safari identifies itself; its WebKit engine also powers Chrome/Firefox
@@ -1470,23 +1515,26 @@ function encodeWav(chunks, inRate, outRate) {
    container every Web Audio decodeAudioData (including iOS Safari) accepts.
    The blob timeline starts at the same instant the backing starts, so
    onTakeStopped aligns the take purely by its detected start_time. */
-function createTakeRecorder(ctx, stream) {
+function createTakeRecorder(ctx, stream, pick) {
   return createRecorder(ctx, stream, {
     // The recorder assembles the WAV itself (createRecorder → encodeWav); it is
     // delivered whole in onStop. No per-buffer accumulation needed here.
     onData: () => {},
     onStop: (wavBlob) => onTakeStopped(wavBlob),
-  });
+  }, pick);
 }
 
 /* Shared mic→recorder factory — PCM → WAV capture through an AudioContext on
    every browser (no MediaRecorder): guarantees a WAV take everywhere. */
-function createRecorder(ctxIn, stream, handlers) {
+function createRecorder(ctxIn, stream, handlers, pick) {
   // PCM → WAV capture through an AudioContext.
   const ownCtx = !ctxIn;
   const ctx = ctxIn || new (window.AudioContext || window.webkitAudioContext)();
   const src = ctx.createMediaStreamSource(stream);
-  const proc = ctx.createScriptProcessor(4096, 1, 1);
+  // Picking a specific side (L/R) needs BOTH input channels: a 1-input
+  // ScriptProcessor downmixes the stereo stream to mono before the callback,
+  // which would lose the side we must keep.
+  const proc = ctx.createScriptProcessor(4096, pick !== "both" ? 2 : 1, 1);
   const sink = ctx.createGain();
   sink.gain.value = 0; // pull the graph without feeding the mic back to the speakers
   src.connect(proc);
@@ -1499,6 +1547,17 @@ function createRecorder(ctxIn, stream, handlers) {
     if (!running) return;
     const ib = e.inputBuffer;
     const c0 = ib.getChannelData(0);
+    if (pick === "L") {
+      // interface input 1 only
+      pcm.push(new Float32Array(c0));
+      return;
+    }
+    if (pick === "R" && ib.numberOfChannels > 1) {
+      // interface input 2 only (a mono source upmixes both sides to the same
+      // signal, so this stays safe even if the device delivered one channel)
+      pcm.push(new Float32Array(ib.getChannelData(1)));
+      return;
+    }
     if (ib.numberOfChannels > 1) {
       const c1 = ib.getChannelData(1);
       const m = new Float32Array(c0.length);
@@ -1532,9 +1591,10 @@ async function getUserMic() {
   // backing track) — which is exactly the "parent sound in my take" symptom.
   const sel = document.getElementById("studio-device");
   const deviceId = sel && sel.value ? sel.value : "";
+  const pick = inputChannelForTake();
   const constraints = deviceId
-    ? { audio: { ...takeMicConstraints(), deviceId: { exact: deviceId } } }
-    : { audio: takeMicConstraints() };
+    ? { audio: { ...takeMicConstraints(pick), deviceId: { exact: deviceId } } }
+    : { audio: takeMicConstraints(pick) };
   try {
     return await navigator.mediaDevices.getUserMedia(constraints);
   } catch (_) {
@@ -1542,11 +1602,44 @@ async function getUserMic() {
     // KEEP the processing flags so echo cancellation still strips any backing
     // that bleeds into the mic. Bare browser defaults are the last resort.
     try {
-      return await navigator.mediaDevices.getUserMedia({ audio: takeMicConstraints() });
+      return await navigator.mediaDevices.getUserMedia({ audio: takeMicConstraints(pick) });
     } catch (_2) {
       return navigator.mediaDevices.getUserMedia({ audio: true });
     }
   }
+}
+
+/* Optional live monitor: route the mic to the headphones/speakers so the
+   player hears their input while recording. This is a PARALLEL output-only
+   path — the take recorder still captures the raw stream with its sink gain
+   pinned to 0, so monitoring can never leak into the WAV. Browser monitoring
+   adds ~20–40 ms of latency (fine for practicing); an interface's hardware
+   direct-monitor button (e.g. the Scarlett's) is zero-latency and tighter. */
+function monitorInput(ctx, stream, pick) {
+  let src;
+  try {
+    src = ctx.createMediaStreamSource(stream);
+  } catch (_) {
+    return null; // Web Audio capture unsupported — recording still works
+  }
+  const g = ctx.createGain();
+  g.gain.value = MONITOR_VOLUME;
+  // A mono device has nothing to pick: route its one channel to both ears.
+  const settings =
+    stream.getAudioTracks()[0] && stream.getAudioTracks()[0].getSettings
+      ? stream.getAudioTracks()[0].getSettings()
+      : null;
+  const eff = settings && settings.channelCount === 1 && pick !== "both" ? "both" : pick;
+  let splitter = null;
+  if (eff === "L" || eff === "R") {
+    splitter = ctx.createChannelSplitter(2);
+    src.connect(splitter);
+    splitter.connect(g, eff === "L" ? 0 : 1, 0); // that side to both ears
+  } else {
+    src.connect(g);
+  }
+  g.connect(ctx.destination);
+  return { src, splitter, gain: g };
 }
 
 /* Fixed backing level during a take session (0..1), applied only when the
@@ -1589,8 +1682,8 @@ function scheduleCountIn(ctx, backingStartAt, chainStartAt) {
   }
 }
 
-async function populateMicDevices() {
-  const sel = document.getElementById("studio-device");
+async function populateMicDevices(selOrId) {
+  const sel = typeof selOrId === "string" ? document.getElementById(selOrId) : selOrId;
   if (!sel) return;
   // Browsers only expose mic APIs on secure contexts (HTTPS) or localhost.
   if (!navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) {
@@ -1646,6 +1739,27 @@ async function startTakeRecording() {
   await ctx.resume().catch(() => {});
   studio.stream = stream;
   studio.backingCommit = commit;
+
+  // Resolve the chosen input channel against what the device actually
+  // delivered: a single-channel device has nothing to pick, so L/R falls back
+  // to the full mix.
+  let pick = inputChannelForTake();
+  const trackSettings =
+    stream.getAudioTracks()[0] && stream.getAudioTracks()[0].getSettings
+      ? stream.getAudioTracks()[0].getSettings()
+      : null;
+  if (trackSettings && trackSettings.channelCount === 1 && pick !== "both") {
+    pick = "both";
+    setStudioStatus("ℹ this input has a single channel — using L+R.", false);
+  }
+  studio.pick = pick;
+
+  // Optional live monitor, connected the moment the stream exists so the
+  // player hears the count-in AND their instrument. Output-only: the recorder
+  // below still captures the raw mic, so the monitor never reaches the WAV.
+  if (monitorForTake()) {
+    studio.monitor = monitorInput(ctx, stream, pick);
+  }
 
   const chain = buildChain(commit);
   const backingMuted = muteBackingForTake(); // "No backing" — only the ticks play
@@ -1706,10 +1820,11 @@ async function startTakeRecording() {
 
   // Record the RAW mic stream directly — same capture path as the initial
   // recording. The take is the clean dry mic: nothing from the backing or the
-  // AudioContext graph is connected to this recorder, and the mic is not
-  // routed to the speakers, so monitor playback can never contaminate the take.
+  // AudioContext graph is connected to this recorder. The optional monitor
+  // (monitorInput) is a separate output-only path, so listening back can never
+  // contaminate the take.
   studio.takeLevel = null;
-  studio.recorder = createTakeRecorder(ctx, stream);
+  studio.recorder = createTakeRecorder(ctx, stream, pick);
   if (!studio.recorder) {
     studio.recording = false;
     cleanupTakeMedia();
@@ -1787,6 +1902,12 @@ function showModal(html, onMount) {
 
 /* ── Take session lifecycle ────────────────────────────── */
 function cleanupTakeMedia() {
+  if (studio.monitor) {
+    try { studio.monitor.src.disconnect(); } catch (_) {}
+    try { if (studio.monitor.splitter) studio.monitor.splitter.disconnect(); } catch (_) {}
+    try { studio.monitor.gain.disconnect(); } catch (_) {}
+    studio.monitor = null;
+  }
   if (studio.stream) {
     studio.stream.getTracks().forEach((t) => t.stop());
     studio.stream = null;
@@ -1937,12 +2058,71 @@ function analyzeTake(blob) {
   });
 }
 
+/* "● Record Take" is two-phase: a small setup dialog first picks the input
+   device/channel and the monitor, THEN the existing count-in flow runs with
+   those choices. Without mic permission the browser hides device names, so the
+   dialog also acts as the permission trigger — the actual getUserMedia happens
+   on "Start count-in", inside the click. */
+function openRecordSetup() {
+  if (studio.recording || !hub.checkedOut) return;
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    startTakeRecording(); // surfaces the HTTPS/blocked error directly
+    return;
+  }
+  const repoId = hub.checkedOut.repoId;
+  const commit = (hub.commits.get(repoId) || []).find((c) => c.id === hub.checkedOut.commitId);
+  if (!commit) return;
+  showModal(`
+    <h3 class="rc-modal-title">Record over ${commitHash(commit.id)}</h3>
+    <p class="rc-modal-sub">Choose the input and how you monitor it — the count-in starts as soon as you hit Start.</p>
+    <label class="rc-field">Input device
+      <select id="setup-device" class="studio-device" title="Pick the interface's USB input, not a loopback / stereo-mix device"></select>
+    </label>
+    <label class="rc-field">Input channel ${isIOS() ? '<span class="rc-hint">(iOS records the device’s default mix)</span>' : ""}
+      <select id="setup-channel" ${isIOS() ? "disabled" : ""} title="Which physical input of the interface to record + monitor: Left = input 1, Right = input 2. A single-channel device ignores this and uses L+R.">
+        <option value="both">L+R both — full mix</option>
+        <option value="L">Left (1) — e.g. an instrument in interface input 1</option>
+        <option value="R">Right (2) — e.g. an instrument in interface input 2</option>
+      </select>
+    </label>
+    <label class="studio-phones" title="Hear your input live while recording. Browser monitoring adds ~20–40 ms latency (fine for practicing); keep speakers off to avoid feedback — wear headphones, or use your interface's hardware Direct Monitor button for zero-latency monitoring. The monitor never enters the recorded take.">
+      <input type="checkbox" id="setup-monitor" /> 监听 Monitor — hear your input while recording (wear headphones; an open speaker will feedback)
+    </label>
+    <div class="rc-modal-actions">
+      <button type="button" class="rc-btn rc-btn-ghost" id="setup-cancel-btn">Cancel</button>
+      <button type="button" class="rc-btn rc-btn-primary" id="setup-start-btn">Start count-in →</button>
+    </div>
+  `, (overlay) => {
+    const devSel = overlay.querySelector("#setup-device");
+    populateMicDevices(devSel);
+    const chSel = overlay.querySelector("#setup-channel");
+    chSel.value = inputChannelForTake();
+    const monEl = overlay.querySelector("#setup-monitor");
+    monEl.checked = monitorForTake();
+    overlay.querySelector("#setup-cancel-btn").addEventListener("click", () => closeModal());
+    overlay.querySelector("#setup-start-btn").addEventListener("click", () => {
+      // Persist the dialog's choices as the session defaults — the take and
+      // new-recording paths both read from here (localStorage + the bar select).
+      const barSel = document.getElementById("studio-device");
+      if (barSel && devSel.value) barSel.value = devSel.value;
+      if (devSel.value) localStorage.setItem("studio_mic_device", devSel.value);
+      localStorage.setItem(STUDIO_CHANNEL_KEY, chSel.value);
+      localStorage.setItem(STUDIO_MONITOR_KEY, monEl.checked ? "1" : "0");
+      closeModal();
+      startTakeRecording();
+    });
+  });
+}
+
 function showRecordSession() {
   const commit = studio.backingCommit;
   const backingMuted = muteBackingForTake();
-  const sub = backingMuted
+  let sub = backingMuted
     ? "No backing — the song is muted for this take, so nothing can bleed into the mic: you record clean a cappella to the four rising ticks (start singing as the last one ends). The recorder is already capturing from the instant the ticks begin, so anything you sing from the first note is recorded. The take is only the dry mic (nothing mixed in)."
     : "Count-in: four rising ticks — start singing as the last one ends. The recorder is already capturing from the instant the backing starts, so anything you sing from the first note is recorded. The take is only the dry mic (nothing mixed in); wearing headphones (tick “Headphones” in the studio bar) records the raw mic with no echo suppression — the clearest take.";
+  if (monitorForTake()) {
+    sub += " Monitor is on: you’re hearing your input through the browser — keep headphones on (an open speaker will feedback).";
+  }
   showModal(`
     <h3 class="rc-modal-title">Recording over ${commitHash(commit.id)}</h3>
     <p class="rc-modal-sub">${sub}</p>
@@ -2244,6 +2424,8 @@ let newRecRecorder = null;
 let newRecTimer = null;
 let newRecStart = 0;
 let newRecDuration = 0;
+let newRecCtx = null;      // explicit context for the mic-recording graph (so we can close it)
+let newRecMonitor = null;  // live monitor node for the mic-recording graph
 
 async function openNewRecording() {
   newRecBlob = null;
@@ -2289,6 +2471,7 @@ async function openNewRecording() {
       <button type="button" class="rc-btn rc-btn-ghost" id="new-stop-btn" hidden>■ Stop</button>
     </div>
     <p class="rc-source-status" id="new-source-status">Choose an audio source.</p>
+    <p class="rc-hint" id="new-mic-hint">● Record from mic uses the studio bar’s input device, input channel (L/R) and 监听 Monitor settings.</p>
     <div class="rc-timer-wrap" id="new-timer-wrap" hidden><span class="rc-timer" id="new-timer">0:00</span></div>
     <p class="rc-note">注意：上传录音，即用户承诺拥有录音全部版权及授权；禁止上传侵权、违规音频，谢谢。</p>
     <div class="rc-modal-actions">
@@ -2334,7 +2517,19 @@ async function startNewRec(overlay) {
     overlay.querySelector("#new-source-status").textContent = "✗ mic unavailable: " + err.message;
     return;
   }
-  newRecRecorder = createRecorder(null, newRecStream, {
+  // Explicit context (created inside this click, satisfying the autoplay
+  // policy) so stopNewRec / cancelNewRec can close it — createRecorder with a
+  // context passed in leaves context management to us.
+  newRecCtx = new (window.AudioContext || window.webkitAudioContext)();
+  const trackSettings =
+    newRecStream.getAudioTracks()[0] && newRecStream.getAudioTracks()[0].getSettings
+      ? newRecStream.getAudioTracks()[0].getSettings()
+      : null;
+  let pick = inputChannelForTake();
+  if (trackSettings && trackSettings.channelCount === 1 && pick !== "both") pick = "both";
+  // Same output-only live monitor as the take path — never reaches the WAV.
+  if (monitorForTake()) newRecMonitor = monitorInput(newRecCtx, newRecStream, pick);
+  newRecRecorder = createRecorder(newRecCtx, newRecStream, {
     // The recorder assembles the WAV itself; onStop delivers the finished blob.
     onData: () => {},
     onStop: (wavBlob) => {
@@ -2354,8 +2549,18 @@ async function startNewRec(overlay) {
       overlay.querySelector("#new-record-btn").hidden = false;
       overlay.querySelector("#new-stop-btn").hidden = true;
     },
-  });
+  }, pick);
   if (!newRecRecorder) {
+    if (newRecMonitor) {
+      try { newRecMonitor.src.disconnect(); } catch (_) {}
+      try { if (newRecMonitor.splitter) newRecMonitor.splitter.disconnect(); } catch (_) {}
+      try { newRecMonitor.gain.disconnect(); } catch (_) {}
+      newRecMonitor = null;
+    }
+    if (newRecCtx) {
+      try { newRecCtx.close().catch(() => {}); } catch (_) {}
+      newRecCtx = null;
+    }
     newRecStream.getTracks().forEach((t) => t.stop());
     newRecStream = null;
     overlay.querySelector("#new-source-status").textContent = "✗ this browser cannot record audio";
@@ -2380,6 +2585,17 @@ function stopNewRec(overlay) {
     newRecStream.getTracks().forEach((t) => t.stop());
     newRecStream = null;
   }
+  if (newRecMonitor) {
+    try { newRecMonitor.src.disconnect(); } catch (_) {}
+    try { if (newRecMonitor.splitter) newRecMonitor.splitter.disconnect(); } catch (_) {}
+    try { newRecMonitor.gain.disconnect(); } catch (_) {}
+    newRecMonitor = null;
+  }
+  if (newRecCtx) {
+    // Close AFTER recorder.stop() so onStop can still read ctx.sampleRate.
+    try { newRecCtx.close().catch(() => {}); } catch (_) {}
+    newRecCtx = null;
+  }
   clearInterval(newRecTimer);
   if (overlay) {
     overlay.querySelector("#new-timer-wrap").hidden = true;
@@ -2393,6 +2609,16 @@ function cancelNewRec() {
   if (newRecStream) {
     newRecStream.getTracks().forEach((t) => t.stop());
     newRecStream = null;
+  }
+  if (newRecMonitor) {
+    try { newRecMonitor.src.disconnect(); } catch (_) {}
+    try { if (newRecMonitor.splitter) newRecMonitor.splitter.disconnect(); } catch (_) {}
+    try { newRecMonitor.gain.disconnect(); } catch (_) {}
+    newRecMonitor = null;
+  }
+  if (newRecCtx) {
+    try { newRecCtx.close().catch(() => {}); } catch (_) {}
+    newRecCtx = null;
   }
   clearInterval(newRecTimer);
   if (newRecUrl && newRecUrl.startsWith("blob:")) URL.revokeObjectURL(newRecUrl);
