@@ -1647,8 +1647,11 @@ async function handleApi(req, res, urlPath) {
   }
 
   // ── Music audio upload (raw binary audio body) ───────
+  // Shared by the admin Recordings tab and the REC HUB studio (band members
+  // upload their takes here). Require a completed profile so members who
+  // never finished onboarding can't orphan audio files in /recordings.
   if (urlPath === "/api/music/upload" && req.method === "POST") {
-    if (!requireAuth()) return;
+    if (!requireProfile()) return;
     const buf = await readBuffer(req, MAX_AUDIO_UPLOAD_BYTES);
     if (!buf.length) {
       return json(res, 400, { error: "Empty file" });

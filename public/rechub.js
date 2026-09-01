@@ -2053,7 +2053,7 @@ async function uploadBlob(blob) {
       `Unsupported audio type: ${kind}. This site accepts WAV, MP3, or M4A (M4A is converted to WAV).`
     );
   }
-  const token = localStorage.getItem(TOKEN_KEY);
+  const token = getHubToken();
   const res = await fetch("/api/music/upload", {
     method: "POST",
     headers: token ? { Authorization: `Bearer ${token}` } : {},
