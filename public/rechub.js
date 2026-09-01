@@ -165,7 +165,7 @@ function renderHub() {
                  <input type="text" id="hub-invite-input" placeholder="Invite code" maxlength="64" />
                  <button type="submit" class="rc-btn rc-btn-primary">Sign in</button>
                </form>
-               <span class="hub-login-note">Sign in with your band's invite code to record takes &nbsp;·&nbsp; <a href="/admin.html">admin →</a></span>
+               <span class="hub-login-note">Sign in with your band's invite code to record takes</span>
                <span class="hub-login-error" id="hub-login-error"></span>
              </div>`
       }
