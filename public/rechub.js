@@ -303,6 +303,13 @@ function renderRepoCard(repo) {
   const head = commits[commits.length - 1] || null;
   const expanded = hub.expanded === repo.id;
   const canEdit = !!repo.can_edit;
+  // The export button downloads the current public version — the highest tag,
+  // exactly the commit the share button's /recording/:id page plays.
+  const latest = latestTaggedCommit(repo);
+  const exportTitle =
+    latest && latest.version != null
+      ? `Download the latest version v${latest.version}.0 — what the share link plays`
+      : "Download the latest commit";
   const card = document.createElement("div");
   card.className = "rc-repo";
   card.innerHTML = `
@@ -323,6 +330,7 @@ function renderRepoCard(repo) {
       </div>
       <div class="rc-repo-actions">
         ${repo.band_id ? "" : `<button type="button" class="rc-icon-btn" data-action="share-repo" data-repo="${repo.id}" title="Share">↗</button>`}
+        <button type="button" class="rc-icon-btn" data-action="export-repo" data-repo="${repo.id}" title="${exportTitle}">⬇</button>
         <button type="button" class="rc-icon-btn" data-action="toggle-repo" data-repo="${repo.id}" title="Commit history">${expanded ? "▾" : "▸"}</button>
         ${
           canEdit
@@ -338,6 +346,83 @@ function renderRepoCard(repo) {
     }
   `;
   return card;
+}
+
+/* ── Export (download) the latest public version ───────────────────────
+   The header ⬇ button downloads what the share link (/recording/:id) plays:
+   the repo's highest-tagged commit. Single takes download their own file;
+   an overlay take is rendered offline to a mix WAV first (the same
+   renderIOSMixBlob path iOS playback uses), so the exported audio matches
+   what listeners actually hear. */
+
+/* Keep a download filename safe on every OS: strip path separators and
+   reserved characters, then collapse runs of spaces. */
+function safeFileName(name) {
+  return (
+    String(name || "recording")
+      .replace(/[\\/:*?"<>|\u0000-\u001f]/g, " ")
+      .replace(/\s+/g, " ")
+      .replace(/^[.\s]+|[.\s]+$/g, "")
+      .trim() || "recording"
+  );
+}
+
+/* File extension of a URL (ignoring any ?token= query). */
+function fileExt(url) {
+  const m = String(url || "").split(/[?#]/)[0].match(/\.([a-zA-Z0-9]+)$/);
+  return m ? m[1].toLowerCase() : "wav";
+}
+
+/* The repo's current public version = the highest-tagged commit, or its head
+   when nothing is tagged yet (server-side twin: db.getLatestTaggedCommit). */
+function latestTaggedCommit(repo) {
+  const commits = hub.commits.get(repo.id) || [];
+  const tagged = commits.filter((c) => c.version != null).sort((a, b) => Number(b.version) - Number(a.version));
+  return tagged[0] || commits[commits.length - 1] || null;
+}
+
+/* Trigger a browser download of a same-origin / blob: URL under our own name.
+   audioUrl() appends the session token for banded (private) files. */
+function downloadFile(url, filename) {
+  const a = document.createElement("a");
+  a.href = audioUrl(url);
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+}
+
+async function exportRepo(repo) {
+  const c = latestTaggedCommit(repo);
+  if (!c || !c.url) {
+    alert("No audio to export for this recording yet.");
+    return;
+  }
+  const version = c.version != null ? ` v${c.version}.0` : "";
+  const base = safeFileName(repo.title);
+  if (c.mode === "overlay") {
+    setStudioStatus("⏳ rendering the layered mix for export…");
+    let blob;
+    try {
+      blob = await Promise.race([
+        renderIOSMixBlob(c),
+        new Promise((_, rej) => setTimeout(() => rej(new Error("render timed out")), 30000)),
+      ]);
+    } catch (err) {
+      // Render failed — still hand over the take's own file rather than nothing.
+      setStudioStatus(`⚠ could not render the mix (${err.message}) — exporting the take file alone.`, true);
+      downloadFile(c.url, `${base}${version} (take).${fileExt(c.url)}`);
+      return;
+    }
+    const url = URL.createObjectURL(blob);
+    downloadFile(url, `${base}${version} (mix).wav`);
+    // Keep the blob alive long enough for the download to finish.
+    setTimeout(() => { try { URL.revokeObjectURL(url); } catch (_) {} }, 30000);
+    setStudioStatus(`✔ exported ${base}${version} (mix).wav`);
+  } else {
+    downloadFile(c.url, `${base}${version}.${fileExt(c.url)}`);
+    setStudioStatus(`✔ exporting ${base}${version}.${fileExt(c.url)}`);
+  }
 }
 
 function renderCommitRows(repo, commits) {
@@ -425,6 +510,8 @@ function attachRepoListEvents() {
       if (repo && typeof window.openShareDialog === "function") {
         window.openShareDialog({ title: repo.title, path: `/recording/${repoId}` });
       }
+    } else if (action === "export-repo") {
+      if (repo) exportRepo(repo);
     } else if (action === "play-commit") {
       const c = findCommit(Number(btn.dataset.commit));
       if (!c) return;
