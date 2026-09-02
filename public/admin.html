@@ -168,9 +168,30 @@
               <button type="button" class="tb-btn" data-cmd="createLink" title="Insert link">🔗</button>
               <button type="button" class="tb-btn" data-cmd="insertImage" id="wysiwyg-img-btn" title="Insert image (upload)">🖼</button>
               <button type="button" class="tb-btn" data-cmd="insertVideo" id="wysiwyg-video-btn" title="Insert video (mp4 URL)">🎬</button>
+              <span class="tb-sep"></span>
+              <button type="button" class="tb-btn" data-cmd="insertVinyl" id="wysiwyg-vinyl-btn" title="Insert vinyl archive record (search → cover + details)">💿</button>
               <input type="file" id="wysiwyg-file" accept="image/*" hidden />
               <span class="upload-status" id="wysiwyg-upload-status" hidden></span>
             </div>
+
+            <!-- Vinyl archive picker: search records and insert cover + details into the post -->
+            <div id="vinyl-picker" class="vinyl-picker" hidden>
+              <div class="vinyl-picker-head">
+                <strong>💿 插入黑胶档案</strong>
+                <div class="vinyl-picker-head-right">
+                  <span class="upload-status" id="vinyl-picker-status" hidden></span>
+                  <button type="button" class="btn btn-ghost btn-sm" id="vinyl-picker-close" title="收起">✕ 收起</button>
+                </div>
+              </div>
+              <div class="vinyl-picker-search">
+                <input type="text" id="vinyl-picker-q" placeholder="搜 唱片 / 艺人 / 厂牌 / 编号…（清空 = 浏览全部档案）" />
+                <button type="button" class="btn btn-ghost btn-sm" id="vinyl-picker-browse-btn">📚 全部档案</button>
+                <button type="button" class="btn btn-ghost btn-sm" id="vinyl-picker-search-btn">🔍 搜索</button>
+              </div>
+              <p class="field-hint vinyl-picker-hint">搜索覆盖本站档案与 Discogs 在线数据库。点选结果，即把「封面 + 唱片详情」插入到正文当前光标处。</p>
+              <div id="vinyl-picker-results" class="vinyl-picker-results"></div>
+            </div>
+
             <div id="blog-editor" class="wysiwyg-editor" contenteditable="true" data-placeholder="Write your post… paste (Ctrl/⌘+V) or click 🖼 to insert a photo — it will appear right here in the text."></div>
           </div>
 

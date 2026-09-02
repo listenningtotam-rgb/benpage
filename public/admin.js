@@ -166,6 +166,7 @@ document.querySelectorAll(".dash-tab").forEach((tab) => {
     tab.classList.add("active");
     document.querySelectorAll(".dash-panel").forEach((p) => (p.hidden = true));
     $(".dash-panel#tab-" + tab.dataset.tab).hidden = false;
+    closeVinylPicker();
   });
 });
 
@@ -903,6 +904,10 @@ $("#blog-toolbar").addEventListener("mousedown", (e) => {
     document.execCommand("createLink", false, url);
     return;
   }
+  if (cmd === "insertVinyl") {
+    openVinylPicker();
+    return;
+  }
 
   blogEditor.focus();
   document.execCommand(cmd, false, btn.dataset.value || null);
@@ -944,6 +949,317 @@ blogEditor.addEventListener("paste", async (e) => {
     setTimeout(() => setUploadStatus(statusEl, null), 2500);
   } catch (err) {
     setUploadStatus(statusEl, "err", "✗ " + err.message);
+  }
+});
+
+/* ── 黑胶档案 picker：搜索并插入唱片详情 ────────────────── */
+/* 点击工具栏 💿 打开面板。正文光标在面板出现前被记住，点选结果后恢复
+   光标，并把内容插入编辑器：封面作为普通博客图片块（image），唱片详情
+   作为一个文本块（text）——因此存库后仍与现有的 3-block 模型一致，
+   公开页 / 分享页无需任何改动。 */
+let vinylPickerOpen = false;
+let vinylEditorRange = null;
+let vinylPickerReqId = 0; /* 丢弃并发请求的过期响应 */
+
+function setVinylStatus(state, text) {
+  setUploadStatus($("#vinyl-picker-status"), state, text);
+}
+
+/* 记住正文里的当前光标/选区。若光标已不在正文（例如正在操作搜索框），
+   保留上一次记录的值。 */
+function captureVinylEditorRange() {
+  const sel = window.getSelection();
+  if (!sel || sel.rangeCount === 0) return;
+  const range = sel.getRangeAt(0);
+  if (!blogEditor.contains(range.commonAncestorContainer)) return;
+  vinylEditorRange = range.cloneRange();
+}
+
+document.addEventListener("selectionchange", () => {
+  if (vinylPickerOpen) captureVinylEditorRange();
+});
+
+function openVinylPicker() {
+  if ($("#blog-form-wrap").hidden) return; // 需要先进入 New/Edit Post
+  const picker = $("#vinyl-picker");
+  if (!picker.hidden) {
+    $("#vinyl-picker-q").focus();
+    return;
+  }
+  blogEditor.focus();
+  captureVinylEditorRange();
+  vinylPickerOpen = true;
+  picker.hidden = false;
+  $("#vinyl-picker-q").value = "";
+  $("#vinyl-picker-results").innerHTML = "";
+  vinylPickerBrowse();
+  $("#vinyl-picker-q").focus();
+}
+
+function closeVinylPicker() {
+  vinylPickerOpen = false;
+  vinylEditorRange = null;
+  const picker = $("#vinyl-picker");
+  if (!picker || picker.hidden) return;
+  picker.hidden = true;
+  $("#vinyl-picker-results").innerHTML = "";
+  setVinylStatus(null);
+}
+
+function vinylRestoreEditorCaret() {
+  blogEditor.focus();
+  if (!vinylEditorRange) return;
+  const sel = window.getSelection();
+  try {
+    sel.removeAllRanges();
+    sel.addRange(vinylEditorRange);
+  } catch (_) {
+    /* stale range — 让光标停在 focus 后的默认位置 */
+  }
+}
+
+/* 统一取年份 / 封面 / 事实行（本地档案与 Discogs 字段略有差异） */
+function vinylYearOf(r) {
+  if (r.year != null && r.year !== "") return String(r.year);
+  return String(r.release_date || "").slice(0, 4);
+}
+
+function vinylArtOf(r) {
+  return String(r.cover_image || r.thumb || r.cover_path || "").trim();
+}
+
+function vinylFactLine(r) {
+  return [vinylYearOf(r), r.country, r.label, r.catalog_number]
+    .filter(Boolean)
+    .join(" · ");
+}
+
+function vinylFmtDuration(ms) {
+  const n = Number(ms);
+  if (!isFinite(n) || n <= 0) return "";
+  const total = Math.round(n / 1000);
+  return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, "0")}`;
+}
+
+function vinylRowsOf(kind, records) {
+  return (records || []).map((r) => ({
+    kind,
+    r,
+    title: String(r.title || ""),
+    artist: String(r.artist || ""),
+    art: vinylArtOf(r),
+    facts: vinylFactLine(r),
+  }));
+}
+
+function renderVinylPickerRows(rows) {
+  const listEl = $("#vinyl-picker-results");
+  listEl.innerHTML = "";
+  if (!rows.length) return;
+  const frag = document.createDocumentFragment();
+  rows.forEach((row) => {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "vinyl-pick-item";
+    btn.innerHTML =
+      (row.art
+        ? `<img class="vinyl-pick-thumb" src="${escapeHTML(row.art)}" alt="" loading="lazy" />`
+        : '<span class="vinyl-pick-thumb vinyl-pick-thumb-ph">💿</span>') +
+      '<span class="vinyl-pick-body">' +
+      `<span class="vinyl-pick-title">${escapeHTML(row.title)}</span>` +
+      `<span class="vinyl-pick-sub">${escapeHTML(row.artist || "未知艺人")}${row.facts ? " · " + escapeHTML(row.facts) : ""}</span>` +
+      "</span>" +
+      `<span class="vinyl-pick-tag tag-${row.kind}">${row.kind === "local" ? "本地档案" : "Discogs"}</span>` +
+      '<span class="vinyl-pick-go">插入 →</span>';
+    btn.addEventListener("click", () => pickVinylRow(row));
+    frag.appendChild(btn);
+  });
+  listEl.appendChild(frag);
+  listEl.querySelectorAll("img.vinyl-pick-thumb").forEach((img) => {
+    img.addEventListener("error", () => { img.hidden = true; }, { once: true });
+  });
+}
+
+/* 浏览档案：GET /api/vinyl（行内已含 tracks，无需再逐条取详情） */
+async function vinylPickerBrowse() {
+  const reqId = ++vinylPickerReqId;
+  setVinylStatus("uploading", "正在读取黑胶档案…");
+  $("#vinyl-picker-results").innerHTML = "";
+  let data;
+  try {
+    data = await api("/api/vinyl");
+  } catch (err) {
+    if (reqId !== vinylPickerReqId) return;
+    setVinylStatus("err", "✗ " + err.message);
+    return;
+  }
+  if (reqId !== vinylPickerReqId) return;
+  const rows = vinylRowsOf("local", data.records);
+  renderVinylPickerRows(rows);
+  setVinylStatus(
+    "ok",
+    rows.length
+      ? `档案共 ${rows.length} 张 — 输入关键词可同时搜索 Discogs。`
+      : "档案里还没有唱片。"
+  );
+}
+
+/* 搜索：POST /api/vinyl/search（本地档案 + Discogs） */
+async function vinylPickerSearch() {
+  const q = $("#vinyl-picker-q").value.trim();
+  if (!q) {
+    vinylPickerBrowse();
+    return;
+  }
+  const reqId = ++vinylPickerReqId;
+  setVinylStatus("uploading", "正在搜索黑胶档案 + Discogs…");
+  $("#vinyl-picker-results").innerHTML = "";
+  let data;
+  try {
+    data = await api("/api/vinyl/search", {
+      method: "POST",
+      body: JSON.stringify({ q }),
+    });
+  } catch (err) {
+    if (reqId !== vinylPickerReqId) return;
+    setVinylStatus("err", "✗ " + err.message);
+    return;
+  }
+  if (reqId !== vinylPickerReqId) return;
+  const rows = vinylRowsOf("local", data.local).concat(
+    vinylRowsOf("external", data.external)
+  );
+  renderVinylPickerRows(rows);
+  const nLocal = (data.local || []).length;
+  const nEx = (data.external || []).length;
+  let msg;
+  if (!rows.length) {
+    msg = "没有找到匹配的唱片，换个关键词再试。";
+  } else if (!data.externalEnabled) {
+    msg = `仅本地档案 ${nLocal} 条（未配置 Discogs token）— 点击结果插入。`;
+  } else {
+    msg = `结果 ${rows.length} 条（档案 ${nLocal} · Discogs ${nEx}）— 点击结果插入。`;
+    if (data.externalError) msg += " Discogs：" + data.externalError;
+  }
+  setVinylStatus("ok", msg);
+}
+
+/* 把一条来源（本地记录 or Discogs detail）规整为待插入详情。
+   publicVinylRow 与 discogs detail 字段名基本一致，可共用一套逻辑。 */
+function vinylNormalizeDetail(record, sharePath) {
+  const r = record || {};
+  const styles = []
+    .concat(r.genres || [], r.styles || [])
+    .filter(Boolean)
+    .slice(0, 6)
+    .join(" · ");
+  return {
+    title: String(r.title || ""),
+    artist: String(r.artist || ""),
+    facts: vinylFactLine(r),
+    styles,
+    cover: vinylArtOf(r),
+    tracks: (r.tracks || [])
+      .filter((t) => t && t.title)
+      .map((t) => ({
+        title: String(t.title),
+        duration: vinylFmtDuration(t.length_ms != null ? t.length_ms : t.length),
+      })),
+    sharePath,
+  };
+}
+
+/* 点选一条结果 → 取全量详情（Discogs 需实时 lookup）→ 插入正文 */
+async function pickVinylRow(row) {
+  const buttons = Array.from(
+    $("#vinyl-picker-results").querySelectorAll(".vinyl-pick-item")
+  );
+  buttons.forEach((b) => { b.disabled = true; });
+  setVinylStatus(
+    "uploading",
+    row.kind === "local" ? "正在整理档案详情…" : "正在从 Discogs 获取详情…"
+  );
+  let d;
+  let note = "";
+  if (row.kind === "local") {
+    // 档案行已含 tracks / 封面，直接规整即可。
+    d = vinylNormalizeDetail(row.r, `/vinyl/${row.r.slug || ""}`);
+  } else {
+    try {
+      const data = await api(
+        `/api/vinyl/lookup?discogs_id=${encodeURIComponent(row.r.discogs_id)}`
+      );
+      if (!data || !data.detail) throw new Error("Discogs 未返回详情");
+      d = vinylNormalizeDetail(
+        data.detail,
+        `/vinyl/discogs/${data.detail.discogs_id}`
+      );
+    } catch (err) {
+      // 详情失败时退而用搜索摘要插入（无曲目列表），并如实提示。
+      note = err.message;
+      d = vinylNormalizeDetail(row.r, `/vinyl/discogs/${row.r.discogs_id}`);
+    }
+  }
+  const isEmpty =
+    !d.title && !d.artist && !d.facts && !d.styles && !d.tracks.length;
+  if (isEmpty) {
+    buttons.forEach((b) => { b.disabled = false; });
+    setVinylStatus("err", "✗ 这个条目缺少可插入的信息。");
+    return;
+  }
+  insertVinylDetail(d);
+  closeVinylPicker();
+  const statusEl = $("#wysiwyg-upload-status");
+  const who = `${d.title}${d.artist ? " — " + d.artist : ""}`;
+  setUploadStatus(
+    statusEl,
+    "ok",
+    `✓ 已插入${note ? "（Discogs 详情获取失败，已用搜索摘要插入）" : ""}：${who}`
+  );
+  setTimeout(() => setUploadStatus(statusEl, null), 4000);
+}
+
+/* 组装并插入正文：封面 = image 块，详情 = 单个 text 块。
+   结构与编辑器其它插入一致（<p class="wysiwyg-img-wrap">… + <p><br /></p>），
+   保存时 htmlToBlocks 会把它们识别为 image/text 两类块。 */
+function insertVinylDetail(d) {
+  vinylRestoreEditorCaret();
+  const headParts = [d.title, d.artist].filter(Boolean);
+  let html = "";
+  if (d.cover) {
+    html +=
+      `<p class="wysiwyg-img-wrap"><img src="${escapeHTML(d.cover)}" ` +
+      `alt="${escapeHTML(headParts.join(" "))} cover" /></p>`;
+  }
+  html += '<div class="wysiwyg-vinyl">';
+  html += `<p><strong>${escapeHTML(d.title)}</strong>${
+    d.artist ? " — " + escapeHTML(d.artist) : ""
+  }</p>`;
+  if (d.facts) html += `<p>${escapeHTML(d.facts)}</p>`;
+  if (d.styles) html += `<p>${escapeHTML(d.styles)}</p>`;
+  if (d.tracks.length) {
+    html += "<ol>";
+    d.tracks.forEach((t) => {
+      html += `<li>${escapeHTML(
+        t.duration ? `${t.title} — ${t.duration}` : t.title
+      )}</li>`;
+    });
+    html += "</ol>";
+  }
+  if (d.sharePath) {
+    html += `<p><a href="${escapeHTML(d.sharePath)}">📀 打开黑胶档案分享页 ↗</a></p>`;
+  }
+  html += "</div><p><br /></p>";
+  document.execCommand("insertHTML", false, html);
+}
+
+$("#vinyl-picker-close").addEventListener("click", closeVinylPicker);
+$("#vinyl-picker-browse-btn").addEventListener("click", vinylPickerBrowse);
+$("#vinyl-picker-search-btn").addEventListener("click", vinylPickerSearch);
+$("#vinyl-picker-q").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") {
+    e.preventDefault();
+    vinylPickerSearch();
   }
 });
 
@@ -996,6 +1312,7 @@ async function loadBlog() {
 }
 
 function showBlogForm(post = null) {
+  closeVinylPicker();
   $("#blog-form-wrap").hidden = false;
   $("#blog-form-title").textContent = post ? "Edit Post" : "New Post";
   $("#blog-id").value = post ? post.id : "";
@@ -1010,6 +1327,7 @@ function showBlogForm(post = null) {
 function hideBlogForm() {
   $("#blog-form-wrap").hidden = true;
   blogEditor.innerHTML = "";
+  closeVinylPicker();
 }
 
 $("#blog-add-btn").addEventListener("click", () => showBlogForm());

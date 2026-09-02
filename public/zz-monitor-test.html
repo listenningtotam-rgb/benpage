@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>zz-monitor-test — TEMPORARY, delete after verification</title>
+<style>
+  body { font-family: system-ui, sans-serif; margin: 2rem; max-width: 48rem; }
+  h1 { font-size: 1.05rem; }
+  .row { display: flex; gap: 1rem; align-items: center; margin: .6rem 0; flex-wrap: wrap; }
+  select, button { font: inherit; padding: .3rem .5rem; }
+  canvas { width: 100%; height: 90px; background: #101418; border-radius: 6px; }
+  .lbl { font-size: .85rem; color: #666; }
+  #levels span { font-size: .9rem; }
+  #log { white-space: pre-wrap; font: 12px/1.5 ui-monospace, monospace; background: #f4f4f4; border-radius: 6px; padding: .6rem; max-height: 30vh; overflow: auto; }
+</style>
+</head>
+<body>
+  <h1>zz-monitor-test — input device / channel / monitor verification</h1>
+  <p class="lbl">Pluck the instrument (Scarlett input 1). ch0 should move with the instrument, ch1 should stay quiet. Picking L/R must route that side; with Monitor checked you hear yourself in the headphones. Browser monitoring latency ~20–40ms is expected.</p>
+  <div class="row">
+    <label>Device <select id="dev"></select></label>
+    <label>Channel <select id="chan"><option value="both">L+R</option><option value="L">Left (1)</option><option value="R">Right (2)</option></select></label>
+    <label><input type="checkbox" id="mon" checked /> Monitor</label>
+  </div>
+  <div class="row">
+    <button id="start">Start</button>
+    <button id="stop" disabled>Stop</button>
+    <span id="meta" class="lbl"></span>
+  </div>
+  <canvas id="cv" width="900" height="90"></canvas>
+  <div class="row" id="levels"></div>
+  <div id="log"></div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const log = (m) => { $("log").textContent = m + "\n" + $("log").textContent; };
+
+let stream = null, ctx = null, src = null, splitter = null;
+let mon = null; // { src, splitter, gain } returned by monitorInput
+let raf = 0;
+
+// ── exact copy of public/rechub.js: monitorInput ──
+const MONITOR_VOLUME = 0.7;
+function monitorInput(c, s, pick) {
+  let src;
+  try { src = c.createMediaStreamSource(s); } catch (_) { return null; }
+  const g = c.createGain();
+  g.gain.value = MONITOR_VOLUME;
+  const settings = s.getAudioTracks()[0] && s.getAudioTracks()[0].getSettings ? s.getAudioTracks()[0].getSettings() : null;
+  const eff = settings && settings.channelCount === 1 && pick !== "both" ? "both" : pick;
+  let splitter = null;
+  if (eff === "L" || eff === "R") {
+    splitter = c.createChannelSplitter(2);
+    src.connect(splitter);
+    splitter.connect(g, eff === "L" ? 0 : 1, 0);
+  } else {
+    src.connect(g);
+  }
+  g.connect(c.destination);
+  return { src, splitter, gain: g };
+}
+
+async function listDevices() {
+  const devs = (await navigator.mediaDevices.enumerateDevices()).filter(d => d.kind === "audioinput");
+  const sel = $("dev");
+  if (!devs.length) { sel.innerHTML = `<option value="">no audioinput devices</option>`; return; }
+  if (!devs.some(d => d.label)) { sel.innerHTML = `<option value="">Allow mic access to see devices</option>`; log("no labels yet — Start once to grant permission"); return; }
+  sel.innerHTML = devs.map(d => `<option value="${d.deviceId}">${d.label}</option>`).join("");
+  log("devices:\n" + devs.map(d => `  ${d.label}`).join("\n"));
+  const scarlett = devs.find(d => /scarlett/i.test(d.label));
+  if (scarlett) { sel.value = scarlett.deviceId; log("→ auto-selected Scarlett"); }
+}
+
+function rms(buf) {
+  let s = 0;
+  for (let i = 0; i < buf.length; i++) s += buf[i] * buf[i];
+  return Math.sqrt(s / buf.length);
+}
+
+
+async function start() {
+  await navigator.mediaDevices.getUserMedia({ audio: true }).catch(() => {}); // grant labels
+  await listDevices();
+  const deviceId = $("dev").value;
+  const pick = $("chan").value;
+  const channelCount = pick !== "both" ? 2 : 1;
+  // Same as rechub.js takeMicConstraints(pick) raw branch + exact deviceId.
+  const constraints = { audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false, channelCount, ...(deviceId ? { deviceId: { exact: deviceId } } : {}) } };
+  log("constraints: " + JSON.stringify(constraints.audio));
+  try { stream = await navigator.mediaDevices.getUserMedia(constraints); }
+  catch (e) { log("✗ getUserMedia: " + e.message); return; }
+  const st = stream.getAudioTracks()[0].getSettings();
+  const effPick = st.channelCount === 1 && pick !== "both" ? "both" : pick;
+  $("meta").textContent = `"${stream.getAudioTracks()[0].label}" — channelCount=${st.channelCount}, sampleRate=${st.sampleRate}`;
+  log(`stream: channelCount=${st.channelCount} → effective pick=${effPick}${effPick !== pick ? " (clamped — mono device)" : ""}`);
+
+  ctx = new (window.AudioContext || window.webkitAudioContext)();
+  await ctx.resume();
+  src = ctx.createMediaStreamSource(stream);
+  splitter = ctx.createChannelSplitter(2);
+  src.connect(splitter);
+  const an0 = ctx.createAnalyser(); an0.fftSize = 2048;
+  const an1 = ctx.createAnalyser(); an1.fftSize = 2048;
+  splitter.connect(an0, 0, 0);
+  splitter.connect(an1, 1, 0);
+  $("levels").innerHTML = `<span>ch0 (input 1): <b id="m0">…</b></span> &nbsp; <span>ch1 (input 2): <b id="m1">…</b></span>`;
+  const b0 = new Float32Array(an0.fftSize);
+  const b1 = new Float32Array(an1.fftSize);
+  const cv = $("cv").getContext("2d");
+  const tick = () => {
+    an0.getFloatTimeDomainData(b0);
+    an1.getFloatTimeDomainData(b1);
+    $("m0").textContent = rms(b0).toFixed(4);
+    $("m1").textContent = rms(b1).toFixed(4);
+    cv.clearRect(0, 0, cv.canvas.width, cv.canvas.height);
+    cv.strokeStyle = "#4fc3f7"; cv.beginPath();
+    for (let i = 0; i < b0.length; i++) { const y = 45 - b0[i] * 40; i ? cv.lineTo(i * cv.canvas.width / b0.length, y) : cv.moveTo(i * cv.canvas.width / b0.length, y); }
+    cv.stroke();
+    cv.strokeStyle = "#ffb74d"; cv.beginPath();
+    for (let i = 0; i < b1.length; i++) { const y = 45 - b1[i] * 40; i ? cv.lineTo(i * cv.canvas.width / b1.length, y) : cv.moveTo(i * cv.canvas.width / b1.length, y); }
+    cv.stroke();
+    raf = requestAnimationFrame(tick);
+  };
+  tick();
+
+  if ($("mon").checked) {
+    mon = monitorInput(ctx, stream, effPick);
+    log(mon ? `✓ monitor connected → destination (${mon.splitter ? "splitter " + (effPick === "L" ? "ch0→both ears" : "ch1→both ears") : "full mix"} @ 0.7) — you should hear the instrument in the headphones` : "✗ monitor FAILED (null)");
+  } else {
+    log("monitor OFF (checkbox unticked)");
+  }
+  $("start").disabled = true; $("stop").disabled = false;
+}
+
+function stopAll() {
+  cancelAnimationFrame(raf);
+  if (mon) {
+    try { mon.src.disconnect(); } catch (_) {}
+    try { if (mon.splitter) mon.splitter.disconnect(); } catch (_) {}
+    try { mon.gain.disconnect(); } catch (_) {}
+    mon = null;
+  }
+  try { if (src) src.disconnect(); } catch (_) {}
+  try { if (splitter) splitter.disconnect(); } catch (_) {}
+  if (stream) { stream.getTracks().forEach(t => t.stop()); stream = null; }
+  if (ctx) { try { ctx.close().catch(() => {}); } catch (_) {} ctx = null; }
+  $("start").disabled = false; $("stop").disabled = true;
+  log("stopped — monitor + analysers disconnected, tracks stopped, ctx closed");
+}
+
+$("start").addEventListener("click", start);
+$("stop").addEventListener("click", stopAll);
+listDevices();
+// Auto-run for headless smoke tests: zz-monitor-test.html?auto=1[&chan=L|R|both][&mon=0|1]
+if (location.search.indexOf("auto") !== -1) {
+  const sp = new URLSearchParams(location.search);
+  if (sp.get("chan")) document.getElementById("chan").value = sp.get("chan");
+  if (sp.has("mon")) document.getElementById("mon").checked = sp.get("mon") !== "0";
+  setTimeout(() => { if (!$("start").disabled) start(); }, 300);
+}
+</script>
+</body>
+</html>
