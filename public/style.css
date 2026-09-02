@@ -2803,6 +2803,57 @@ body.app-standalone #app-detail {
   transform: scale(0.96);
 }
 
+.vinyl-card-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.6rem;
+  margin-top: 0.7rem;
+}
+
+.vinyl-card-actions .vinyl-share-btn,
+.vinyl-card-actions .vinyl-fav-btn {
+  margin-top: 0;
+}
+
+.vinyl-fav-btn {
+  background: rgba(155, 226, 155, 0.14);
+  border: 1px solid rgba(155, 226, 155, 0.55);
+  color: #9be29b;
+  font-size: 0.85rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  padding: 0.55rem 1.3rem;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: background 0.2s ease, box-shadow 0.2s ease, transform 0.1s ease;
+}
+
+.vinyl-fav-btn:hover {
+  background: rgba(155, 226, 155, 0.24);
+  box-shadow: 0 0 18px rgba(155, 226, 155, 0.3);
+}
+
+.vinyl-fav-btn:active {
+  transform: scale(0.96);
+}
+
+.vinyl-fav-btn:disabled,
+.vinyl-fav-btn.is-faved {
+  cursor: default;
+  background: rgba(155, 226, 155, 0.06);
+  box-shadow: none;
+}
+
+.vinyl-fav-btn.is-faved {
+  border-color: rgba(155, 226, 155, 0.4);
+  opacity: 0.8;
+}
+
+.vinyl-fav-btn:disabled:hover {
+  box-shadow: none;
+}
+
 .vinyl-card-tracks {
   grid-column: 1 / -1;
   list-style: none;

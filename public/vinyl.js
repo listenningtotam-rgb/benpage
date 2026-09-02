@@ -1,8 +1,10 @@
 /* ── 黑胶档案 (Vinyl Archive) ─────────────────────────────────────────
- * Browse the archived vinyl collection, or search Discogs by text
- * (artist / album / label / catalog).  The result card shows the album
- * metadata (date, label, catalog, tracklist) and can generate a nostalgic
- * share page at /vinyl/:slug.
+ * Browse the local archive (= the 收藏库, records saved into the DB), or
+ * search Discogs by text (artist / album / label / catalog).  The result
+ * card shows the album metadata (date, label, catalog, tracklist) and can
+ * generate a nostalgic share page at /vinyl/:slug.  Live Discogs details
+ * can be favorited (♥ 收藏) into the local archive: the server downloads
+ * the cover and stores a vinyl_records row.
  * --------------------------------------------------------------------- */
 (function () {
   "use strict";
@@ -68,11 +70,14 @@
     }
   }
 
-  /* ── Browse the local archive ────────────────────────────────────── */
+  /* ── Browse the local archive (收藏库) ────────────────────────────────
+   * The search box doubles as an optional keyword filter over the saved
+   * archive; leaving it empty lists every 收藏 record in the DB. */
   function browseArchive() {
+    var q = ($("vinyl-text-query").value || "").trim();
     resultEl.innerHTML = "";
-    setStatus("正在读取档案…");
-    fetch("/api/vinyl")
+    setStatus("正在读取本地档案库…");
+    fetch("/api/vinyl" + (q ? "?q=" + encodeURIComponent(q) : ""))
       .then(function (res) {
         return res.json().then(function (data) {
           if (!res.ok) throw new Error(data.error || "HTTP " + res.status);
@@ -82,10 +87,20 @@
       .then(function (data) {
         var records = data.records || [];
         if (!records.length) {
-          setStatus("档案里还没有唱片。");
+          setStatus(
+            q
+              ? "本地档案库里没有匹配「" + q + "」的唱片。"
+              : "本地档案库还是空的 — 先用「🔍 搜索」在 Discogs 找到唱片，进入详情后点「♥ 收藏」即可存入。"
+          );
           return;
         }
-        setStatus("共 " + records.length + " 张唱片 — 点击任意一张查看详情，或生成分享页。");
+        setStatus(
+          "本地档案库共 " +
+            records.length +
+            " 张唱片" +
+            (q ? "（关键字「" + q + "」）" : "") +
+            " — 点击任意一张查看详情，或生成分享页。"
+        );
         resultEl.innerHTML =
           '<div class="vinyl-search-list">' +
           records
@@ -109,7 +124,8 @@
   function runTextSearch() {
     var q = ($("vinyl-text-query").value || "").trim();
     if (!q) {
-      setStatus("请输入文字描述（艺人 / 专辑 / 厂牌 / 编号）。");
+      // 不输入关键字 → 输出全部收藏（与「浏览档案」一致）
+      browseArchive();
       return;
     }
     resultEl.hidden = true;
@@ -162,7 +178,7 @@
     resultEl.innerHTML =
       '<div class="vinyl-search-list">' +
       (data.externalEnabled
-        ? '<p class="vinyl-card-note">数据来源：Discogs 数据库 — 点击条目查看详情（发行年份、艺术家、厂牌、曲目等），只做浏览，不会保存到服务器</p>'
+        ? '<p class="vinyl-card-note">数据来源：Discogs 数据库 — 点击条目查看详情（发行年份、艺术家、厂牌、曲目等）；需要保存时，进入详情后点「♥ 收藏」即可存入本地档案库</p>'
         : "") +
       cards.join("") +
       "</div>";
@@ -218,9 +234,10 @@
       });
   }
 
-  /* Fetch a Discogs release's full detail live and render it — no import,
-   * nothing is stored on the server, the share page (/vinyl/discogs/:id)
-   * re-fetches the same live data so it can never go stale. */
+  /* Fetch a Discogs release's full detail live and render it.  A lookup on
+   * its own stores nothing on the server (and the /vinyl/discogs/:id share
+   * page re-fetches the same live data); pressing 「♥ 收藏到本地档案库」 is the
+   * explicit opt-in that saves the release into the local archive. */
   function showDiscogsDetail(discogsId) {
     resultEl.innerHTML = "";
     setStatus("正在从 Discogs 获取条目 #" + discogsId + " 的详情…");
@@ -282,7 +299,10 @@
       '<p class="vinyl-card-note">数据来源：Discogs · Release #' +
       escHtml(d.discogs_id) +
       "</p>" +
+      '<div class="vinyl-card-actions">' +
       '<button type="button" class="vinyl-share-btn" id="vinyl-share-btn">生成分享页</button>' +
+      '<button type="button" class="vinyl-fav-btn" id="vinyl-fav-btn">♥ 收藏到本地档案库</button>' +
+      "</div>" +
       "</div>" +
       (tracks.length ? '<ol class="vinyl-card-tracks">' + tracks.join("") + "</ol>" : "") +
       "</div>";
@@ -298,6 +318,44 @@
         window.location.href = sharePath;
       }
     });
+    var favBtn = $("vinyl-fav-btn");
+    if (favBtn) favBtn.addEventListener("click", function () { favoriteDiscogsRelease(d); });
+  }
+
+  /* Save a live Discogs release into the local archive DB (收藏): the server
+   * downloads the cover locally and upserts a vinyl_records row, so the album
+   * shows up under 浏览档案 / local search / /vinyl/:slug from then on. */
+  function favoriteDiscogsRelease(d) {
+    var btn = $("vinyl-fav-btn");
+    if (!btn || btn.disabled) return;
+    var original = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = "收藏中…";
+    fetch("/api/vinyl/favorite", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ discogs_id: d.discogs_id }),
+    })
+      .then(function (res) {
+        return res.json().then(function (data) {
+          if (!res.ok) throw new Error(data.error || "HTTP " + res.status);
+          return data;
+        });
+      })
+      .then(function (data) {
+        btn.textContent = "✓ 已收藏到本地档案库";
+        btn.classList.add("is-faved");
+        setStatus(
+          data && data.already
+            ? "这张唱片已在本地档案库中 — 点「📚 浏览档案」即可看到。"
+            : "已收藏到本地档案库 — 点「📚 浏览档案」即可看到这张唱片。"
+        );
+      })
+      .catch(function (e) {
+        btn.disabled = false;
+        btn.textContent = original;
+        setStatus("收藏失败：" + (e.message || "网络错误"));
+      });
   }
 
   function fmtLen(ms) {
@@ -344,7 +402,10 @@
       '<p class="vinyl-card-facts">' +
       escHtml(facts.join(" · ")) +
       "</p>" +
+      '<div class="vinyl-card-actions">' +
       '<button type="button" class="vinyl-share-btn" id="vinyl-share-btn">生成分享页</button>' +
+      '<button type="button" class="vinyl-fav-btn is-faved" id="vinyl-fav-btn" disabled title="已收藏在本地档案库中">✓ 已在档案库</button>' +
+      "</div>" +
       "</div>" +
       '<ol class="vinyl-card-tracks">' +
       tracks.join("") +

@@ -1012,6 +1012,34 @@ function vinylFmtMs(ms) {
   return m + ":" + s;
 }
 
+/* URL-safe slug base from an album's artist/title — used when a Discogs
+   release is favorited into the local archive.  Chinese/non-Latin titles
+   collapse to an empty base, in which case discogs-<id> is used as-is. */
+function vinylSlugBase(title, artist) {
+  return String([artist, title].filter(Boolean).join(" "))
+    .toLowerCase()
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "") // strip diacritics
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 80);
+}
+
+/* Pick a slug that is unique across vinyl_records (the slug column is
+   UNIQUE).  Tries "base", then "base-2", "base-3"…, finally discogs-<id>. */
+function uniqueVinylSlug(discogsId, title, artist) {
+  const id = String(discogsId);
+  const base = vinylSlugBase(title, artist) || `discogs-${id}`;
+  let slug = base;
+  let n = 2;
+  while (db.getVinylRecord(slug)) {
+    slug = `${base}-${n}`;
+    n += 1;
+    if (n > 200) return `discogs-${id}`; // safety valve
+  }
+  return slug;
+}
+
 function renderVinylSharePage(req, rec) {
   const pub = publicVinylRow(rec);
   const tracks = pub.tracks || [];
@@ -2062,13 +2090,21 @@ async function handleApi(req, res, urlPath) {
   }
 
   // ── Vinyl Archive (黑胶档案) API ──────────────────────
-  //   GET  /api/vinyl               → public, list archive albums
+  //   GET  /api/vinyl               → public, list archive albums (收藏库);
+  //                                   optional ?q= keyword filters the list,
+  //                                   empty (no q) returns every favorite
   //   GET  /api/vinyl/:slug         → public, archive album detail
   //   POST /api/vinyl/:id/play      → public, bump a vinyl share-page play
   //   GET  /api/vinyl/lookup        → public, live Discogs release detail
   //                                   (fetched on demand, nothing is stored)
+  //   POST /api/vinyl/favorite      → public, save a Discogs release into the
+  //                                   local archive (收藏 to the DB, cover is
+  //                                   downloaded & stored locally as well)
   if (urlPath === "/api/vinyl" && req.method === "GET") {
-    return json(res, 200, { records: db.listVinylRecords().map(publicVinylRow) });
+    const raw = new URL(req.url, "http://localhost");
+    const q = cleanText(raw.searchParams.get("q"), 200).trim();
+    const rows = q ? db.searchVinylRecordsLocal(q) : db.listVinylRecords();
+    return json(res, 200, { records: rows.map(publicVinylRow) });
   }
 
   // Live Discogs release detail — proxies /releases/{id} on demand.  This is
@@ -2127,6 +2163,66 @@ async function handleApi(req, res, urlPath) {
       }
     }
     return json(res, 200, { local, external, externalEnabled: !!DISCOGS_TOKEN, externalError });
+  }
+
+  //   POST /api/vinyl/favorite → public, 收藏：把一张 Discogs 唱片保存进本地
+  //                               档案库（vinyl_records），封面下载到本地并计算
+  //                               感知哈希，之后 浏览档案 / 本地搜索 / 分享页
+  //                               /vinyl/:slug 都能直接使用。
+  if (urlPath === "/api/vinyl/favorite" && req.method === "POST") {
+    if (!checkShareRate(req)) return json(res, 429, { error: "Rate limit exceeded" });
+    if (!DISCOGS_TOKEN) {
+      return json(res, 400, {
+        error: "Discogs token 未配置 — 请设置 DISCOGS_TOKEN 或 data/.discogs-token",
+      });
+    }
+    const body = await readBody(req);
+    const discogsId = Number(body.discogs_id);
+    if (!Number.isInteger(discogsId) || discogsId <= 0) {
+      return json(res, 400, { error: "无效的 discogs_id" });
+    }
+    const mbid = `discogs-${discogsId}`;
+    // Idempotent: the release is already in the archive → nothing to redo.
+    const existing = db.getVinylRecordByMbid(mbid);
+    if (existing) {
+      return json(res, 200, { record: publicVinylRow(existing), already: true });
+    }
+
+    let imported;
+    try {
+      imported = await discogs.importRelease(discogsId); // fetch + cover download + hashes
+    } catch (e) {
+      return json(res, 502, { error: e.message || "收藏失败：无法获取 Discogs 条目" });
+    }
+    const { entry, cover, hashes } = imported;
+
+    let slug;
+    try {
+      slug = uniqueVinylSlug(discogsId, entry.title, entry.artist);
+      const artDir = path.join(publicDir, "vinyl-art");
+      fs.mkdirSync(artDir, { recursive: true });
+      fs.writeFileSync(path.join(artDir, `${slug}.jpg`), cover.buffer);
+    } catch (e) {
+      return json(res, 500, { error: "封面保存失败：" + (e.message || "disk error") });
+    }
+
+    const rec = db.upsertVinylRecord({
+      mbid: entry.mbid,
+      slug,
+      title: entry.title,
+      artist: entry.artist,
+      release_date: entry.release_date,
+      country: entry.country,
+      label: entry.label,
+      catalog_number: entry.catalog_number,
+      cover_path: `/vinyl-art/${slug}.jpg`,
+      ahash: hashes.ahash,
+      dhash: hashes.dhash,
+      tracks: entry.tracks,
+      source: "discogs",
+      discogs_id: entry.discogs_id,
+    });
+    return json(res, 201, { record: publicVinylRow(rec), already: false });
   }
 
   if (urlPath === "/api/blog" && req.method === "POST") {

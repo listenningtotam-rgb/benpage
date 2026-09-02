@@ -95,7 +95,7 @@
           <div class="app-thumb"><div class="thumb-widget thumb-vinyl"><div class="thumb-vinyl-disc"><div class="thumb-vinyl-art"><img src="/vinyl-art/dark-side-of-the-moon.jpg" alt="" /></div><div class="thumb-vinyl-hole"></div></div><span class="thumb-vinyl-label">黑胶档案</span></div></div>
           <div class="app-body">
             <h3 class="app-title">黑胶档案</h3>
-            <p class="app-desc">Vinyl Archive — 拍一张黑胶封面识别，或直接文字搜索 Discogs 唱片库；点击结果查看发行年份、艺术家、唱片公司、完整曲目，并生成一张复古风分享页（不保存到服务器）。</p>
+            <p class="app-desc">Vinyl Archive — 浏览本地档案库（你收藏进数据库的黑胶），或按艺人 / 专辑 / 厂牌 / 编号搜索 Discogs 唱片库；点击结果查看发行年份、唱片公司、完整曲目，可一键收藏进本地档案库，并生成一张复古风分享页。</p>
             <div class="app-actions">
               <button type="button" class="app-open" data-target="vinyl">Open App</button>
               <a class="app-direct" href="/vinyl">/vinyl ↗</a>
@@ -171,13 +171,13 @@
 
         <div id="app-vinyl" class="app-panel" hidden>
           <h3 class="app-panel-title">黑胶档案 · Vinyl Archive</h3>
-          <p class="cal-caption">浏览已归档的黑胶专辑，或输入文字描述（艺人 / 专辑 / 厂牌 / 编号）从 Discogs 唱片库搜索 —— 点击结果查看发行年份、唱片公司、完整曲目，并生成一张复古分享页。</p>
+          <p class="cal-caption">本地档案库 = 你收藏的黑胶。点「📚 浏览档案」查询本地收藏库（不输入关键字 = 输出全部收藏）；或在输入框写艺人 / 专辑 / 厂牌 / 编号搜 Discogs —— 进入详情后可点「♥ 收藏」把这张唱片存入本地档案库，也能生成一张复古分享页。</p>
 
           <div class="vinyl-stage" id="vinyl-stage">
             <div class="vinyl-demo">
-              <label for="vinyl-text-query">直接输入文字描述（艺人 / 专辑 / 厂牌 / 编号），从 Discogs 唱片库搜索 — 点击结果查看详情（发行年份 / 艺术家 / 唱片公司 / 曲目），只做浏览，不保存到服务器：</label>
+              <label for="vinyl-text-query">搜 Discogs 或浏览本地档案库。输入文字描述（艺人 / 专辑 / 厂牌 / 编号）后点「🔍 搜索」；输入框留空时，「🔍 搜索」和「📚 浏览档案」都列出本地收藏库中的全部唱片。Discogs 详情页的「♥ 收藏到本地档案库」会把封面 + 信息存进数据库：</label>
               <span class="vinyl-demo-row">
-                <input type="text" id="vinyl-text-query" placeholder="例如：Michael Jackson Thriller 或厂牌编号…" />
+                <input type="text" id="vinyl-text-query" placeholder="艺人 / 专辑 / 厂牌 / 编号…（留空 = 输出全部收藏）" />
                 <button type="button" id="vinyl-text-search-btn" class="app-open">🔍 文字搜索</button>
                 <button type="button" id="vinyl-browse-btn" class="app-open">📚 浏览档案</button>
               </span>
