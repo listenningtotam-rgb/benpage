@@ -179,22 +179,8 @@ function renderHub() {
       <div class="studio-bar" id="studio-bar" ${profileDone ? "" : "hidden"}>
         <span class="studio-checkout" id="studio-checkout">Nothing checked out — click a commit to record over it</span>
         <button type="button" class="rc-btn rc-btn-record" id="record-take-btn" disabled>● Record Take</button>
-        <select id="studio-device" class="studio-device" title="Microphone used for takes — pick the real mic, not a loopback/stereo-mix device"></select>
-        <select id="studio-channel" class="studio-device" title="Which input channel to record + monitor: Left = interface input 1, Right = interface input 2, L+R = full mix (default). A single-channel device ignores this.">
-          <option value="both" ${inputChannelForTake() === "both" ? "selected" : ""}>L+R</option>
-          <option value="L" ${inputChannelForTake() === "L" ? "selected" : ""}>L(1)</option>
-          <option value="R" ${inputChannelForTake() === "R" ? "selected" : ""}>R(2)</option>
-        </select>
-        <select id="studio-output" class="studio-device" style="display:none" title="Output for the backing + count-in + 监听 during a take. Pick your headphones here (Chrome/Edge) so the song you sing along to doesn't blast from the room speakers and bleed into the take; “System default” follows your OS sound output. Not available on iPhone — WebKit has no output picker, and while the mic records iOS forces the phone speaker anyway."></select>
-        <label class="studio-phones" title="Hear your input live while recording. Wear headphones — an open speaker will feedback; your interface's hardware Direct Monitor button is zero-latency and tighter than this browser monitor. On iPhone the browser monitor can't reach your earphones (Safari forces the speaker route while the mic is live), so it is disabled there — use your interface's hardware monitor instead.">
-          <input type="checkbox" id="studio-monitor" ${monitorForTake() && canMonitorInBrowser() ? "checked" : ""} ${isIOS() ? "disabled" : ""} /> 监听 ${isIOS() ? "(iPhone: off)" : ""}
-        </label>
-        <label class="studio-phones" title="Headphones? Records the raw mic with the browser's echo canceller / noise suppressor turned off — the clearest take. On iPhone Safari keeps its own DSP on regardless (recording raw on iOS can return a silent capture), so this is disabled there.">
-          <input type="checkbox" id="studio-phones" ${localStorage.getItem(STUDIO_PHONES_KEY) === "1" && canMonitorInBrowser() ? "checked" : ""} ${isIOS() ? "disabled" : ""} /> Headphones ${isIOS() ? "(iPhone: locked)" : ""}
-        </label>
-        <label class="studio-phones" title="Mute the backing during this take (default on)? With the song muted nothing can bleed from the speakers into the mic — the take is guaranteed clean — but you sing a cappella to the count-in ticks. Uncheck to sing along with the song, e.g. in headphones.">
-          <input type="checkbox" id="studio-no-backing" ${muteBackingForTake() ? "checked" : ""} /> No backing
-        </label>
+        <select id="studio-device" class="studio-device" title="Microphone used for takes + new recordings — pick the real mic, not a loopback/stereo-mix device. Chosen once here: the take dialog and “Record from mic” both record through this same choice."></select>
+        <select id="studio-output" class="studio-device" style="display:none" title="Output for the backing + count-in + 监听 during a take, and for mix/preview playback. Pick your headphones here (Chrome/Edge) so the song you sing along to doesn't blast from the room speakers and bleed into the take; “System default” follows your OS sound output. Not available on iPhone — WebKit has no output picker, and while the mic records iOS forces the phone speaker anyway."></select>
         <button type="button" class="rc-btn rc-btn-ghost" id="stop-playback-btn">■ Stop</button>
         <span class="studio-status" id="studio-status"></span>
       </div>
@@ -257,32 +243,9 @@ function renderHub() {
   if (profileDone) {
     document.getElementById("record-take-btn").addEventListener("click", openRecordSetup);
     document.getElementById("stop-playback-btn").addEventListener("click", stopPlayback);
-    const phonesEl = document.getElementById("studio-phones");
-    if (phonesEl) {
-      phonesEl.checked = localStorage.getItem(STUDIO_PHONES_KEY) === "1";
-      phonesEl.addEventListener("change", () =>
-        localStorage.setItem(STUDIO_PHONES_KEY, phonesEl.checked ? "1" : "0")
-      );
-    }
-    const chanEl = document.getElementById("studio-channel");
-    if (chanEl) {
-      chanEl.addEventListener("change", () =>
-        localStorage.setItem(STUDIO_CHANNEL_KEY, chanEl.value)
-      );
-    }
-    const monitorEl = document.getElementById("studio-monitor");
-    if (monitorEl) {
-      monitorEl.addEventListener("change", () =>
-        localStorage.setItem(STUDIO_MONITOR_KEY, monitorEl.checked ? "1" : "0")
-      );
-    }
-    const noBackingEl = document.getElementById("studio-no-backing");
-    if (noBackingEl) {
-      noBackingEl.checked = muteBackingForTake();
-      noBackingEl.addEventListener("change", () =>
-        localStorage.setItem(STUDIO_MUTE_BACKING_KEY, noBackingEl.checked ? "1" : "0")
-      );
-    }
+    // Note: the L/R channel, 监听 Monitor, Headphones and No-backing controls
+    // used to live in this bar; they now live inside the ● Record Take setup
+    // dialog (openRecordSetup) and are persisted there on Start.
     populateMicDevices("studio-device");
     populateOutputSelect("studio-output");
   }
@@ -1329,7 +1292,7 @@ function stopPlayback() {
 
 /* ── Studio / recording ────────────────────────────────── */
 /* A take session: the checked-out commit's chain is used as backing — unless
-   "No backing" is ticked in the studio bar, in which case the song is muted
+   "No backing" is ticked in the record-setup dialog, in which case the song is muted
    and the take is a cappella to the count-in ticks. Either way ONLY the dry
    mic is recorded: the backing is never routed into the take, and the mic is
    routed to the speakers only when the optional monitor is on — an output-only
@@ -1421,8 +1384,8 @@ const STUDIO_OUTPUT_KEY = "studio_output_device";
 const MONITOR_VOLUME = 0.7;
 
 /* Which input channel to record + monitor: "both" (full mix, the default),
-   "L" (interface input 1) or "R" (interface input 2). Set in the studio bar
-   and the record-setup dialog; read by both the take and new-recording paths. */
+   "L" (interface input 1) or "R" (interface input 2). Set in the record-setup
+   dialog (openRecordSetup); read by both the take and new-recording paths. */
 function inputChannelForTake() {
   const v = localStorage.getItem(STUDIO_CHANNEL_KEY);
   return v === "L" || v === "R" ? v : "both";
@@ -1485,7 +1448,8 @@ function canMonitorInBrowser() {
   return !isIOS();
 }
 
-/* Fill an output-device <select> (studio bar + record-setup dialog). Browsers
+/* Fill the top bar's output-device <select> (#studio-output — the ONLY place
+   playback output is chosen now; the record-setup dialog mirrors it). Browsers
    only reveal the real output labels once speaker-selection permission exists
    (Chrome/Edge navigator.mediaDevices.selectAudioOutput); before that the
    select offers a "Choose…" entry that opens the OS picker. On browsers with
@@ -1806,7 +1770,7 @@ function monitorInput(ctx, stream, pick) {
 }
 
 /* Fixed backing level during a take session (0..1), applied only when the
-   "No backing" studio-bar toggle is OFF. The backing plays at 70% so it
+   "No backing" setup-dialog toggle is OFF. The backing plays at 70% so it
    rarely bleeds into the take. */
 function getBackingVolume() {
   return 0.7;
@@ -1868,7 +1832,12 @@ async function populateMicDevices(selOrId) {
       .join("");
     const match = mics.find((d) => d.deviceId === saved);
     sel.value = (match && match.deviceId) || mics[0].deviceId;
-    sel.addEventListener("change", () => localStorage.setItem("studio_mic_device", sel.value));
+    // populateMicDevices can re-run on the SAME element — every record-setup
+    // dialog open refreshes the studio bar's #studio-device list — so drop any
+    // previous listener instead of stacking duplicates.
+    if (sel._rcMicChange) sel.removeEventListener("change", sel._rcMicChange);
+    sel._rcMicChange = () => localStorage.setItem("studio_mic_device", sel.value);
+    sel.addEventListener("change", sel._rcMicChange);
   } catch (_) { /* enumerateDevices can throw on some browsers — non-fatal */ }
 }
 
@@ -2228,11 +2197,17 @@ function analyzeTake(blob) {
   });
 }
 
-/* "● Record Take" is two-phase: a small setup dialog first picks the input
-   device/channel and the monitor, THEN the existing count-in flow runs with
-   those choices. Without mic permission the browser hides device names, so the
-   dialog also acts as the permission trigger — the actual getUserMedia happens
-   on "Start count-in", inside the click. */
+/* "● Record Take" is two-phase: a setup dialog carries every per-take option —
+   input channel (L/R), 监听 Monitor, Headphones and No backing — and confirms
+   the take's mic + playback output, both of which are chosen ONCE in the top
+   bar (#studio-device / #studio-output; getUserMic() reads the former,
+   routeCtxToOutput() the latter). THEN the count-in flow runs. Without mic
+   permission the browser hides device names, so opening the dialog re-populates
+   the two top-bar lists (stale until then) and mirrors their current choices
+   into read-only notes; the actual getUserMedia happens on "Start count-in",
+   inside the click. The four dialog options are persisted to the same
+   localStorage keys the old bar toggles wrote, so every other path
+   (new recording → Record from mic) keeps working with the last-used values. */
 function openRecordSetup() {
   if (studio.recording || !hub.checkedOut) return;
   if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
@@ -2244,10 +2219,19 @@ function openRecordSetup() {
   if (!commit) return;
   showModal(`
     <h3 class="rc-modal-title">Record over ${commitHash(commit.id)}</h3>
-    <p class="rc-modal-sub">Choose the input and how you monitor it — the count-in starts as soon as you hit Start.${isIOS() ? " iPhone: while the mic records, Safari sends the take’s audio out of the phone’s own speaker — the browser 监听 can’t reach your 声卡 earphones, so use your interface’s hardware monitor to hear yourself." : ""}</p>
-    <label class="rc-field">Input device
-      <select id="setup-device" class="studio-device" title="Pick the interface's USB input, not a loopback / stereo-mix device"></select>
-    </label>
+    <p class="rc-modal-sub">Confirm this take — the count-in starts as soon as you hit Start. The microphone and playback output are chosen once in the top bar (the two dropdowns right next to “● Record Take”); this dialog confirms those and carries every other take option.${isIOS() ? " iPhone: while the mic records, Safari sends the take’s audio out of the phone’s own speaker — the browser 监听 can’t reach your 声卡 earphones, so use your interface’s hardware monitor to hear yourself." : ""}</p>
+    <div class="rc-field">Microphone for this take
+      <p class="rc-device-note" id="setup-device-note"></p>
+      <span class="rc-hint">Mirrors the top bar’s mic dropdown — the take always records through that one choice.</span>
+    </div>
+    ${
+      isIOS()
+        ? ""
+        : `<div class="rc-field">Playback output for this take
+      <p class="rc-device-note" id="setup-output-note"></p>
+      <span class="rc-hint">Mirrors the top bar’s Playback output dropdown — pick your headphones there so the song you sing along to doesn't blast from the room speakers and bleed into the mic; “System default” follows your OS sound output.</span>
+    </div>`
+    }
     <label class="rc-field">Input channel ${isIOS() ? '<span class="rc-hint">(iOS records the device’s default mix)</span>' : ""}
       <select id="setup-channel" ${isIOS() ? "disabled" : ""} title="Which physical input of the interface to record + monitor: Left = input 1, Right = input 2. A single-channel device ignores this and uses L+R.">
         <option value="both">L+R both — full mix</option>
@@ -2255,34 +2239,73 @@ function openRecordSetup() {
         <option value="R">Right (2) — e.g. an instrument in interface input 2</option>
       </select>
     </label>
-    <label class="rc-field" id="setup-output-field" style="display:none">Playback output
-      <select id="setup-output" class="studio-device" title="Which output device plays the backing + count-in + 监听 while you record this take. Pick your headphones (Chrome/Edge) so the song you sing along to doesn't blast from the room speakers and bleed into the take; “System default” follows your OS sound output."></select>
-      <span class="rc-hint">Where the song you sing along to plays. Pick your headphones here if it comes out of the speakers; “System default” follows your OS sound output.</span>
-    </label>
-    <label class="studio-phones" title="Hear your input live while recording. Browser monitoring adds ~20–40 ms latency (fine for practicing); keep speakers off to avoid feedback — wear headphones, or use your interface's hardware Direct Monitor button for zero-latency monitoring. The monitor never enters the recorded take. On iPhone it is disabled: the forced speaker route during capture means the monitor could only blast your voice from the phone speaker — use your interface's hardware monitor.">
-      <input type="checkbox" id="setup-monitor" ${isIOS() ? "disabled" : ""} /> 监听 Monitor — hear your input while recording (wear headphones; an open speaker will feedback)${isIOS() ? " (iPhone: off — see note above)" : ""}
-    </label>
+    <div class="rc-take-opts">
+      <label class="studio-phones" title="Hear your input live while recording. Browser monitoring adds ~20–40 ms latency (fine for practicing); keep speakers off to avoid feedback — wear headphones, or use your interface's hardware Direct Monitor button for zero-latency monitoring. The monitor never enters the recorded take. On iPhone it is disabled: the forced speaker route during capture means the monitor could only blast your voice from the phone speaker — use your interface's hardware monitor.">
+        <input type="checkbox" id="setup-monitor" ${isIOS() ? "disabled" : ""} /> 监听 Monitor — hear your input while recording (wear headphones; an open speaker will feedback)${isIOS() ? " (iPhone: off — see note above)" : ""}
+      </label>
+      <label class="studio-phones" title="Headphones? Records the raw mic with the browser's echo canceller / noise suppressor turned off — the clearest take. On iPhone Safari keeps its own DSP on regardless (recording raw on iOS can return a silent capture), so this is disabled there.">
+        <input type="checkbox" id="setup-headphones" ${isIOS() ? "disabled" : ""} /> Headphones — record the raw mic (browser echo canceller / noise suppressor off)${isIOS() ? " (iPhone: locked)" : ""}
+      </label>
+      <label class="studio-phones" title="Mute the backing during this take (default on)? With the song muted nothing can bleed from the speakers into the mic — the take is guaranteed clean — but you sing a cappella to the count-in ticks. Uncheck to sing along with the song, e.g. in headphones.">
+        <input type="checkbox" id="setup-no-backing" /> No backing (default) — mute the song; uncheck to sing along with it
+      </label>
+    </div>
     <div class="rc-modal-actions">
       <button type="button" class="rc-btn rc-btn-ghost" id="setup-cancel-btn">Cancel</button>
       <button type="button" class="rc-btn rc-btn-primary" id="setup-start-btn">Start count-in →</button>
     </div>
   `, (overlay) => {
-    const devSel = overlay.querySelector("#setup-device");
-    populateMicDevices(devSel);
+    const devNote = overlay.querySelector("#setup-device-note");
+    const outNote = overlay.querySelector("#setup-output-note");
     const chSel = overlay.querySelector("#setup-channel");
     chSel.value = inputChannelForTake();
     const monEl = overlay.querySelector("#setup-monitor");
     monEl.checked = monitorForTake() && canMonitorInBrowser(); // on iPhone the browser monitor is unavailable — see canMonitorInBrowser
-    populateOutputSelect(overlay.querySelector("#setup-output"));
+    const hpEl = overlay.querySelector("#setup-headphones");
+    // Same gate as the old bar's checkbox: on iPhone the option is locked off
+    // (raw capture can go silent there), so it always renders unchecked — the
+    // stored desktop value stays untouched in the key until a non-iOS Start.
+    hpEl.checked = canMonitorInBrowser() && localStorage.getItem(STUDIO_PHONES_KEY) === "1";
+    const nbEl = overlay.querySelector("#setup-no-backing");
+    nbEl.checked = muteBackingForTake();
+    // The mic + playback output live ONCE in the top bar's #studio-device /
+    // #studio-output selects (getUserMic()/routeCtxToOutput() read them when the
+    // take starts), so this dialog only confirms them instead of asking a second
+    // time. Re-populate the bar lists here (a just-granted mic permission is the
+    // one case where the lists are stale), then mirror the current selections
+    // into the read-only notes.
+    const selectedLabel = (sel) => {
+      if (!sel) return "";
+      const opt = sel.selectedIndex >= 0 ? sel.options[sel.selectedIndex] : null;
+      return opt ? opt.textContent.trim() : "";
+    };
+    const refreshNotes = () => {
+      const barSel = document.getElementById("studio-device");
+      const micLabel = selectedLabel(barSel);
+      devNote.textContent =
+        barSel && barSel.value && micLabel
+          ? micLabel
+          : "The phone’s current input for this take. To record through a specific 声卡, allow mic access once (hit Start) — the real device names then appear in the top bar’s mic dropdown, and you pick it there before the next take.";
+      if (outNote) {
+        outNote.textContent =
+          selectedLabel(document.getElementById("studio-output")) || "System default (OS setting)";
+      }
+    };
+    populateMicDevices("studio-device").then(refreshNotes);
+    if (outNote) populateOutputSelect("studio-output").then(refreshNotes);
+    refreshNotes();
     overlay.querySelector("#setup-cancel-btn").addEventListener("click", () => closeModal());
     overlay.querySelector("#setup-start-btn").addEventListener("click", () => {
-      // Persist the dialog's choices as the session defaults — the take and
-      // new-recording paths both read from here (localStorage + the bar select).
-      const barSel = document.getElementById("studio-device");
-      if (barSel && devSel.value) barSel.value = devSel.value;
-      if (devSel.value) localStorage.setItem("studio_mic_device", devSel.value);
+      // No mic/output device to copy: both choices already live in the top bar
+      // (#studio-device / #studio-output). Persist only the dialog-local take
+      // options here — the same localStorage keys (and write timing) the old bar
+      // toggles used, so every other flow keeps reading the same values.
       localStorage.setItem(STUDIO_CHANNEL_KEY, chSel.value);
       localStorage.setItem(STUDIO_MONITOR_KEY, monEl.checked ? "1" : "0");
+      if (!isIOS()) localStorage.setItem(STUDIO_PHONES_KEY, hpEl.checked ? "1" : "0");
+      // The old bar let iPhone users flip No-backing, so keep persisting it on
+      // every platform.
+      localStorage.setItem(STUDIO_MUTE_BACKING_KEY, nbEl.checked ? "1" : "0");
       closeModal();
       startTakeRecording();
     });
@@ -2294,7 +2317,7 @@ function showRecordSession() {
   const backingMuted = muteBackingForTake();
   let sub = backingMuted
     ? "No backing — the song is muted for this take, so nothing can bleed into the mic: you record clean a cappella to the four rising ticks (start singing as the last one ends). The recorder is already capturing from the instant the ticks begin, so anything you sing from the first note is recorded. The take is only the dry mic (nothing mixed in)."
-    : "Count-in: four rising ticks — start singing as the last one ends. The recorder is already capturing from the instant the backing starts, so anything you sing from the first note is recorded. The take is only the dry mic (nothing mixed in); wearing headphones (tick “Headphones” in the studio bar) records the raw mic with no echo suppression — the clearest take.";
+    : "Count-in: four rising ticks — start singing as the last one ends. The recorder is already capturing from the instant the backing starts, so anything you sing from the first note is recorded. The take is only the dry mic (nothing mixed in); wearing headphones (tick “Headphones” in the setup dialog) records the raw mic with no echo suppression — the clearest take.";
   if (monitorForTake() && canMonitorInBrowser()) {
     sub += " Monitor is on: you’re hearing your input through the browser — keep headphones on (an open speaker will feedback).";
   }
@@ -2304,7 +2327,7 @@ function showRecordSession() {
   const singAlongRaw =
     !backingMuted && (monitorForTake() || localStorage.getItem(STUDIO_PHONES_KEY) === "1");
   if (singAlongRaw && !outputDeviceForTake()) {
-    sub += " ⚠ Singing along with the song while recording raw: the song plays through your system default output — if that comes out of the speakers (not your headphones), cancel and set Playback output to your headphones in the setup dialog before starting again.";
+    sub += " ⚠ Singing along with the song while recording raw: the song plays through your system default output — if that comes out of the speakers (not your headphones), cancel and set Playback output to your headphones in the top bar (the dropdown next to “● Record Take”) before starting again.";
   }
   if (isIOS()) {
     // iPhone/WebKit (see canMonitorInBrowser): the instant the mic is live the
@@ -2661,7 +2684,7 @@ async function openNewRecording() {
       <button type="button" class="rc-btn rc-btn-ghost" id="new-stop-btn" hidden>■ Stop</button>
     </div>
     <p class="rc-source-status" id="new-source-status">Choose an audio source.</p>
-    <p class="rc-hint" id="new-mic-hint">● Record from mic uses the studio bar’s input device, input channel (L/R) and 监听 Monitor settings.</p>
+    <p class="rc-hint" id="new-mic-hint">● Record from mic records through the microphone chosen in the top bar (next to ● Record Take) and follows the input channel (L/R) and 监听 Monitor options you set there for your last ● Record Take — first time defaults: L+R, monitor off.</p>
     <div class="rc-timer-wrap" id="new-timer-wrap" hidden><span class="rc-timer" id="new-timer">0:00</span></div>
     <p class="rc-note">注意：上传录音，即用户承诺拥有录音全部版权及授权；禁止上传侵权、违规音频，谢谢。</p>
     <div class="rc-modal-actions">

@@ -1953,6 +1953,32 @@ body.app-standalone #app-detail {
   cursor: pointer;
 }
 
+/* Checkbox group in the record-setup dialog: 监听 Monitor / Headphones /
+   No backing stack under the input-channel field. The .studio-phones rows were
+   designed for the old compact top bar (nowrap); inside the narrow modal the
+   longer option text must be allowed to wrap. */
+.rc-take-opts {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0.6rem;
+  margin: 0.15rem 0 0.85rem;
+  padding: 0.7rem 0.75rem;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 10px;
+}
+
+.rc-take-opts .studio-phones {
+  white-space: normal;
+  line-height: 1.45;
+  align-items: flex-start;
+}
+
+.rc-take-opts .studio-phones input {
+  margin-top: 0.2rem;
+}
+
 .rc-btn {
   border: none;
   border-radius: 999px;
@@ -2542,6 +2568,20 @@ body.app-standalone #app-detail {
   font-size: 0.72rem;
   color: rgba(255, 255, 255, 0.35);
   margin-top: -0.2rem;
+}
+
+/* Read-only confirmation of the take's mic + playback output inside the
+   record-setup dialog. Both are chosen ONCE in the top bar (#studio-device /
+   #studio-output selects) and mirrored here, so the singer never picks an
+   input or output device a second time. */
+.rc-device-note {
+  margin: 0;
+  padding: 0.55rem 0.7rem;
+  font-size: 0.9rem;
+  color: #7ec8e3;
+  background: rgba(126, 200, 227, 0.08);
+  border: 1px dashed rgba(126, 200, 227, 0.35);
+  border-radius: 8px;
 }
 
 /* Invite-code login row (guest toolbar) */
