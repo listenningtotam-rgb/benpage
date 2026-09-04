@@ -8,6 +8,7 @@
 
 const path = require("path");
 const fs = require("fs");
+const os = require("os");
 const { spawn } = require("child_process");
 const vinylHash = require("./vinyl-hash");
 
@@ -30,6 +31,7 @@ function normalizeSearchResult(r) {
   const title = parts.length > 1 ? parts.slice(1).join(" - ").trim() : String(r.title).trim();
   const artist = parts.length > 1 ? parts.shift().trim() : "";
   return {
+    source: "discogs",
     discogs_id: r.id,
     title,
     artist,
@@ -197,6 +199,38 @@ module.exports = function makeDiscogsClient(token, publicUrl) {
     });
   }
 
+  /* Best-effort binary download of one URL (cover art).  fetch() is tried
+     first; on failure (e.g. a local HTTP proxy that undici ignores) it falls
+     back to spawning curl -sL — mirrors seed-vinyl.js's fetchToFile, but
+     returns an in-memory Buffer instead of writing a file. */
+  async function downloadBuffer(url) {
+    try {
+      const res = await fetch(url, {
+        redirect: "follow",
+        headers: { "User-Agent": userAgent },
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return Buffer.from(await res.arrayBuffer());
+    } catch (e) {
+      const tmpPath = path.join(
+        os.tmpdir(),
+        `vinyl-cover-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}.img`
+      );
+      try {
+        await fetchToFile(url, tmpPath);
+        return fs.readFileSync(tmpPath);
+      } catch (e2) {
+        throw new Error(`封面下载失败：${e.message} / ${e2.message}`);
+      } finally {
+        fs.rmSync(tmpPath, { force: true });
+      }
+    }
+  }
+
+  function isJpeg(buf) {
+    return !!buf && buf.length >= 4 && buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff;
+  }
+
   /* Full import pipeline for one Discogs release:
    *   fetch release → pick cover → download → JPEG sanity → hashes.
    * Returns { entry, cover: { buffer }, hashes } — the caller (server.js)
@@ -205,29 +239,8 @@ module.exports = function makeDiscogsClient(token, publicUrl) {
   async function importRelease(discogsId) {
     const rel = await getRelease(discogsId);
     const entry = buildImportEntry(rel);
-
-    let buf = null;
-    try {
-      const res = await fetch(entry.cover_url, {
-        redirect: "follow",
-        headers: { "User-Agent": userAgent },
-      });
-      if (!res.ok) throw new Error(`cover HTTP ${res.status}`);
-      buf = Buffer.from(await res.arrayBuffer());
-    } catch (e) {
-      const artDir = path.join(__dirname, "public", "vinyl-art");
-      fs.mkdirSync(artDir, { recursive: true });
-      const tmpPath = path.join(artDir, `tmp-${Date.now()}-${discogsId}.jpg`);
-      try {
-        await fetchToFile(entry.cover_url, tmpPath);
-        buf = fs.readFileSync(tmpPath);
-      } catch (e2) {
-        throw new Error(`封面下载失败：${e.message} / ${e2.message}`);
-      } finally {
-        fs.rmSync(tmpPath, { force: true });
-      }
-    }
-    if (buf.length < 4 || buf[0] !== 0xff || buf[1] !== 0xd8) {
+    const buf = await downloadBuffer(entry.cover_url);
+    if (!isJpeg(buf)) {
       throw new Error("封面图不是有效 JPEG，无法导入");
     }
     return { entry, cover: { buffer: buf }, hashes: vinylHash.computeHashesFromBuffer(buf) };
@@ -239,5 +252,5 @@ module.exports = function makeDiscogsClient(token, publicUrl) {
     return normalizeReleaseDetail(await getRelease(id));
   }
 
-  return { search, getRelease, detail, importRelease, parseDiscogsDuration };
+  return { search, getRelease, detail, importRelease, downloadBuffer, isJpeg, parseDiscogsDuration };
 };

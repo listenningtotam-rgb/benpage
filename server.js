@@ -146,6 +146,14 @@ const DISCOGS_TOKEN =
   })();
 const discogs = require("./discogs")(DISCOGS_TOKEN, PUBLIC_URL);
 
+// ─── MusicBrainz client (黑胶档案 fallback source) ─────────────────────
+// 公共 API，无需 token：当 Discogs 文字搜索无结果（或未配置 token）时，退回
+// MusicBrainz 搜索 + Cover Art Archive 封面。模块内部自带 ≥1 req/s 的
+// 速率队列（MusicBrainz / CAA 都要求），server 侧专用。
+const musicbrainz = require("./musicbrainz")(PUBLIC_URL);
+const MB_UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 // ─── 网易云音乐 sidecar client ─────────────────────────────────────────
 // 通过本机 NeteaseCloudMusicApi (默认 127.0.0.1:3001) 解析歌曲 CDN 直链。
 // 音频字节由浏览器直接从网易云 CDN 拉取(本站只回 302), 不耗本站流量。
@@ -1027,18 +1035,72 @@ function vinylSlugBase(title, artist) {
 }
 
 /* Pick a slug that is unique across vinyl_records (the slug column is
-   UNIQUE).  Tries "base", then "base-2", "base-3"…, finally discogs-<id>. */
-function uniqueVinylSlug(discogsId, title, artist) {
-  const id = String(discogsId);
-  const base = vinylSlugBase(title, artist) || `discogs-${id}`;
+   UNIQUE).  Tries "base", then "base-2", "base-3"…, finally the caller's
+   fallback key (discogs-<id>, or the MusicBrainz release id). */
+function uniqueVinylSlug(fallbackKey, title, artist) {
+  const key = String(fallbackKey);
+  const base = vinylSlugBase(title, artist) || key;
   let slug = base;
   let n = 2;
   while (db.getVinylRecord(slug)) {
     slug = `${base}-${n}`;
     n += 1;
-    if (n > 200) return `discogs-${id}`; // safety valve
+    if (n > 200) return key; // safety valve
   }
   return slug;
+}
+
+/* ── Remote cover-art proxy (public/vinyl-art/cache) ──────────────────
+   Discogs' /database/search cover_image links can go stale/dead, which is why
+   search result cards used to show no art while favorites (whose cover is
+   downloaded to /vinyl-art/) always worked.  Every <img> and og:image that
+   references a LIVE Discogs / MusicBrainz record must go through
+   /api/vinyl/img — the server resolves the CURRENT cover by release id
+   (never trusting a client-supplied URL), caches it on disk and serves it
+   same-origin. */
+const VINYL_IMG_CACHE_DIR = path.join(publicDir, "vinyl-art", "cache");
+const VINYL_IMG_CACHE_CONTROL = "public, max-age=604800"; // content-addressed per release id
+const vinylCoverFetchInFlight = new Map(); // key "source:id" → shared Promise (dedupe)
+
+function findVinylCoverCacheFile(base) {
+  if (!fs.existsSync(VINYL_IMG_CACHE_DIR)) return null;
+  const prefix = base + ".";
+  for (const name of fs.readdirSync(VINYL_IMG_CACHE_DIR)) {
+    if (name.startsWith(prefix)) return path.join(VINYL_IMG_CACHE_DIR, name);
+  }
+  return null;
+}
+
+/* Current cover bytes for a live record (by id, never by a client URL). */
+async function fetchVinylCoverBytes(source, id) {
+  const key = `${source}:${id}`;
+  if (vinylCoverFetchInFlight.has(key)) return vinylCoverFetchInFlight.get(key);
+  const p = (async () => {
+    if (source === "discogs") {
+      if (!DISCOGS_TOKEN) throw new Error("Discogs token 未配置");
+      // /releases/{id} always carries the CURRENT cover (unlike the possibly
+      // stale cover_image in a /database/search result).
+      const detail = await discogs.detail(Number(id));
+      if (!detail.cover_image) return null;
+      const buf = await discogs.downloadBuffer(detail.cover_image);
+      return buf && buf.length ? buf : null;
+    }
+    const cover = await musicbrainz.coverImageBytes(id);
+    return cover && cover.buffer && cover.buffer.length ? cover.buffer : null;
+  })().finally(() => vinylCoverFetchInFlight.delete(key));
+  vinylCoverFetchInFlight.set(key, p);
+  return p;
+}
+
+/* Same-origin <img>/og:image URL for a live record's cover. */
+function vinylProxyImgUrl(source, id, size) {
+  return (
+    "/api/vinyl/img?source=" +
+    encodeURIComponent(source) +
+    "&id=" +
+    encodeURIComponent(id) +
+    (size === "card" ? "&size=card" : "")
+  );
 }
 
 function renderVinylSharePage(req, rec) {
@@ -1097,7 +1159,10 @@ function renderVinylSharePage(req, rec) {
 /* Discogs reference share page — same vintage record-card layout as a
    stored vinyl share, but rendered live from the Discogs API (no DB row,
    no cover stored on this server).  WeChat scrapers still get real
-   og:title / og:description / og:image via the server-side fetch. */
+   og:title / og:description / og:image via the server-side fetch.  The cover
+   always renders through the /api/vinyl/img proxy (resolved by release id and
+   disk-cached) — never a remote Discogs CDN hotlink, which is what broke
+   search-result images. */
 function renderVinylDiscogsSharePage(req, detail) {
   const year = detail.year != null ? String(detail.year) : "";
   const facts = [year, detail.country, detail.label, detail.catalog_number]
@@ -1106,13 +1171,16 @@ function renderVinylDiscogsSharePage(req, detail) {
   const description =
     [detail.artist, year, detail.label].filter(Boolean).join(" · ") ||
     "Discogs 唱片";
+  const coverProxy = detail.cover_image
+    ? vinylProxyImgUrl("discogs", detail.discogs_id, "full")
+    : "";
   const head = renderSharePageHead({
     req,
     kind: "none",
     id: "",
     title: `${detail.title} — ${detail.artist}`,
     description,
-    image: detail.cover_image, // absolute https URL — absUrl passes it through
+    image: coverProxy, // /api/vinyl/img path — absUrl turns it absolute
     type: "music.album",
     url: "/vinyl/discogs/" + detail.discogs_id,
   });
@@ -1141,7 +1209,7 @@ function renderVinylDiscogsSharePage(req, detail) {
     '    <section class="vinyl-record">\n' +
     (detail.cover_image
       ? `      <div class="vinyl-cover-wrap"><img class="vinyl-cover" src="${escHtml(
-          detail.cover_image
+          coverProxy
         )}" alt="${escHtml(detail.title)} cover" /></div>\n`
       : "") +
     '      <div class="vinyl-info">\n' +
@@ -2096,11 +2164,17 @@ async function handleApi(req, res, urlPath) {
   //                                   empty (no q) returns every favorite
   //   GET  /api/vinyl/:slug         → public, archive album detail
   //   POST /api/vinyl/:id/play      → public, bump a vinyl share-page play
-  //   GET  /api/vinyl/lookup        → public, live Discogs release detail
-  //                                   (fetched on demand, nothing is stored)
-  //   POST /api/vinyl/favorite      → public, save a Discogs release into the
-  //                                   local archive (收藏 to the DB, cover is
-  //                                   downloaded & stored locally as well)
+  //   GET  /api/vinyl/img           → public, cover-art proxy: resolves the
+  //                                   CURRENT cover by release id (Discogs /
+  //                                   MusicBrainz+CAA), disk-caches it and
+  //                                   serves it same-origin (card/full sizes)
+  //   GET  /api/vinyl/lookup        → public, live Discogs/MusicBrainz release
+  //                                   detail (?source=…&id=…; on demand,
+  //                                   nothing is stored)
+  //   POST /api/vinyl/favorite      → public, save a Discogs/MusicBrainz
+  //                                   release into the local archive
+  //                                   (收藏 to the DB, cover is downloaded &
+  //                                   stored locally as well)
   if (urlPath === "/api/vinyl" && req.method === "GET") {
     const raw = new URL(req.url, "http://localhost");
     const q = cleanText(raw.searchParams.get("q"), 200).trim();
@@ -2108,25 +2182,127 @@ async function handleApi(req, res, urlPath) {
     return json(res, 200, { records: rows.map(publicVinylRow) });
   }
 
-  // Live Discogs release detail — proxies /releases/{id} on demand.  This is
-  // a pure lookup: nothing is written to the DB and no cover is downloaded,
-  // so the server never stores Discogs data.  (Must sit before the
-  // /api/vinyl/:slug matcher below so "lookup" isn't treated as a slug.)
+  // Live release detail — proxies /releases/{id} (Discogs) or the MusicBrainz
+  // release on demand.  source=discogs|musicbrainz&id=…; a pure lookup:
+  // nothing is written to the DB and no cover is downloaded here, so the
+  // server never stores live-data.  (Must sit before the /api/vinyl/:slug
+  // matcher below so "lookup" / "img" aren't treated as a slug.)
   if (urlPath === "/api/vinyl/lookup" && req.method === "GET") {
     if (!checkShareRate(req)) return json(res, 429, { error: "Rate limit exceeded" });
     const raw = new URL(req.url, "http://localhost");
-    const discogsId = Number(raw.searchParams.get("discogs_id"));
-    if (!Number.isInteger(discogsId) || discogsId <= 0) {
-      return json(res, 400, { error: "无效的 discogs_id" });
-    }
-    if (!DISCOGS_TOKEN) {
-      return json(res, 400, { error: "Discogs token 未配置 — 请设置 DISCOGS_TOKEN 或 data/.discogs-token" });
-    }
+    const source =
+      raw.searchParams.get("source") === "musicbrainz" ? "musicbrainz" : "discogs";
+    const idRaw = cleanText(
+      raw.searchParams.get("id") || raw.searchParams.get("mbid") || raw.searchParams.get("discogs_id"),
+      80
+    );
     try {
-      const detail = await discogs.detail(discogsId);
+      if (source === "discogs") {
+        const discogsId = Number(idRaw);
+        if (!Number.isInteger(discogsId) || discogsId <= 0) {
+          return json(res, 400, { error: "无效的 discogs_id" });
+        }
+        if (!DISCOGS_TOKEN) {
+          return json(res, 400, { error: "Discogs token 未配置 — 请设置 DISCOGS_TOKEN 或 data/.discogs-token" });
+        }
+        const detail = await discogs.detail(discogsId);
+        // Common live-detail shape the frontend card renders (Discogs + MB).
+        detail.source = "discogs";
+        detail.id = detail.discogs_id;
+        detail.mbid = null;
+        detail.cover_available = !!detail.cover_image;
+        detail.musicbrainz_url = null;
+        return json(res, 200, { detail });
+      }
+      const mbid = idRaw.toLowerCase();
+      if (!MB_UUID_RE.test(mbid)) {
+        return json(res, 400, { error: "无效的 MusicBrainz release id" });
+      }
+      const detail = await musicbrainz.detail(mbid);
       return json(res, 200, { detail });
     } catch (e) {
-      return json(res, 502, { error: e.message || "Discogs 详情获取失败" });
+      return json(res, 502, { error: e.message || "详情获取失败" });
+    }
+  }
+
+  // Remote cover-art proxy — resolves the CURRENT cover by release id
+  // server-side and caches it on disk.  Search result cards, live detail
+  // cards and the /vinyl/discogs/:id share page all load covers through this
+  // route: directly hotlinking Discogs' (possibly stale) CDN cover_image is
+  // exactly why search results showed no art while favorites worked.
+  // Only the release id is ever sent to the API — never a client-supplied URL.
+  if (urlPath === "/api/vinyl/img" && req.method === "GET") {
+    const imgQuery = new URL(req.url, "http://localhost");
+    const source = imgQuery.searchParams.get("source");
+    const idRaw = cleanText(imgQuery.searchParams.get("id"), 80);
+    const size = imgQuery.searchParams.get("size") === "card" ? "card" : "full";
+    if (source !== "discogs" && source !== "musicbrainz") {
+      return json(res, 400, { error: "source 必须是 discogs 或 musicbrainz" });
+    }
+    let cacheKeyBase;
+    if (source === "discogs") {
+      const did = Number(idRaw);
+      if (!Number.isInteger(did) || did <= 0) {
+        return json(res, 400, { error: "无效的 Discogs release id" });
+      }
+      cacheKeyBase = "discogs-" + did;
+    } else {
+      if (!MB_UUID_RE.test(idRaw)) {
+        return json(res, 400, { error: "无效的 MusicBrainz release id" });
+      }
+      cacheKeyBase = "musicbrainz-" + idRaw.toLowerCase();
+    }
+    const cardPath = path.join(VINYL_IMG_CACHE_DIR, cacheKeyBase + "_card.jpg");
+    try {
+      // 1) Serve from disk cache (card file, or lazily derived from the full
+      //    file already cached).  Content-addressed per release id, so it is
+      //    safe to cache for a week with ETag revalidation.
+      const fullCached = findVinylCoverCacheFile(cacheKeyBase);
+      if (size === "card") {
+        if (fs.existsSync(cardPath)) {
+          return serveFileWithCache(req, res, cardPath, VINYL_IMG_CACHE_CONTROL);
+        }
+        if (fullCached) {
+          const thumb = makeCardThumb(fs.readFileSync(fullCached));
+          if (thumb) {
+            fs.mkdirSync(VINYL_IMG_CACHE_DIR, { recursive: true });
+            fs.writeFileSync(cardPath, thumb);
+            return serveFileWithCache(req, res, cardPath, VINYL_IMG_CACHE_CONTROL);
+          }
+          // Non-JPEG or already card-sized → the full file is fine.
+          return serveFileWithCache(req, res, fullCached, VINYL_IMG_CACHE_CONTROL);
+        }
+      } else if (fullCached) {
+        return serveFileWithCache(req, res, fullCached, VINYL_IMG_CACHE_CONTROL);
+      }
+
+      // 2) Cache miss → fetch the current cover by id (coalesced so 8 cards
+      //    sized card+full don't hammer the upstream twice).
+      const bytes = await fetchVinylCoverBytes(source, idRaw);
+      if (!bytes) {
+        return json(res, 404, {
+          error:
+            source === "discogs"
+              ? "Discogs 条目没有可用封面"
+              : "Cover Art Archive 里没有这张唱片的封面",
+        });
+      }
+      const ext = sniffImageExt(bytes) || ".jpg";
+      fs.mkdirSync(VINYL_IMG_CACHE_DIR, { recursive: true });
+      const fullPath = path.join(VINYL_IMG_CACHE_DIR, cacheKeyBase + ext);
+      const tmpPath = fullPath + "." + process.pid + ".tmp";
+      fs.writeFileSync(tmpPath, bytes); // atomic-ish: write tmp then rename
+      fs.renameSync(tmpPath, fullPath);
+      if (size === "card") {
+        const thumb = makeCardThumb(bytes);
+        if (thumb) {
+          fs.writeFileSync(cardPath, thumb);
+          return serveFileWithCache(req, res, cardPath, VINYL_IMG_CACHE_CONTROL);
+        }
+      }
+      return serveFileWithCache(req, res, fullPath, VINYL_IMG_CACHE_CONTROL);
+    } catch (e) {
+      return json(res, 502, { error: "封面获取失败：" + (e.message || e) });
     }
   }
 
@@ -2146,43 +2322,81 @@ async function handleApi(req, res, urlPath) {
   }
 
   //   POST /api/vinyl/search     → public, text search: local archive first,
-  //                                then Discogs (when a token is configured).
-  //                                Results are live; nothing is imported/stored.
+  //                                then Discogs (when a token is configured);
+  //                                when Discogs returns nothing (or has no
+  //                                token) MusicBrainz is queried as fallback.
+  //                                Every result carries `source` so the
+  //                                frontend can label cards / open details.
+  //                                Results are live; nothing is imported.
   if (urlPath === "/api/vinyl/search" && req.method === "POST") {
     if (!checkShareRate(req)) return json(res, 429, { error: "Rate limit exceeded" });
     const body = await readBody(req);
     const q = cleanText(body.q, 200).trim();
     if (!q) return json(res, 400, { error: "搜索词不能为空" });
     const local = db.searchVinylRecordsLocal(q).map(publicVinylRow);
-    let external = [];
-    let externalError = null;
+    const external = [];
+    const externalErrors = {};
     if (DISCOGS_TOKEN) {
       try {
-        external = await discogs.search(q);
+        external.push(...(await discogs.search(q)));
       } catch (e) {
-        externalError = e.message; // local matches still returned
+        externalErrors.discogs = e.message; // local matches still returned
+      }
+    } else {
+      externalErrors.discogs = "未配置 Discogs token（已自动改用 MusicBrainz 搜索）";
+    }
+    // MusicBrainz fallback: queried only when Discogs was unavailable or came
+    // back empty, so obscure releases still get a live source to browse.
+    const discogsHits = external.filter((r) => r.source === "discogs").length;
+    if (discogsHits === 0) {
+      try {
+        external.push(...(await musicbrainz.search(q)));
+      } catch (e) {
+        externalErrors.musicbrainz = e.message;
       }
     }
-    return json(res, 200, { local, external, externalEnabled: !!DISCOGS_TOKEN, externalError });
+    const sources = [
+      { source: "discogs", label: "Discogs", enabled: !!DISCOGS_TOKEN },
+      { source: "musicbrainz", label: "MusicBrainz", enabled: true },
+    ];
+    return json(res, 200, {
+      local,
+      external,
+      sources,
+      externalEnabled: sources.some((s) => s.enabled),
+      externalErrors,
+    });
   }
 
-  //   POST /api/vinyl/favorite → public, 收藏：把一张 Discogs 唱片保存进本地
-  //                               档案库（vinyl_records），封面下载到本地并计算
-  //                               感知哈希，之后 浏览档案 / 本地搜索 / 分享页
-  //                               /vinyl/:slug 都能直接使用。
+  //   POST /api/vinyl/favorite → public, 收藏：把一张 Discogs / MusicBrainz
+  //                               唱片保存进本地档案库（vinyl_records），封面
+  //                               下载到本地并计算感知哈希，之后 浏览档案 /
+  //                               本地搜索 / 分享页 /vinyl/:slug 都能使用。
+  //                               body: { source?: "discogs"|"musicbrainz", id }
   if (urlPath === "/api/vinyl/favorite" && req.method === "POST") {
     if (!checkShareRate(req)) return json(res, 429, { error: "Rate limit exceeded" });
-    if (!DISCOGS_TOKEN) {
-      return json(res, 400, {
-        error: "Discogs token 未配置 — 请设置 DISCOGS_TOKEN 或 data/.discogs-token",
-      });
-    }
     const body = await readBody(req);
-    const discogsId = Number(body.discogs_id);
-    if (!Number.isInteger(discogsId) || discogsId <= 0) {
-      return json(res, 400, { error: "无效的 discogs_id" });
+    const source = body.source === "musicbrainz" ? "musicbrainz" : "discogs";
+
+    // ── Resolve which release we are importing ──
+    let mbid; // vinyl_records.mbid = "discogs-<id>" for Discogs, MB id for MB
+    if (source === "discogs") {
+      const discogsId = Number(body.id != null ? body.id : body.discogs_id);
+      if (!Number.isInteger(discogsId) || discogsId <= 0) {
+        return json(res, 400, { error: "无效的 discogs_id" });
+      }
+      if (!DISCOGS_TOKEN) {
+        return json(res, 400, {
+          error: "Discogs token 未配置 — 请设置 DISCOGS_TOKEN 或 data/.discogs-token",
+        });
+      }
+      mbid = `discogs-${discogsId}`;
+    } else {
+      mbid = String(body.id != null ? body.id : body.mbid || "").toLowerCase().trim();
+      if (!MB_UUID_RE.test(mbid)) {
+        return json(res, 400, { error: "无效的 MusicBrainz release id" });
+      }
     }
-    const mbid = `discogs-${discogsId}`;
     // Idempotent: the release is already in the archive → nothing to redo.
     const existing = db.getVinylRecordByMbid(mbid);
     if (existing) {
@@ -2191,15 +2405,20 @@ async function handleApi(req, res, urlPath) {
 
     let imported;
     try {
-      imported = await discogs.importRelease(discogsId); // fetch + cover download + hashes
+      imported =
+        source === "discogs"
+          ? await discogs.importRelease(Number(body.id != null ? body.id : body.discogs_id))
+          : await musicbrainz.importRelease(mbid);
     } catch (e) {
-      return json(res, 502, { error: e.message || "收藏失败：无法获取 Discogs 条目" });
+      return json(res, 502, {
+        error: e.message || "收藏失败：无法获取该条目",
+      });
     }
     const { entry, cover, hashes } = imported;
 
     let slug;
     try {
-      slug = uniqueVinylSlug(discogsId, entry.title, entry.artist);
+      slug = uniqueVinylSlug(mbid, entry.title, entry.artist);
       const artDir = path.join(publicDir, "vinyl-art");
       fs.mkdirSync(artDir, { recursive: true });
       fs.writeFileSync(path.join(artDir, `${slug}.jpg`), cover.buffer);
@@ -2208,7 +2427,7 @@ async function handleApi(req, res, urlPath) {
     }
 
     const rec = db.upsertVinylRecord({
-      mbid: entry.mbid,
+      mbid,
       slug,
       title: entry.title,
       artist: entry.artist,
@@ -2220,8 +2439,8 @@ async function handleApi(req, res, urlPath) {
       ahash: hashes.ahash,
       dhash: hashes.dhash,
       tracks: entry.tracks,
-      source: "discogs",
-      discogs_id: entry.discogs_id,
+      source,
+      discogs_id: entry.discogs_id != null ? entry.discogs_id : null,
     });
     return json(res, 201, { record: publicVinylRow(rec), already: false });
   }

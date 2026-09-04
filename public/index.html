@@ -175,7 +175,7 @@
 
           <div class="vinyl-stage" id="vinyl-stage">
             <div class="vinyl-demo">
-              <label for="vinyl-text-query">搜 Discogs 或浏览本地档案库。输入文字描述（艺人 / 专辑 / 厂牌 / 编号）后点「🔍 搜索」；输入框留空时，「🔍 搜索」和「📚 浏览档案」都列出本地收藏库中的全部唱片。Discogs 详情页的「♥ 收藏到本地档案库」会把封面 + 信息存进数据库：</label>
+              <label for="vinyl-text-query">搜 Discogs / MusicBrainz 或浏览本地档案库。输入文字描述（艺人 / 专辑 / 厂牌 / 编号）后点「🔍 搜索」；输入框留空时，「🔍 搜索」和「📚 浏览档案」都列出本地收藏库中的全部唱片。搜索结果会先查 Discogs，找不到时自动退回 MusicBrainz（Cover Art Archive）。详情页的「♥ 收藏到本地档案库」会把封面 + 信息存进数据库：</label>
               <span class="vinyl-demo-row">
                 <input type="text" id="vinyl-text-query" placeholder="艺人 / 专辑 / 厂牌 / 编号…（留空 = 输出全部收藏）" />
                 <button type="button" id="vinyl-text-search-btn" class="app-open">🔍 文字搜索</button>

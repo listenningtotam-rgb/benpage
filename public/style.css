@@ -2802,6 +2802,62 @@ body.app-standalone #app-detail {
   margin-top: 0.4rem;
 }
 
+/* Source chips on cards / details (Discogs / MusicBrainz), section heads in
+   the result list, placeholder box for records without cover art. */
+.vinyl-src-chip {
+  display: inline-block;
+  margin-left: 0.45rem;
+  padding: 0.05rem 0.5rem;
+  font-size: 0.68rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  vertical-align: middle;
+  color: #9fd8ef;
+  background: rgba(126, 200, 227, 0.14);
+  border: 1px solid rgba(126, 200, 227, 0.45);
+  border-radius: 999px;
+}
+
+.vinyl-src-head {
+  margin: 0.35rem 0 -0.15rem;
+  font-size: 0.8rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  color: rgba(255, 212, 121, 0.85);
+}
+
+.vinyl-card-art.vinyl-noart {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 150px;
+  height: 150px;
+  background: rgba(126, 200, 227, 0.07);
+  border: 1px dashed rgba(126, 200, 227, 0.3);
+  border-radius: 10px;
+  color: rgba(255, 255, 255, 0.4);
+  font-size: 2.4rem;
+}
+
+.vinyl-card-actions .vinyl-ext-link {
+  display: inline-flex;
+  align-items: center;
+  text-decoration: none;
+  background: rgba(126, 200, 227, 0.14);
+  border: 1px solid rgba(126, 200, 227, 0.55);
+  color: #9fd8ef;
+  font-size: 0.85rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  padding: 0.55rem 1.3rem;
+  border-radius: 999px;
+  transition: background 0.2s ease;
+}
+
+.vinyl-card-actions .vinyl-ext-link:hover {
+  background: rgba(126, 200, 227, 0.24);
+}
+
 .vinyl-share-btn {
   margin-top: 0.7rem;
   background: rgba(255, 212, 121, 0.14);
