@@ -185,6 +185,7 @@ function renderHub() {
           <option value="L" ${inputChannelForTake() === "L" ? "selected" : ""}>L(1)</option>
           <option value="R" ${inputChannelForTake() === "R" ? "selected" : ""}>R(2)</option>
         </select>
+        <select id="studio-output" class="studio-device" style="display:none" title="Output for the backing + count-in + 监听 during a take. Pick your headphones here (Chrome/Edge) so the song you sing along to doesn't blast from the room speakers and bleed into the take; “System default” follows your OS sound output."></select>
         <label class="studio-phones" title="Hear your input live while recording. Wear headphones — an open speaker will feedback; your interface's hardware Direct Monitor button is zero-latency and tighter than this browser monitor.">
           <input type="checkbox" id="studio-monitor" ${monitorForTake() ? "checked" : ""} /> 监听
         </label>
@@ -283,6 +284,7 @@ function renderHub() {
       );
     }
     populateMicDevices("studio-device");
+    populateOutputSelect("studio-output");
   }
   renderRepos();
 }
@@ -358,7 +360,7 @@ function renderRepoCard(repo) {
       <div class="rc-repo-actions">
         ${repo.band_id ? "" : `<button type="button" class="rc-icon-btn" data-action="share-repo" data-repo="${repo.id}" title="Share">↗</button>`}
         <button type="button" class="rc-icon-btn" data-action="export-repo" data-repo="${repo.id}" title="${exportTitle}">⬇</button>
-        <button type="button" class="rc-icon-btn" data-action="toggle-repo" data-repo="${repo.id}" title="Commit history">${expanded ? "▾" : "▸"}</button>
+        <button type="button" class="rc-icon-btn rc-repo-toggle" data-action="toggle-repo" data-repo="${repo.id}" title="Commit history" aria-expanded="${expanded ? "true" : "false"}">${expanded ? "▾" : "▸"}</button>
         ${
           canEdit
             ? `<button type="button" class="rc-icon-btn rc-repo-delete" data-action="delete-repo" data-repo="${repo.id}" title="Delete this recording and all its commits">🗑</button>`
@@ -883,6 +885,9 @@ async function playCommit(commit, extra) {
     return;
   }
   audioEngine.ctx = ctx;
+  // Same output routing as a take session — if the user picked headphones,
+  // the mix plays there, not through the room speakers.
+  await routeCtxToOutput(ctx);
   // First resume inside the user gesture, then decode every layer, then resume
   // again (awaited) so the clock is running before any source is scheduled.
   await ensureCtxRunning(ctx);
@@ -966,6 +971,7 @@ function playNativeTrack(commit, extra, reason) {
   const row = document.querySelector(`.rc-commit[data-commit="${commit.id}"]`);
   const el = new Audio(audioUrl(url));
   el.preload = "auto";
+  routeElToOutput(el); // chosen output device (e.g. headphones), not the OS default speakers
   let started = false;
   const showErr = () => {
     if (started) return;
@@ -1080,6 +1086,7 @@ async function playIOSMix(commit, extra) {
   const row = document.querySelector(`.rc-commit[data-commit="${commit.id}"]`);
   const el = new Audio();
   el.preload = "auto";
+  routeElToOutput(el); // keep the rendered mix on the chosen output device
   el._mixUrl = mixUrl; // revoked in closeAudio
   let started = false; // terminal: actually sounding, or gave up / fell back
   let attempt = 0;     // play() attempts for this blob
@@ -1246,6 +1253,7 @@ async function renderIOSMixBlob(commit, extra) {
 function playDry(url, start) {
   closeAudio();
   const el = new Audio(url);
+  routeElToOutput(el); // route the take preview to the chosen output device
   let done = false;
   const fallback = () => {
     if (done) return;
@@ -1278,6 +1286,7 @@ async function playBlobViaWebAudio(url, start) {
     return;
   }
   audioEngine.ctx = ctx;
+  await routeCtxToOutput(ctx);
   if (!(await ensureCtxRunning(ctx))) {
     audioEngine.ctx = null;
     try { ctx.close().catch(() => {}); } catch (_) {}
@@ -1396,6 +1405,7 @@ const STUDIO_PHONES_KEY = "studio_headphones";
 const STUDIO_MUTE_BACKING_KEY = "studio_mute_backing";
 const STUDIO_CHANNEL_KEY = "studio_input_channel";
 const STUDIO_MONITOR_KEY = "studio_monitor";
+const STUDIO_OUTPUT_KEY = "studio_output_device";
 
 /* Level of the optional input monitor (0..1). The monitor is a parallel
    output-only path — the take recorder's sink gain stays pinned to 0, so
@@ -1412,6 +1422,127 @@ function inputChannelForTake() {
 
 function monitorForTake() {
   return localStorage.getItem(STUDIO_MONITOR_KEY) === "1";
+}
+
+/* Audio output device for the app's sounds (backing/count-in/监听 monitor
+   during a take, the normal playback mix, take previews). "" means the OS
+   system default — which is usually the room speakers. Web Audio can only ever
+   reach ctx.destination, so when the singer wears headphones on a SEPARATE
+   device the backing would blast from the speakers and bleed into the raw take.
+   Choosing a device here renders to that output instead (Chrome/Edge:
+   AudioContext.setSinkId) so the song stays in the headphones. */
+function outputDeviceForTake() {
+  const v = localStorage.getItem(STUDIO_OUTPUT_KEY);
+  return v && v !== "default" ? v : "";
+}
+
+/* Best-effort routing of an AudioContext to the saved output device. Browsers
+   without setSinkId, or a saved device that has since been unplugged, silently
+   fall back to the system default — never a hard failure. */
+async function routeCtxToOutput(ctx) {
+  const id = outputDeviceForTake();
+  if (!id || !ctx || typeof ctx.setSinkId !== "function") return false;
+  try {
+    await ctx.setSinkId(id);
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
+/* Same best-effort routing for the native <audio> fallback path
+   (HTMLMediaElement.setSinkId exists on Chrome and recent Safari). */
+function routeElToOutput(el) {
+  const id = outputDeviceForTake();
+  if (!id || !el || typeof el.setSinkId !== "function") return;
+  try {
+    el.setSinkId(id).catch(() => {});
+  } catch (_) {}
+}
+
+/* Fill an output-device <select> (studio bar + record-setup dialog). Browsers
+   only reveal the real output labels once speaker-selection permission exists
+   (Chrome/Edge navigator.mediaDevices.selectAudioOutput); before that the
+   select offers a "Choose…" entry that opens the OS picker. On browsers with
+   no picker and no labelled devices the control is hidden and audio simply
+   follows the OS default. */
+async function populateOutputSelect(selOrId) {
+  const sel = typeof selOrId === "string" ? document.getElementById(selOrId) : selOrId;
+  if (!sel) return;
+  const field = sel.closest ? sel.closest(".rc-field") : null;
+  const show = () => {
+    if (field) field.style.display = "";
+    else sel.style.display = "";
+  };
+  const hide = () => {
+    if (field) field.style.display = "none";
+    else sel.style.display = "none";
+  };
+  if (!navigator.mediaDevices || typeof navigator.mediaDevices.enumerateDevices !== "function") {
+    hide();
+    return;
+  }
+  const canPick = typeof navigator.mediaDevices.selectAudioOutput === "function";
+  let outs = [];
+  try {
+    outs = (await navigator.mediaDevices.enumerateDevices()).filter(
+      (d) => d.kind === "audiooutput" && !!d.deviceId && !!d.label
+    );
+  } catch (_) {}
+  // Some OSes list the same output twice — de-dupe by deviceId.
+  const seen = {};
+  const unique = [];
+  for (const d of outs) {
+    if (!seen[d.deviceId]) {
+      seen[d.deviceId] = true;
+      unique.push(d);
+    }
+  }
+  outs = unique;
+  if (!outs.length && !canPick) {
+    hide(); // only the OS default is reachable — nothing to pick here
+    return;
+  }
+  const saved = outputDeviceForTake();
+  const parts = ['<option value="">System default (OS setting)</option>'];
+  if (!outs.length) {
+    parts.push('<option value="__pick__">Choose headphones / output device…</option>');
+  } else {
+    for (const d of outs) {
+      parts.push(`<option value="${scEscapeHTML(d.deviceId)}">${scEscapeHTML(d.label)}</option>`);
+    }
+    if (canPick) parts.push('<option value="__pick__">Choose a different output…</option>');
+  }
+  sel.innerHTML = parts.join("");
+  show();
+  sel.value = outs.some((d) => d.deviceId === saved) ? saved : "";
+  const onChange = async () => {
+    const v = sel.value;
+    if (v === "__pick__") {
+      try {
+        const picked = await navigator.mediaDevices.selectAudioOutput();
+        if (picked && picked.deviceId) {
+          // Persist + re-fill: the picker grants speaker-selection permission,
+          // so enumerateDevices now returns every labelled output.
+          localStorage.setItem(STUDIO_OUTPUT_KEY, picked.deviceId);
+          populateOutputSelect(sel);
+        } else {
+          sel.value = outputDeviceForTake(); // "Default" was chosen in the picker
+          localStorage.setItem(STUDIO_OUTPUT_KEY, "");
+        }
+      } catch (_) {
+        sel.value = outputDeviceForTake(); // user cancelled the picker
+      }
+      return;
+    }
+    localStorage.setItem(STUDIO_OUTPUT_KEY, v);
+  };
+  // populateOutputSelect can run again on the SAME element (after a pick
+  // re-fills the options), so drop the previous listener instead of stacking
+  // duplicates that would open the picker twice.
+  if (sel._rcOutChange) sel.removeEventListener("change", sel._rcOutChange);
+  sel._rcOutChange = onChange;
+  sel.addEventListener("change", onChange);
 }
 
 /* Mute the backing during a take? Default ON ("always"): with the song not
@@ -1744,6 +1875,10 @@ async function startTakeRecording() {
     return;
   }
   await ctx.resume().catch(() => {});
+  // Send the backing + count-in + 监听 monitor to the chosen output device
+  // (e.g. the singer's headphones) rather than the OS default — which is
+  // usually the room speakers and would blast the song into the raw take.
+  await routeCtxToOutput(ctx);
   studio.stream = stream;
   studio.backingCommit = commit;
 
@@ -2092,6 +2227,10 @@ function openRecordSetup() {
         <option value="R">Right (2) — e.g. an instrument in interface input 2</option>
       </select>
     </label>
+    <label class="rc-field" id="setup-output-field" style="display:none">Playback output
+      <select id="setup-output" class="studio-device" title="Which output device plays the backing + count-in + 监听 while you record this take. Pick your headphones (Chrome/Edge) so the song you sing along to doesn't blast from the room speakers and bleed into the take; “System default” follows your OS sound output."></select>
+      <span class="rc-hint">Where the song you sing along to plays. Pick your headphones here if it comes out of the speakers; “System default” follows your OS sound output.</span>
+    </label>
     <label class="studio-phones" title="Hear your input live while recording. Browser monitoring adds ~20–40 ms latency (fine for practicing); keep speakers off to avoid feedback — wear headphones, or use your interface's hardware Direct Monitor button for zero-latency monitoring. The monitor never enters the recorded take.">
       <input type="checkbox" id="setup-monitor" /> 监听 Monitor — hear your input while recording (wear headphones; an open speaker will feedback)
     </label>
@@ -2106,6 +2245,7 @@ function openRecordSetup() {
     chSel.value = inputChannelForTake();
     const monEl = overlay.querySelector("#setup-monitor");
     monEl.checked = monitorForTake();
+    populateOutputSelect(overlay.querySelector("#setup-output"));
     overlay.querySelector("#setup-cancel-btn").addEventListener("click", () => closeModal());
     overlay.querySelector("#setup-start-btn").addEventListener("click", () => {
       // Persist the dialog's choices as the session defaults — the take and
@@ -2129,6 +2269,14 @@ function showRecordSession() {
     : "Count-in: four rising ticks — start singing as the last one ends. The recorder is already capturing from the instant the backing starts, so anything you sing from the first note is recorded. The take is only the dry mic (nothing mixed in); wearing headphones (tick “Headphones” in the studio bar) records the raw mic with no echo suppression — the clearest take.";
   if (monitorForTake()) {
     sub += " Monitor is on: you’re hearing your input through the browser — keep headphones on (an open speaker will feedback).";
+  }
+  // Singing along "raw" (no echo canceller) is only clean if the song reaches
+  // your headphones and not the room speakers — the mic would otherwise record
+  // the backing through the air. Tell the singer when that route is at risk.
+  const singAlongRaw =
+    !backingMuted && (monitorForTake() || localStorage.getItem(STUDIO_PHONES_KEY) === "1");
+  if (singAlongRaw && !outputDeviceForTake()) {
+    sub += " ⚠ Singing along with the song while recording raw: the song plays through your system default output — if that comes out of the speakers (not your headphones), cancel and set Playback output to your headphones in the setup dialog before starting again.";
   }
   showModal(`
     <h3 class="rc-modal-title">Recording over ${commitHash(commit.id)}</h3>
@@ -2528,6 +2676,9 @@ async function startNewRec(overlay) {
   // policy) so stopNewRec / cancelNewRec can close it — createRecorder with a
   // context passed in leaves context management to us.
   newRecCtx = new (window.AudioContext || window.webkitAudioContext)();
+  // Same output routing as the take path — the 监听 monitor plays on the chosen
+  // device (e.g. headphones), not the OS default speakers.
+  await routeCtxToOutput(newRecCtx);
   const trackSettings =
     newRecStream.getAudioTracks()[0] && newRecStream.getAudioTracks()[0].getSettings
       ? newRecStream.getAudioTracks()[0].getSettings()

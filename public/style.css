@@ -2022,6 +2022,28 @@ body.app-standalone #app-detail {
   color: #fff;
 }
 
+/* REC HUB — the ▾/▸ commit-history toggle on each repo's header row. This is
+   how you open the takes under a recording, so it gets a larger, clearly
+   visible target than the plain 32px icon buttons beside it. */
+.rc-repo-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 42px;
+  height: 42px;
+  font-size: 1.5rem;
+  line-height: 1;
+  color: rgba(255, 255, 255, 0.92);
+  background: rgba(255, 255, 255, 0.1);
+  border-color: rgba(255, 255, 255, 0.24);
+}
+
+.rc-repo-toggle:hover {
+  background: rgba(255, 255, 255, 0.2);
+  border-color: rgba(255, 255, 255, 0.4);
+  color: #fff;
+}
+
 .repo-list {
   width: 100%;
   max-width: 640px;
