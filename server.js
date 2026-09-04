@@ -469,11 +469,12 @@ function serveFileWithCache(req, res, filePath, cacheControl) {
 }
 
 // ─── Audio upload (raw binary body) ────────────────────────────────────
-// 16 MB — WAV takes at 22050 Hz mono 16-bit ≈ 2.65 MB/min, so this allows
-// ~6 min takes. Keep in sync with nginx client_max_body_size
-// (deploy/nginx-upload.conf) and the client-side checks (public/admin.js,
-// public/music.js).
-const MAX_AUDIO_UPLOAD_BYTES = 16 * 1024 * 1024;
+// 100 MB — WAV takes at 22050 Hz mono 16-bit ≈ 2.65 MB/min, so this allows
+// ~38 min takes (restored from the original 100 MB cap; a whole song can run
+// well past 6 min). The take is buffered in memory during upload. Keep in
+// sync with nginx client_max_body_size (deploy/nginx-upload.conf) and the
+// client-side checks (public/admin.js, public/rechub.js).
+const MAX_AUDIO_UPLOAD_BYTES = 100 * 1024 * 1024;
 
 function sniffAudioExt(buf) {
   if (!buf || buf.length < 12) return null;

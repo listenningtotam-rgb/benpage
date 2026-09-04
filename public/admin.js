@@ -4,9 +4,11 @@
 const TOKEN_KEY = "benpage_admin_token";
 const USER_KEY = "benpage_admin_user";
 
-// Max upload size in MB — keep in sync with server.js (MAX_UPLOAD_BYTES /
-// MAX_AUDIO_UPLOAD_BYTES) and nginx client_max_body_size (deploy/nginx-upload.conf).
-const MAX_UPLOAD_MB = 16;
+// Max AUDIO upload size in MB — keep in sync with server.js
+// MAX_AUDIO_UPLOAD_BYTES and nginx client_max_body_size
+// (deploy/nginx-upload.conf). Blog photos have their own 5 MB cap
+// (server.js MAX_UPLOAD_BYTES), enforced server-side.
+const MAX_AUDIO_UPLOAD_MB = 100;
 
 /* Admin lists (music + blog) show only this many rows by default, with a
    "Show more" button to reveal the rest. */
@@ -433,8 +435,14 @@ $("#music-add-btn").addEventListener("click", () => showMusicForm());
 /* Turn a failed upload response into an actionable message. */
 function uploadErrorMessage(res, data) {
   if (res.status === 413) {
+    // Prefer the app's own 413 body — it names the real per-endpoint limit
+    // (5 MB for blog photos, MAX_AUDIO_UPLOAD_MB for audio). An empty body
+    // means nginx cut the request off before it reached Node (deployed
+    // client_max_body_size below the app cap).
+    if (data && data.error) return "Upload failed (413): " + data.error;
     return (
-      `Upload failed (413): the file is larger than the ${MAX_UPLOAD_MB}MB server limit. ` +
+      "Upload failed (413): the file exceeds the server upload limit " +
+      `(audio ${MAX_AUDIO_UPLOAD_MB}MB, images 5MB). ` +
       "Ask the server admin to raise nginx client_max_body_size (see deploy/nginx-upload.conf)."
     );
   }
@@ -559,8 +567,8 @@ async function uploadAudioBlob(blob, statusEl) {
   let out = blob;
   if (kind === "MP4/M4A") {
     out = await transcodeM4aToWav(blob);
-    if (!out || out.size > MAX_UPLOAD_MB * 1024 * 1024) {
-      throw new Error(`The M4A is too long — converting it to WAV exceeds the ${MAX_UPLOAD_MB}MB upload limit.`);
+    if (!out || out.size > MAX_AUDIO_UPLOAD_MB * 1024 * 1024) {
+      throw new Error(`The M4A is too long — converting it to WAV exceeds the ${MAX_AUDIO_UPLOAD_MB}MB upload limit.`);
     }
   } else if (kind && kind !== "wav" && kind !== "mp3" && kind !== "unknown") {
     throw new Error(
@@ -588,8 +596,8 @@ $("#music-file").addEventListener("change", async (e) => {
   if (!file) return;
   e.target.value = "";
   const statusEl = $("#music-upload-status");
-  if (file.size > MAX_UPLOAD_MB * 1024 * 1024) {
-    setUploadStatus(statusEl, "err", `✗ File is too large — max ${MAX_UPLOAD_MB}MB.`);
+  if (file.size > MAX_AUDIO_UPLOAD_MB * 1024 * 1024) {
+    setUploadStatus(statusEl, "err", `✗ File is too large — max ${MAX_AUDIO_UPLOAD_MB}MB.`);
     return;
   }
   try {

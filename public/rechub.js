@@ -26,6 +26,13 @@ const hubRootEl = document.getElementById("rec-hub-root");
 const TOKEN_KEY = "benpage_admin_token";      // same key as public/admin.js
 const HUB_TOKEN_KEY = "benpage_hub_token";    // member invite-code session
 
+// Audio upload cap (WAV takes, MP3/M4A backing tracks) — keep in sync with
+// server.js MAX_AUDIO_UPLOAD_BYTES, public/admin.js MAX_AUDIO_UPLOAD_MB and
+// nginx client_max_body_size (deploy/nginx-upload.conf). 100 MB ≈ 38 min of
+// 22050 Hz mono 16-bit WAV (≈ 2.65 MB/min) — long enough for a full song.
+const MAX_AUDIO_UPLOAD_MB = 100;
+const MAX_AUDIO_UPLOAD_BYTES = MAX_AUDIO_UPLOAD_MB * 1024 * 1024;
+
 const hub = {
   repos: [],
   commits: new Map(),     // repoId -> [commit...]
@@ -2154,8 +2161,8 @@ function openTakePreview() {
   if (typeof studio.takeLevel === "number" && studio.takeLevel < 0.002) {
     warnings.push("This take decoded as silent / very quiet — the mic may not have captured your voice (a known iOS mic issue). Re-record, and check the iPhone isn’t muted.");
   }
-  if (studio.blob && studio.blob.size > 15 * 1024 * 1024) {
-    warnings.push(`This take is ${(studio.blob.size / (1024 * 1024)).toFixed(1)} MB — near the 16 MB upload cap. Consider re-recording a shorter take.`);
+  if (studio.blob && studio.blob.size > (MAX_AUDIO_UPLOAD_MB - 1) * 1024 * 1024) {
+    warnings.push(`This take is ${(studio.blob.size / (1024 * 1024)).toFixed(1)} MB — near the ${MAX_AUDIO_UPLOAD_MB} MB upload cap. Consider re-recording a shorter take.`);
   }
   const warnHtml = warnings.length
     ? warnings.map((w) => `<p class="rc-hint" style="color:#c0392b;font-weight:600">⚠ ${w}</p>`).join("")
@@ -2336,8 +2343,8 @@ async function uploadBlob(blob) {
   let out = blob;
   if (kind === "MP4/M4A") {
     out = await transcodeM4aToWav(blob);
-    if (!out || out.size > 16 * 1024 * 1024) {
-      throw new Error("The M4A is too long — converting it to WAV exceeds the 16MB upload limit.");
+    if (!out || out.size > MAX_AUDIO_UPLOAD_BYTES) {
+      throw new Error(`The M4A is too long — converting it to WAV exceeds the ${MAX_AUDIO_UPLOAD_MB}MB upload limit.`);
     }
   } else if (kind && kind !== "wav" && kind !== "mp3" && kind !== "unknown") {
     throw new Error(
@@ -2487,8 +2494,8 @@ async function openNewRecording() {
       if (!f) return;
       e.target.value = "";
       const status = overlay.querySelector("#new-source-status");
-      if (f.size > 16 * 1024 * 1024) {
-        status.textContent = "✗ File too large — max 16MB.";
+      if (f.size > MAX_AUDIO_UPLOAD_BYTES) {
+        status.textContent = `✗ File too large — max ${MAX_AUDIO_UPLOAD_MB}MB.`;
         return;
       }
       status.textContent = "Uploading…";
