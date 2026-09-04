@@ -1538,6 +1538,17 @@ function takeMicConstraints(pick) {
   // Picking a specific side (L/R) needs BOTH channels delivered — with 1 we'd
   // only ever see the downmix and could not separate input 1 from input 2.
   const channelCount = pick !== "both" ? 2 : 1;
+  if (isIOS()) {
+    // iPhone/iPad capture has no raw bypass: WebKit gates its voice-processing
+    // gain behind echoCancellation, so asking for EC/NS/AGC all off makes Safari
+    // hand back a very quiet (near-silent) mic track. Keep the voice path on AND
+    // let iOS apply its own input gain (autoGainControl true) — with AGC forced
+    // off even a normal voice through a phone mic or a quiet 声卡 preamp records
+    // far too small. The dialog flags still work (Monitor still connects,
+    // No-backing still mutes the song); only the capture keeps Safari's own
+    // DSP + gain so a phone recording has a normal level.
+    return { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1 };
+  }
   if (monitorForTake() || localStorage.getItem(STUDIO_PHONES_KEY) === "1" || muteBackingForTake()) {
     return { echoCancellation: false, noiseSuppression: false, autoGainControl: false, channelCount };
   }
