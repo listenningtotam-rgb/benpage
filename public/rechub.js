@@ -185,12 +185,12 @@ function renderHub() {
           <option value="L" ${inputChannelForTake() === "L" ? "selected" : ""}>L(1)</option>
           <option value="R" ${inputChannelForTake() === "R" ? "selected" : ""}>R(2)</option>
         </select>
-        <select id="studio-output" class="studio-device" style="display:none" title="Output for the backing + count-in + 监听 during a take. Pick your headphones here (Chrome/Edge) so the song you sing along to doesn't blast from the room speakers and bleed into the take; “System default” follows your OS sound output."></select>
-        <label class="studio-phones" title="Hear your input live while recording. Wear headphones — an open speaker will feedback; your interface's hardware Direct Monitor button is zero-latency and tighter than this browser monitor.">
-          <input type="checkbox" id="studio-monitor" ${monitorForTake() ? "checked" : ""} /> 监听
+        <select id="studio-output" class="studio-device" style="display:none" title="Output for the backing + count-in + 监听 during a take. Pick your headphones here (Chrome/Edge) so the song you sing along to doesn't blast from the room speakers and bleed into the take; “System default” follows your OS sound output. Not available on iPhone — WebKit has no output picker, and while the mic records iOS forces the phone speaker anyway."></select>
+        <label class="studio-phones" title="Hear your input live while recording. Wear headphones — an open speaker will feedback; your interface's hardware Direct Monitor button is zero-latency and tighter than this browser monitor. On iPhone the browser monitor can't reach your earphones (Safari forces the speaker route while the mic is live), so it is disabled there — use your interface's hardware monitor instead.">
+          <input type="checkbox" id="studio-monitor" ${monitorForTake() && canMonitorInBrowser() ? "checked" : ""} ${isIOS() ? "disabled" : ""} /> 监听 ${isIOS() ? "(iPhone: off)" : ""}
         </label>
-        <label class="studio-phones" title="Headphones? Records the raw mic with the browser's echo canceller / noise suppressor turned off — the clearest take.">
-          <input type="checkbox" id="studio-phones" ${localStorage.getItem(STUDIO_PHONES_KEY) === "1" ? "checked" : ""} /> Headphones
+        <label class="studio-phones" title="Headphones? Records the raw mic with the browser's echo canceller / noise suppressor turned off — the clearest take. On iPhone Safari keeps its own DSP on regardless (recording raw on iOS can return a silent capture), so this is disabled there.">
+          <input type="checkbox" id="studio-phones" ${localStorage.getItem(STUDIO_PHONES_KEY) === "1" && canMonitorInBrowser() ? "checked" : ""} ${isIOS() ? "disabled" : ""} /> Headphones ${isIOS() ? "(iPhone: locked)" : ""}
         </label>
         <label class="studio-phones" title="Mute the backing during this take (default on)? With the song muted nothing can bleed from the speakers into the mic — the take is guaranteed clean — but you sing a cappella to the count-in ticks. Uncheck to sing along with the song, e.g. in headphones.">
           <input type="checkbox" id="studio-no-backing" ${muteBackingForTake() ? "checked" : ""} /> No backing
@@ -1334,7 +1334,15 @@ function stopPlayback() {
    mic is recorded: the backing is never routed into the take, and the mic is
    routed to the speakers only when the optional monitor is on — an output-only
    parallel path (monitorInput), so it can never leak into the recorded take.
-   Previewing/committing is done afterwards. */
+   Previewing/committing is done afterwards.
+
+   iOS/WebKit caveat: the moment ANY mic capture is live, WebKit forces the
+   page's audio session to PlayAndRecord + DefaultToSpeaker (WebCore
+   MediaSessionManagerCocoa / AudioSessionIOS) — on iPhone the song, count-in
+   and 监听 monitor all play from the phone's own speaker during a take, and no
+   page code can redirect them (WebKit exposes no output-device API). That is a
+   platform constraint of every recording flow here, not something this session
+   does wrong. */
 const studio = {
   stream: null,
   recorder: null,
@@ -1430,7 +1438,9 @@ function monitorForTake() {
    reach ctx.destination, so when the singer wears headphones on a SEPARATE
    device the backing would blast from the speakers and bleed into the raw take.
    Choosing a device here renders to that output instead (Chrome/Edge:
-   AudioContext.setSinkId) so the song stays in the headphones. */
+   AudioContext.setSinkId) so the song stays in the headphones. On iPhone this
+   control is inert — WebKit ships no setSinkId/selectAudioOutput, and while a
+   mic is live the OS forces the speaker route anyway (see canMonitorInBrowser). */
 function outputDeviceForTake() {
   const v = localStorage.getItem(STUDIO_OUTPUT_KEY);
   return v && v !== "default" ? v : "";
@@ -1458,6 +1468,21 @@ function routeElToOutput(el) {
   try {
     el.setSinkId(id).catch(() => {});
   } catch (_) {}
+}
+
+/* iPhone/WebKit output routing, for real: iOS exposes no output-device API (no
+   setSinkId, no selectAudioOutput — the picker above simply doesn't exist on
+   iPhone), and while ANY mic capture is live WebKit drives the page's audio
+   session into PlayAndRecord with the DefaultToSpeaker option (WebCore
+   MediaSessionManagerCocoa:updateSessionState + AudioSessionIOS:setCategory).
+   The whole page then plays through the phone's built-in speaker — never the
+   connected headset/声卡 — and no page code can redirect it; even a native
+   <audio> element can't, because iOS output routing is per audio-SESSION, not
+   per element. The in-browser 监听 monitor is therefore skipped on iOS: it
+   could only reach the phone speaker (feedback + bleed into the mic), never
+   the singer's earphones. Use the interface's hardware monitor there instead. */
+function canMonitorInBrowser() {
+  return !isIOS();
 }
 
 /* Fill an output-device <select> (studio bar + record-setup dialog). Browsers
@@ -1899,7 +1924,10 @@ async function startTakeRecording() {
   // Optional live monitor, connected the moment the stream exists so the
   // player hears the count-in AND their instrument. Output-only: the recorder
   // below still captures the raw mic, so the monitor never reaches the WAV.
-  if (monitorForTake()) {
+  // Skipped on iPhone: while the mic is live WebKit forces the speaker route
+  // (see canMonitorInBrowser), so the monitor could only blast the voice back
+  // out of the phone's speaker — use the interface's hardware monitor there.
+  if (monitorForTake() && canMonitorInBrowser()) {
     studio.monitor = monitorInput(ctx, stream, pick);
   }
 
@@ -2216,7 +2244,7 @@ function openRecordSetup() {
   if (!commit) return;
   showModal(`
     <h3 class="rc-modal-title">Record over ${commitHash(commit.id)}</h3>
-    <p class="rc-modal-sub">Choose the input and how you monitor it — the count-in starts as soon as you hit Start.</p>
+    <p class="rc-modal-sub">Choose the input and how you monitor it — the count-in starts as soon as you hit Start.${isIOS() ? " iPhone: while the mic records, Safari sends the take’s audio out of the phone’s own speaker — the browser 监听 can’t reach your 声卡 earphones, so use your interface’s hardware monitor to hear yourself." : ""}</p>
     <label class="rc-field">Input device
       <select id="setup-device" class="studio-device" title="Pick the interface's USB input, not a loopback / stereo-mix device"></select>
     </label>
@@ -2231,8 +2259,8 @@ function openRecordSetup() {
       <select id="setup-output" class="studio-device" title="Which output device plays the backing + count-in + 监听 while you record this take. Pick your headphones (Chrome/Edge) so the song you sing along to doesn't blast from the room speakers and bleed into the take; “System default” follows your OS sound output."></select>
       <span class="rc-hint">Where the song you sing along to plays. Pick your headphones here if it comes out of the speakers; “System default” follows your OS sound output.</span>
     </label>
-    <label class="studio-phones" title="Hear your input live while recording. Browser monitoring adds ~20–40 ms latency (fine for practicing); keep speakers off to avoid feedback — wear headphones, or use your interface's hardware Direct Monitor button for zero-latency monitoring. The monitor never enters the recorded take.">
-      <input type="checkbox" id="setup-monitor" /> 监听 Monitor — hear your input while recording (wear headphones; an open speaker will feedback)
+    <label class="studio-phones" title="Hear your input live while recording. Browser monitoring adds ~20–40 ms latency (fine for practicing); keep speakers off to avoid feedback — wear headphones, or use your interface's hardware Direct Monitor button for zero-latency monitoring. The monitor never enters the recorded take. On iPhone it is disabled: the forced speaker route during capture means the monitor could only blast your voice from the phone speaker — use your interface's hardware monitor.">
+      <input type="checkbox" id="setup-monitor" ${isIOS() ? "disabled" : ""} /> 监听 Monitor — hear your input while recording (wear headphones; an open speaker will feedback)${isIOS() ? " (iPhone: off — see note above)" : ""}
     </label>
     <div class="rc-modal-actions">
       <button type="button" class="rc-btn rc-btn-ghost" id="setup-cancel-btn">Cancel</button>
@@ -2244,7 +2272,7 @@ function openRecordSetup() {
     const chSel = overlay.querySelector("#setup-channel");
     chSel.value = inputChannelForTake();
     const monEl = overlay.querySelector("#setup-monitor");
-    monEl.checked = monitorForTake();
+    monEl.checked = monitorForTake() && canMonitorInBrowser(); // on iPhone the browser monitor is unavailable — see canMonitorInBrowser
     populateOutputSelect(overlay.querySelector("#setup-output"));
     overlay.querySelector("#setup-cancel-btn").addEventListener("click", () => closeModal());
     overlay.querySelector("#setup-start-btn").addEventListener("click", () => {
@@ -2267,7 +2295,7 @@ function showRecordSession() {
   let sub = backingMuted
     ? "No backing — the song is muted for this take, so nothing can bleed into the mic: you record clean a cappella to the four rising ticks (start singing as the last one ends). The recorder is already capturing from the instant the ticks begin, so anything you sing from the first note is recorded. The take is only the dry mic (nothing mixed in)."
     : "Count-in: four rising ticks — start singing as the last one ends. The recorder is already capturing from the instant the backing starts, so anything you sing from the first note is recorded. The take is only the dry mic (nothing mixed in); wearing headphones (tick “Headphones” in the studio bar) records the raw mic with no echo suppression — the clearest take.";
-  if (monitorForTake()) {
+  if (monitorForTake() && canMonitorInBrowser()) {
     sub += " Monitor is on: you’re hearing your input through the browser — keep headphones on (an open speaker will feedback).";
   }
   // Singing along "raw" (no echo canceller) is only clean if the song reaches
@@ -2277,6 +2305,13 @@ function showRecordSession() {
     !backingMuted && (monitorForTake() || localStorage.getItem(STUDIO_PHONES_KEY) === "1");
   if (singAlongRaw && !outputDeviceForTake()) {
     sub += " ⚠ Singing along with the song while recording raw: the song plays through your system default output — if that comes out of the speakers (not your headphones), cancel and set Playback output to your headphones in the setup dialog before starting again.";
+  }
+  if (isIOS()) {
+    // iPhone/WebKit (see canMonitorInBrowser): the instant the mic is live the
+    // audio session is forced to the phone speaker, so the browser 监听 above
+    // was skipped and the backing/count-in cannot reach 声卡 earphones. This is
+    // platform behavior, not a settings problem — say so, and name the only lever.
+    sub += " iPhone: while the mic records, Safari plays this take out of the phone’s own speaker — WebKit forces that route during capture, and iPhone exposes no output-device API, so the song/count-in can’t reach your 声卡 earphones from the browser (the 监听 above was left off for the same reason). Use your interface’s hardware monitor to hear your voice. If the song must be in your earphones, the only lever is iOS Control Center → tap the output/route control once the count-in starts — it works on some iOS versions, not all.";
   }
   showModal(`
     <h3 class="rc-modal-title">Recording over ${commitHash(commit.id)}</h3>
@@ -2686,7 +2721,9 @@ async function startNewRec(overlay) {
   let pick = inputChannelForTake();
   if (trackSettings && trackSettings.channelCount === 1 && pick !== "both") pick = "both";
   // Same output-only live monitor as the take path — never reaches the WAV.
-  if (monitorForTake()) newRecMonitor = monitorInput(newRecCtx, newRecStream, pick);
+  // Skipped on iPhone: WebKit forces the speaker route during capture, so the
+  // monitor could only reach the phone speaker (see canMonitorInBrowser).
+  if (monitorForTake() && canMonitorInBrowser()) newRecMonitor = monitorInput(newRecCtx, newRecStream, pick);
   newRecRecorder = createRecorder(newRecCtx, newRecStream, {
     // The recorder assembles the WAV itself; onStop delivers the finished blob.
     onData: () => {},
