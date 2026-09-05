@@ -109,7 +109,14 @@
 
         <div id="app-calendar" class="app-panel" hidden>
           <h3 class="app-panel-title">FX Holiday Calendar</h3>
-          <p class="cal-caption">Major currency markets around the world — red days are FX holidays when one or more currencies are not trading. Tap a red day for details.</p>
+
+          <div class="app-intro">
+            <p class="cal-caption app-intro-text">Major currency markets around the world — red days are FX holidays when one or more currencies are not trading. Tap a red day for details.</p>
+            <div class="app-qr">
+              <img class="app-qr-img" src="/api/app-qr/calendar" alt="微信扫码 · 打开 FX Holiday Calendar" width="116" height="116" loading="lazy" decoding="async" />
+              <span class="app-qr-hint">微信扫码 · 打开 FX Holiday Calendar</span>
+            </div>
+          </div>
 
           <div class="cal-toolbar">
             <button type="button" id="cal-prev" class="cal-nav" aria-label="Previous month">&lsaquo;</button>
@@ -136,6 +143,15 @@
 
         <div id="app-fx" class="app-panel" hidden>
           <h3 class="app-panel-title">FX Market Watch</h3>
+
+          <div class="app-intro">
+            <p class="cal-caption app-intro-text">Global currency exchange — live bid &amp; ask prices from the main market makers, with spread &amp; trend for every major pair.</p>
+            <div class="app-qr">
+              <img class="app-qr-img" src="/api/app-qr/fx" alt="微信扫码 · 打开 FX Market Watch" width="116" height="116" loading="lazy" decoding="async" />
+              <span class="app-qr-hint">微信扫码 · 打开 FX Market Watch</span>
+            </div>
+          </div>
+
           <div class="fx-controls">
             <label for="fx-base">Base Currency
               <select id="fx-base">
@@ -165,13 +181,27 @@
 
         <div id="app-rechub" class="app-panel" hidden>
           <h3 class="app-panel-title">REC HUB</h3>
-          <p class="cal-caption">Git-like recording studio — browse recordings, layer takes over a backing track, tag versions, and share the mix as a web page.</p>
+
+          <div class="app-intro">
+            <p class="cal-caption app-intro-text">Git-like recording studio — browse recordings, layer takes over a backing track, tag versions, and share the mix as a web page.</p>
+            <div class="app-qr">
+              <img class="app-qr-img" src="/api/app-qr/rechub" alt="微信扫码 · 打开 REC HUB" width="116" height="116" loading="lazy" decoding="async" />
+              <span class="app-qr-hint">微信扫码 · 打开 REC HUB</span>
+            </div>
+          </div>
           <div class="track-list" id="rec-hub-root"></div>
         </div>
 
         <div id="app-vinyl" class="app-panel" hidden>
           <h3 class="app-panel-title">黑胶档案 · Vinyl Archive</h3>
-          <p class="cal-caption">本地档案库 = 你收藏的黑胶。点「📚 浏览档案」查询本地收藏库（不输入关键字 = 输出全部收藏）；或在输入框写艺人 / 专辑 / 厂牌 / 编号搜 Discogs —— 进入详情后可点「♥ 收藏」把这张唱片存入本地档案库，也能生成一张复古分享页。</p>
+
+          <div class="app-intro">
+            <p class="cal-caption app-intro-text">本地档案库 = 你收藏的黑胶。点「📚 浏览档案」查询本地收藏库（不输入关键字 = 输出全部收藏）；或在输入框写艺人 / 专辑 / 厂牌 / 编号搜 Discogs —— 进入详情后可点「♥ 收藏」把这张唱片存入本地档案库，也能生成一张复古分享页。</p>
+            <div class="app-qr">
+              <img class="app-qr-img" src="/api/app-qr/vinyl" alt="微信扫码 · 打开 黑胶档案" width="116" height="116" loading="lazy" decoding="async" />
+              <span class="app-qr-hint">微信扫码 · 打开 黑胶档案</span>
+            </div>
+          </div>
 
           <div class="vinyl-stage" id="vinyl-stage">
             <div class="vinyl-demo">
@@ -190,38 +220,19 @@
       </div>
     </section>
 
-    <!-- Contact Section (placeholder) -->
+    <!-- Contact Section -->
     <section id="contact" class="section">
       <h2 class="section-title">Contact</h2>
-      <p class="section-placeholder">Coming soon...</p>
+      <div class="contact-card">
+        <p class="contact-label">Email</p>
+        <a class="contact-email" href="mailto:tam_ben@163.com">tam_ben@163.com</a>
+        <p class="contact-note">Bookings, collaborations, or just saying hi — drop me an email anytime.</p>
+      </div>
     </section>
 
     <!-- ICP 备案号 -->
     <div class="site-icp">
       <a href="https://beian.miit.gov.cn" target="_blank" rel="noopener">粤ICP备2026118985号</a>
-    </div>
-  </div>
-
-  <!-- App QR badges — pinned to the bottom-left corner of the page while an
-       app is open (scan with WeChat to open that app on your phone).  Kept at
-       body level, outside #app-detail, so the panel entrance animation cannot
-       hijack position:fixed; apps.js toggles .active on the visible app. -->
-  <div class="app-qr-row">
-    <div class="app-qr" data-app="calendar">
-      <img class="app-qr-img" src="/api/app-qr/calendar" alt="微信扫码 · 打开 FX Holiday Calendar" width="176" height="176" loading="lazy" decoding="async" />
-      <span class="app-qr-hint">微信扫码 · 打开 FX Holiday Calendar</span>
-    </div>
-    <div class="app-qr" data-app="fx">
-      <img class="app-qr-img" src="/api/app-qr/fx" alt="微信扫码 · 打开 FX Market Watch" width="176" height="176" loading="lazy" decoding="async" />
-      <span class="app-qr-hint">微信扫码 · 打开 FX Market Watch</span>
-    </div>
-    <div class="app-qr" data-app="rechub">
-      <img class="app-qr-img" src="/api/app-qr/rechub" alt="微信扫码 · 打开 REC HUB" width="176" height="176" loading="lazy" decoding="async" />
-      <span class="app-qr-hint">微信扫码 · 打开 REC HUB</span>
-    </div>
-    <div class="app-qr" data-app="vinyl">
-      <img class="app-qr-img" src="/api/app-qr/vinyl" alt="微信扫码 · 打开 黑胶档案" width="176" height="176" loading="lazy" decoding="async" />
-      <span class="app-qr-hint">微信扫码 · 打开 黑胶档案</span>
     </div>
   </div>
 
