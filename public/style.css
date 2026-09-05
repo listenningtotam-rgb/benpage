@@ -1102,6 +1102,56 @@ body {
   margin-bottom: 1.4rem;
 }
 
+/* App QR badges — pinned to the bottom-left corner of the page while an app
+   is open (WeChat scan opens the app via a same-site short link; the PNG is
+   served by GET /api/app-qr/:key).  The row sits at body level, outside
+   #app-detail's entrance animation, so position:fixed is never hijacked by a
+   transformed ancestor; apps.js adds .active to the current app's badge. */
+.app-qr-row {
+  position: fixed;
+  left: 1rem;
+  bottom: 1rem;
+  z-index: 60;
+  display: flex;
+  justify-content: flex-start;
+  margin: 0;
+  max-width: calc(100vw - 2rem);
+}
+
+.app-qr {
+  display: none;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.45rem;
+  padding: 0.6rem 0.7rem 0.5rem;
+  background: rgba(10, 14, 24, 0.78);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 12px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+}
+
+.app-qr.active {
+  display: inline-flex;
+}
+
+.app-qr-img {
+  display: block;
+  width: 132px;
+  height: 132px;
+  background: #fff;
+  border-radius: 6px;
+}
+
+.app-qr-hint {
+  font-size: 0.68rem;
+  line-height: 1.4;
+  color: rgba(255, 255, 255, 0.55);
+  letter-spacing: 0.05em;
+  text-align: center;
+}
+
 /* Direct app URLs (https://<domain>/{path}) — show only the app itself:
    hide every other section so the panel reads as a standalone app page. */
 body.app-standalone .section:not(#apps) {

@@ -8,6 +8,11 @@ const gallery = $("apps-gallery");
 const detail = $("app-detail");
 const panels = { calendar: $("app-calendar"), fx: $("app-fx"), rechub: $("app-rechub"), vinyl: $("app-vinyl") };
 
+// Bottom-left QR badge — one code per app, all at body level; show only the
+// badge for whichever app is currently open.
+const qrBadges = document.querySelectorAll(".app-qr-row .app-qr");
+const setQrBadge = (key) => qrBadges.forEach((el) => el.classList.toggle("active", el.dataset.app === key));
+
 // Direct-access URLs — every app also lives at https://<domain>/{path}
 // (server serves the single-page index.html shell; see server.js APP_PATHS).
 // Visiting one auto-opens that app as a standalone page.
@@ -22,6 +27,7 @@ function openApp(target, opts = {}) {
   gallery.hidden = true;
   detail.hidden = false;
   Object.entries(panels).forEach(([k, el]) => { el.hidden = k !== target; });
+  setQrBadge(target);
 
   if (target === "calendar") initCalendar();
   if (target === "fx") initFx();
@@ -54,6 +60,7 @@ $("app-detail-close").addEventListener("click", () => {
   }
   detail.hidden = true;
   gallery.hidden = false;
+  setQrBadge(null);
   if (window.VinylArchive) window.VinylArchive.stop();
 });
 

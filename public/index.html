@@ -202,6 +202,29 @@
     </div>
   </div>
 
+  <!-- App QR badges — pinned to the bottom-left corner of the page while an
+       app is open (scan with WeChat to open that app on your phone).  Kept at
+       body level, outside #app-detail, so the panel entrance animation cannot
+       hijack position:fixed; apps.js toggles .active on the visible app. -->
+  <div class="app-qr-row">
+    <div class="app-qr" data-app="calendar">
+      <img class="app-qr-img" src="/api/app-qr/calendar" alt="微信扫码 · 打开 FX Holiday Calendar" width="176" height="176" loading="lazy" decoding="async" />
+      <span class="app-qr-hint">微信扫码 · 打开 FX Holiday Calendar</span>
+    </div>
+    <div class="app-qr" data-app="fx">
+      <img class="app-qr-img" src="/api/app-qr/fx" alt="微信扫码 · 打开 FX Market Watch" width="176" height="176" loading="lazy" decoding="async" />
+      <span class="app-qr-hint">微信扫码 · 打开 FX Market Watch</span>
+    </div>
+    <div class="app-qr" data-app="rechub">
+      <img class="app-qr-img" src="/api/app-qr/rechub" alt="微信扫码 · 打开 REC HUB" width="176" height="176" loading="lazy" decoding="async" />
+      <span class="app-qr-hint">微信扫码 · 打开 REC HUB</span>
+    </div>
+    <div class="app-qr" data-app="vinyl">
+      <img class="app-qr-img" src="/api/app-qr/vinyl" alt="微信扫码 · 打开 黑胶档案" width="176" height="176" loading="lazy" decoding="async" />
+      <span class="app-qr-hint">微信扫码 · 打开 黑胶档案</span>
+    </div>
+  </div>
+
   <script src="game.js"></script>
   <script src="qrcode.js"></script>
   <script src="/site-config.js"></script>

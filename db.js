@@ -965,6 +965,46 @@ function incrementShareLinkHit(code) {
   db.prepare("UPDATE share_links SET hits = hits + 1 WHERE code = ?").run(code);
 }
 
+/* ── App QR codes (dynamic QR → same-site short link) ─── */
+/* One row per app key (see server.js APP_QR_TARGETS).  The QR image always
+ * encodes the app's short code; only the code's target URL is mutable, so
+ * repointing an app never invalidates printed codes. */
+function getAppQr(key) {
+  if (typeof key !== "string" || !key) return null;
+  return db.prepare("SELECT * FROM app_qr WHERE key = ?").get(key) || null;
+}
+
+/* Keep the same short code, move where it redirects (share_links row
+ * carries the target; app_qr just mirrors it). */
+function retargetAppQr(key, url) {
+  db.prepare(
+    "UPDATE share_links SET url = ? WHERE code = (SELECT code FROM app_qr WHERE key = ?)"
+  ).run(url, key);
+  db.prepare("UPDATE app_qr SET url = ?, updated_at = datetime('now') WHERE key = ?").run(url, key);
+  return getAppQr(key);
+}
+
+/* Return the row for `key`, creating it on first use: a fresh same-site
+ * short code is stored in share_links, then app_qr pins key → code → url.
+ * Idempotent: repeated calls reuse the stored code (retargeting only if the
+ * canonical target path has changed). */
+function ensureAppQr(key, url) {
+  const existing = getAppQr(key);
+  if (existing) {
+    return existing.url === url ? existing : retargetAppQr(key, url);
+  }
+  const link = createShareLink(url);
+  try {
+    db.prepare("INSERT INTO app_qr (key, code, url) VALUES (?, ?, ?)").run(key, link.code, url);
+  } catch (e) {
+    if (!String(e.message || "").includes("UNIQUE")) throw e;
+    // Two first requests raced; the other one won the key. Drop the orphan
+    // short link we just made and hand back the existing row.
+    db.prepare("DELETE FROM share_links WHERE code = ?").run(link.code);
+  }
+  return getAppQr(key);
+}
+
 /* ── Init ──────────────────────────────────────────────── */
 ensureAdmin();
 
@@ -1035,4 +1075,7 @@ module.exports = {
   createShareLink,
   getShareLink,
   incrementShareLinkHit,
+  getAppQr,
+  retargetAppQr,
+  ensureAppQr,
 };

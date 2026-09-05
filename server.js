@@ -22,6 +22,17 @@ const APP_PATHS = {
   "/admin": "admin.html",    // Admin console
 };
 
+// Apps that expose a WeChat-scan QR (GET /api/app-qr/:key).  Key names mirror
+// the app panel ids in public/index.html / apps.js.  Each QR encodes a stable
+// same-site short link (/s/<code>) that redirects to the app's canonical
+// path — retargeting an app later never invalidates printed codes.
+const APP_QR_TARGETS = {
+  calendar: "/calendar",
+  fx: "/fx",
+  rechub: "/rec-hub",
+  vinyl: "/vinyl",
+};
+
 // Hosts/domain that are allowed to call the API.
 // - localhost / 127.0.0.1 / ::1 are always allowed (local dev, curl on the box).
 // - ALLOWED_HOSTS: comma-separated hostnames, e.g. "example.com,www.example.com"
@@ -129,6 +140,7 @@ function loadJwtSecret() {
 const JWT_SECRET = loadJwtSecret();
 
 const db = require("./db");
+const qrPng = require("./qr-png.js");
 
 // ─── Discogs token (黑胶档案文字搜索) ────────────────────────────────
 // Discogs 的 /database/search 要求"任何用户"级别的认证。个人访问令牌在
@@ -2156,6 +2168,27 @@ async function handleApi(req, res, urlPath) {
       url: link.url,
       short_url: `${siteBase(req)}/s/${link.code}`,
     });
+  }
+
+  // App QR images — dynamic server-side PNG for each app page.  The QR's
+  // payload is the app's same-site short link (/s/<code> → /rec-hub, /vinyl,
+  // …), created lazily and pinned per app in DB (db.ensureAppQr).  The image
+  // is regenerated on every request (no-store) but always encodes the same
+  // stable short code, whose target stays editable in the DB.
+  const appQrMatch = urlPath.match(/^\/api\/app-qr\/([A-Za-z0-9_-]{1,32})$/);
+  if (appQrMatch && req.method === "GET") {
+    const appKey = appQrMatch[1];
+    const targetPath = APP_QR_TARGETS[appKey];
+    if (!targetPath) return json(res, 404, { error: "Unknown app key" });
+    const app = db.ensureAppQr(appKey, targetPath);
+    const { png } = qrPng.pngForText(`${siteBase(req)}/s/${app.code}`);
+    res.writeHead(200, {
+      "Content-Type": "image/png",
+      "Cache-Control": "no-store",
+      "X-Content-Type-Options": "nosniff",
+    });
+    res.end(png);
+    return;
   }
 
   // ── Vinyl Archive (黑胶档案) API ──────────────────────
