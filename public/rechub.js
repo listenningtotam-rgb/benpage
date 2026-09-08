@@ -2351,10 +2351,16 @@ async function startTakeRecording() {
   studio.cancelled = false; // fresh session — commit/discard/cancel all leave this true; must reset BEFORE the post-decode check below
 
   // Create the AudioContext synchronously inside the click so the browser's
-  // autoplay policy is satisfied; resume it once mic + buffers are ready.
+  // autoplay policy is satisfied. Resume it IMMEDIATELY, still inside the
+  // gesture: browsers that start a fresh context suspended (Safari/iOS, and
+  // Chrome under autoplay restrictions) only grant the resume while the
+  // gesture is live. Deferring it until after the mic prompt + decode would
+  // leave the context suspended, and every source scheduled into a suspended
+  // context is dropped silently — the session UI runs but nothing is audible.
   closeAudio(); // stop any ongoing playback first
   const ctx = new (window.AudioContext || window.webkitAudioContext)();
   audioEngine.ctx = ctx;
+  try { ctx.resume().catch(() => {}); } catch (_) {}
 
   let stream;
   try {
@@ -2365,7 +2371,19 @@ async function startTakeRecording() {
     setStudioStatus("✗ microphone unavailable: " + err.message, true);
     return;
   }
-  await ctx.resume().catch(() => {});
+  // Second chance at running (the immediate resume above may have been too
+  // early for the engine) — and a hard check before the slow decode + schedule:
+  // a context that is still suspended would schedule fine but silently drop the
+  // count-in, the backing, and the monitor while the session UI runs normally.
+  // Surface that instead of recording a take nobody can hear.
+  const running = await ensureCtxRunning(ctx);
+  if (!running) {
+    studio.recording = false;
+    cleanupTakeMedia();
+    renderHub();
+    setStudioStatus("✗ the browser held the take's audio back — tap Start again to grant it", true);
+    return;
+  }
   // Send the backing + count-in + 监听 monitor to the chosen output device
   // (e.g. the singer's headphones) rather than the OS default — which is
   // usually the room speakers and would blast the song into the raw take.
