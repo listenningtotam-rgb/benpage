@@ -566,14 +566,16 @@ function clampCommitVolume(v) {
   return Math.min(3, Math.max(0, n));
 }
 
-/* Count-in pre-roll (seconds) between the backing chain start and the take
-   blob's zero point. Only the first few seconds are ever meaningful — the
-   browser's DSP converges that quickly — so clamp rather than trust the
-   client. 0 = no pre-roll (every pre-existing commit). */
+/* Take lead (seconds) = the root-timeline position where the take blob's zero
+   point sits. It is 0 for takes recorded from the song's start, the old 1.5 s
+   count-in pre-roll for legacy takes, or the chosen "start point in the song"
+   for mid-song takes (the take then lands at exactly that position on the
+   timeline). Clamp rather than trust the client; only a client bug could ever
+   produce a lead beyond a full hour. */
 function clampCommitLead(v) {
   const n = Number(v);
   if (!Number.isFinite(n) || n < 0) return 0;
-  return Math.min(5, n);
+  return Math.min(3600, n);
 }
 
 /* Contributor name stored on the commit: trimmed, single-spaced, ≤ 60 chars.

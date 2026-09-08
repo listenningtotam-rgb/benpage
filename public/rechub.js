@@ -11,10 +11,11 @@
      · volume      → linear gain multiplier for this take when the chain plays
                       (1.0 = unchanged; used to balance a take vs the parent)
      · lead        → seconds between the backing start and the take blob's zero
-                      point. New takes record from the backing start (lead = 0);
-                      older takes used a 1.5 s count-in pre-roll (lead = 1.5).
-                      The mix reads the blob from start_time − lead so the take
-                      stays exactly where it was sung.
+                      point. Takes recorded from the song's start use lead = 0,
+                      legacy takes used a 1.5 s count-in pre-roll, and mid-song
+                      takes use the chosen “start point in the song”, so the mix
+                      reads the blob from start_time − lead and the take stays
+                      exactly where it was sung.
      · mode        → 'single' (plays alone) | 'overlay' (layered on parent)
    Visitors browse & listen. The owner (existing admin JWT in localStorage,
    same key as admin.js) can init a recording, check out a commit, record a
@@ -816,6 +817,46 @@ function scheduleLayer(ctx, layer, whenOffset, bufOffset, dur, startAt, dest, ga
   audioEngine.sources.push(src);
 }
 
+/* Read window of one chain layer when the session starts at root position
+   `fromRoot` instead of 0 (the record-setup dialog's "start point in the
+   song"). A layer's blob zero sits at `lead` on the root timeline, its audible
+   content starts at buffer position (start_time − lead), and an end_time cuts
+   the content there. From a mid-song start only the content at/after fromRoot
+   is read; the same blob read as today when fromRoot = 0.
+
+   Returns { readStart, readDur, whenOffset } (buffer seconds; whenOffset is the
+   graph delay from the session zero), or null when the layer has nothing left
+   at/after fromRoot. scheduleLayer pads short reads to ≥ 0.05 s — a play that
+   would run past the buffer's end would throw (RangeError), so windows within
+   0.05 s of the end are dropped (≤ 50 ms of tail — inaudible, never fatal). */
+function layerReadWindow(c, bufferDur, fromRoot) {
+  const bufDur = Math.max(0, Number(bufferDur) || 0);
+  if (!(bufDur > 0)) return null;
+  const lead = Math.max(0, Number(c.lead) || 0);
+  const startT = Math.max(0, Number(c.start_time) || 0);
+  const endT = Number(c.end_time);
+  const c0 = Math.max(0, startT - lead); // audible content start, in the buffer
+  const c1 = isFinite(endT) && endT > 0 ? Math.min(endT - lead, bufDur) : bufDur;
+  if (!(c1 > c0)) return null;
+  const F = Math.max(0, Number(fromRoot) || 0);
+  const readStart = Math.max(c0, F - lead);
+  if (readStart >= c1 || bufDur - readStart < 0.05) return null;
+  return {
+    readStart,
+    readDur: Math.min(c1 - readStart, bufDur - readStart),
+    whenOffset: Math.max(0, lead + readStart - F),
+  };
+}
+
+/* scheduleLayer wrapper for the mid-song session scheduling (take backing,
+   play-from-a-point auditions): uses layerReadWindow so the same per-layer
+   read windows are shared by the live path and the iOS offline render. */
+function scheduleSessionLayer(ctx, layer, c, fromRoot, startAt, dest, gain) {
+  const win = layerReadWindow(c, layer.buffer && layer.buffer.duration, fromRoot);
+  if (!win) return;
+  scheduleLayer(ctx, layer, win.whenOffset, win.readStart, win.readDur, startAt, dest, gain);
+}
+
 /* iPadOS 13+ reports a desktop "MacIntel" UA; maxTouchPoints > 1 is the
    reliable tell. iOS Safari's Web Audio clock can run while sources are
    dropped silently, so iOS always plays through a native <audio> element. */
@@ -826,6 +867,454 @@ function isIOS() {
   );
 }
 
+/* ── Backing chain length (the record-setup slider's range) ────────────────
+
+   The "start point in the song" slider spans the ROOT-timeline length of the
+   checked-out backing chain (the root commit + every later take). Exact
+   lengths come from the decoded AudioBuffer when one is already cached;
+   otherwise a WAV's length is read straight from its RIFF header with a tiny
+   range request (no multi-MB download), and non-WAV files fall back to <audio>
+   metadata. Layers with a committed end_time need no file read at all. */
+
+const audioDurCache = new Map(); // url → seconds | null (null = known unreadable)
+
+function wavHeaderDuration(buf) {
+  try {
+    if (!buf || buf.byteLength < 44) return null;
+    const dv = new DataView(buf);
+    if (dv.getUint32(0, true) !== 0x46464952) return null; // "RIFF"
+    if (dv.getUint32(8, true) !== 0x45564157) return null; // "WAVE"
+    const fileBytes = Math.max(0, dv.getUint32(4, true) + 8);
+    let fmt = null;
+    let dataBytes = null;
+    let o = 12;
+    while (o + 8 <= buf.byteLength) {
+      const id = dv.getUint32(o, true);
+      const size = dv.getUint32(o + 4, true);
+      if (id === 0x20746d66 && fmt == null) fmt = o + 8; // "fmt "
+      if (id === 0x61746164 && dataBytes == null) { dataBytes = size; break; } // "data"
+      o += 8 + size + (size & 1);
+    }
+    if (fmt == null || fmt + 12 > buf.byteLength) return null;
+    const byteRate = dv.getUint32(fmt + 8, true); // bytes/second (PCM & float)
+    if (!(byteRate > 0)) return null;
+    const bytes = dataBytes != null ? dataBytes : Math.max(0, fileBytes - 44);
+    const dur = bytes / byteRate;
+    return isFinite(dur) && dur > 0 ? dur : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+function probeMetaDuration(url) {
+  return new Promise((resolve) => {
+    const el = new Audio();
+    let done = false;
+    const finish = (v) => {
+      if (done) return;
+      done = true;
+      try { el.removeAttribute("src"); el.load(); } catch (_) {}
+      resolve(v);
+    };
+    el.preload = "metadata";
+    el.onloadedmetadata = () => finish(isFinite(el.duration) && el.duration > 0 ? el.duration : null);
+    el.onerror = () => finish(null);
+    setTimeout(() => finish(null), 8000);
+    el.src = audioUrl(url);
+  });
+}
+
+/* Length of one backing file without decoding it: WAVs answer from their RIFF
+   header (first 64 KB via a Range request — Express serves 206 partials);
+   other legacy kinds (MP3/WebM/OGG…) fall back to <audio> metadata. Returns
+   seconds, or null when the length cannot be read cheaply. */
+async function audioFileDuration(url) {
+  if (audioDurCache.has(url)) return audioDurCache.get(url);
+  let dur = null;
+  try {
+    const ctrl = typeof AbortController === "function" ? new AbortController() : null;
+    const res = await fetch(audioUrl(url), {
+      headers: { Range: "bytes=0-65535" },
+      signal: ctrl ? ctrl.signal : undefined,
+    });
+    if (res.ok) {
+      const whole = res.status !== 206; // server ignored the Range header
+      const cl = Number(res.headers.get("content-length") || 0);
+      if (whole && cl > 200000 && ctrl) {
+        ctrl.abort(); // a full download just for a header — never
+        dur = null;
+      } else {
+        const ab = await res.arrayBuffer();
+        dur = wavHeaderDuration(ab);
+        if (dur == null) {
+          const kind = sniffAudioKind(new Blob([ab.slice(0, 12)]));
+          if (kind !== "wav") dur = await probeMetaDuration(url);
+        }
+      }
+    }
+  } catch (_) {
+    dur = null;
+  }
+  audioDurCache.set(url, dur);
+  return dur;
+}
+
+/* Root-timeline position where one layer's content ends: its committed
+   end_time, or (when the file length is known) where playing the file to its
+   end lands — start_time + (file − (start_time − lead)). null when unknown. */
+function layerRootEnd(c, bufDur) {
+  const endT = Number(c.end_time);
+  if (isFinite(endT) && endT > 0) return endT;
+  const dur = Number(bufDur);
+  if (!(dur > 0)) return null;
+  const startT = Math.max(0, Number(c.start_time) || 0);
+  const lead = Math.max(0, Number(c.lead) || 0);
+  return startT + Math.max(0, dur - Math.max(0, startT - lead));
+}
+
+/* The longest end across every backing layer, in root seconds — the slider's
+   max. null when not even the root commit's length is knowable (rare: an
+   unreadable file over a broken network). */
+async function backingChainTotal(commit) {
+  let total = null;
+  for (const { commit: c } of buildChain(commit)) {
+    const endT = Number(c.end_time);
+    let end = isFinite(endT) && endT > 0 ? endT : null;
+    if (end == null) {
+      const cached = bufferCache.get(c.url);
+      const fileDur = cached ? cached.duration : await audioFileDuration(c.url);
+      end = layerRootEnd(c, fileDur);
+    }
+    if (end != null) total = total == null ? end : Math.max(total, end);
+  }
+  return total && total > 0 ? total : null;
+}
+
+/* ── The record-setup song transport ("Listen from here") ────────────────────
+
+   The dialog plays the checked-out chain from the top on open and the scrubber
+   is its progress bar: dragging chooses where the take starts and releasing
+   seeks the playback there so the singer keeps hearing from the new point.
+   Desktop plays the layers live through Web Audio (instant start, per-commit
+   volume balance, the same output routing as a take); iOS renders the mix
+   offline and plays it through a native <audio> element (its Web Audio clock
+   silently drops live sources). One audition is active at a time; closing the
+   dialog, pressing "Start count-in", or starting a new audition stops it. */
+
+let setupAudition = null;     // { seq, rootFrom, teardown() } | null
+let setupAuditionSeq = 0;     // monotonic — invalidates stale async decodes
+let setupChosenStart = 0;     // the slider's settled position (idle readout)
+let setupScrubbing = false;   // the user is dragging the slider — playhead UI stands down
+
+/* m:ss.t readout — the record flow times are second-precision everywhere, but
+   a tenth helps place a mid-song start exactly on the phrase. */
+function fmtStartTime(sec) {
+  const s = Math.max(0, Number(sec) || 0);
+  const m = Math.floor(s / 60);
+  const r = s - m * 60;
+  return m + ":" + String(Math.floor(r)).padStart(2, "0") + "." + Math.floor((r - Math.floor(r)) * 10);
+}
+
+/* The measured backing length behind the dialog's scrubber — 0 until the async
+   length read lands, so the clock shows just the current position before then. */
+function setupChainTotal() {
+  const els = setupDialogEls();
+  return els.bar ? Math.max(0, Number(els.bar.max) || 0) : 0;
+}
+
+/* "m:ss.t / m:ss.t" — the current position against the song length once known. */
+function fmtSetupClock(secs) {
+  const total = setupChainTotal();
+  return total > 0 ? fmtStartTime(secs) + " / " + fmtStartTime(total) : fmtStartTime(secs);
+}
+
+/* Write the dialog clock (the live playhead while the song plays; the chosen
+   take-start when idle). */
+function setSetupClock(secs) {
+  const els = setupDialogEls();
+  if (els.time) els.time.textContent = fmtSetupClock(secs);
+}
+
+/* Status line while the song is playing — the setup dialog is a transport now:
+   the song autoplays from the top and the singer drags to choose where the take
+   starts (releasing keeps playing from there). */
+function setupPlayingStatus(F) {
+  return (
+    (Number(F) > 0.05 ? "Playing from " + fmtStartTime(F) : "Playing the song from the top") +
+    " — drag the bar to where this take starts (releasing keeps playing from there), then hit “Start count-in →”."
+  );
+}
+
+function setupDialogEls() {
+  return {
+    bar: document.getElementById("setup-start-bar"),
+    time: document.getElementById("setup-start-time"),
+    hint: document.getElementById("setup-start-hint"),
+    listen: document.getElementById("setup-listen-btn"),
+    reset: document.getElementById("setup-to-top-btn"),
+  };
+}
+
+/* Idle explanation under the start-point scrubber (no audition running): what
+   the chosen point means for the take. Kept in one place because several
+   handlers (drag end, stop, reset, natural end, measurement done) restore it. */
+function refreshIdleHint() {
+  const els = setupDialogEls();
+  if (!els.hint) return;
+  if (setupChosenStart <= 0) {
+    els.hint.textContent =
+      "Whole-song take — starts at the song's beginning (0:00) and spans the whole length you record. Hit “Start count-in →” to go, or play and drag to choose a mid-song start instead.";
+    return;
+  }
+  // A point inside the opening TAKE_PRE_ROLL can't be rolled into (the session
+  // can't begin before the song's top), so the session starts at the top and the
+  // singer comes in as the last tick ends — the take then lands at the count-in's
+  // end and its start can be fine-tuned in the review step.
+  if (setupChosenStart < TAKE_PRE_ROLL) {
+    els.hint.textContent =
+      "This point sits inside the song's opening " + TAKE_PRE_ROLL.toFixed(1) +
+      " s, so the count-in runs from the song's start — you come in as the last tick ends (around " +
+      fmtStartTime(TAKE_PRE_ROLL) + ") and the review step places the take exactly where you want it.";
+    return;
+  }
+  const max = els.bar ? Math.max(0, Number(els.bar.max) || 0) : 0;
+  if (max > 0 && setupChosenStart >= max - 0.05) {
+    els.hint.textContent =
+      "Starting at the very end of the song (" + fmtStartTime(setupChosenStart) + ") — the four count-in ticks play over the last seconds and you sing as the song ends.";
+    return;
+  }
+  els.hint.textContent =
+    "The count-in starts " + TAKE_PRE_ROLL.toFixed(1) + " s before this point, so the song reaches " +
+    fmtStartTime(setupChosenStart) +
+    " exactly as the last tick ends — start singing then and the take lands right here. Press “▶ Listen from here” to double-check the spot, or “Start count-in →” to go.";
+}
+
+/* Reflect an audition state in the record-setup dialog (no-op once the dialog
+   is gone — the ids come from the live document). */
+function setSetupAuditionUI(playing, statusText) {
+  const els = setupDialogEls();
+  if (els.listen) els.listen.textContent = playing ? "■ Stop" : "▶ Listen from here";
+  if (statusText !== undefined && els.hint) els.hint.textContent = statusText;
+}
+
+/* The dialog's clock + bar follow the playhead while an audition plays. While
+   the user is dragging the bar they own the readout (no clock/bar writes until
+   they release); otherwise the bar is only moved from code here. */
+function setSetupTimeReadout(secs) {
+  const els = setupDialogEls();
+  const pos = Math.max(0, Number(secs) || 0);
+  if (setupScrubbing) return;
+  setSetupClock(pos);
+  if (els.bar && document.activeElement !== els.bar) {
+    els.bar.value = String(Math.max(0, Math.min(setupChainTotal(), pos)));
+  }
+}
+
+/* Stop whatever audition is sounding (called on modal close/cancel/start and
+   before a new audition). setupChosenStart is left untouched — the dialog's
+   own handlers restore the bar to it when they want. */
+function stopSetupAudition() {
+  const a = setupAudition;
+  setupAudition = null;
+  setupScrubbing = false;
+  if (a && typeof a.teardown === "function") {
+    try { a.teardown(); } catch (_) {}
+  }
+  closeAudio();
+  setSetupAuditionUI(false);
+  refreshIdleHint();
+}
+
+/* Natural end / failure of the audition whose seq matches — back to the idle
+   state, with the clock and bar at the settled chosen start. */
+function finishSetupAudition(seq, ok, message) {
+  const a = setupAudition;
+  if (!a || a.seq !== seq) return;
+  setupAudition = null;
+  setupScrubbing = false;
+  if (typeof a.teardown === "function") {
+    try { a.teardown(); } catch (_) {}
+  }
+  setSetupAuditionUI(false);
+  if (ok) {
+    const els = setupDialogEls();
+    setSetupClock(setupChosenStart);
+    if (els.bar) els.bar.value = String(Math.max(0, Math.min(setupChainTotal(), setupChosenStart)));
+    refreshIdleHint();
+  } else {
+    const els = setupDialogEls();
+    if (els.hint) els.hint.textContent = message || "stopped listening";
+  }
+}
+
+function setupBackingCommit() {
+  if (!hub.checkedOut) return null;
+  const repoId = hub.checkedOut.repoId;
+  return (hub.commits.get(repoId) || []).find((c) => c.id === hub.checkedOut.commitId) || null;
+}
+
+/* Kick off an audition from rootFrom. Returns true when an audition starts. The
+   Listen button doubles as “■ Stop”, so it is always enabled once an audition
+   exists — even when the browser held playback back, the next press of it is a
+   fresh user gesture and retries the start. */
+function startSetupAudition(rootFrom) {
+  const commit = setupBackingCommit();
+  const F = Math.max(0, Number(rootFrom) || 0);
+  if (!commit) return false;
+  stopSetupAudition();
+  const els = setupDialogEls();
+  if (els.listen) els.listen.disabled = false;
+  const seq = ++setupAuditionSeq;
+  setupAudition = { seq, rootFrom: F };
+  if (isIOS()) iosSetupAudition(commit, F, seq);
+  else desktopSetupAudition(commit, F, seq);
+  return true;
+}
+
+/* Desktop audition = the dialog's song transport: each layer is scheduled from
+   F on the shared context and the playhead timer steers the clock/bar (both are
+   left alone while the user is dragging the bar). The end of the song comes
+   from the decoded layers themselves, not the async length read that sizes the
+   bar, so playback can start immediately when the dialog opens. */
+async function desktopSetupAudition(commit, F, seq) {
+  setSetupAuditionUI(true, F > 0.05 ? "loading the song from " + fmtStartTime(F) + "…" : "loading the song…");
+  let ctx = null;
+  try { ctx = new (window.AudioContext || window.webkitAudioContext)(); } catch (_) { ctx = null; }
+  if (!ctx) { finishSetupAudition(seq, false, "Web Audio is unavailable on this device"); return; }
+  audioEngine.ctx = ctx;
+  await routeCtxToOutput(ctx);
+  const running = await ensureCtxRunning(ctx);
+  if (!running) {
+    // The browser held the context back (the dialog-open click gesture has
+    // expired by the time the decode finished) — surface it as a message; the
+    // next press of “▶ Listen from here” IS a fresh gesture and starts it.
+    audioEngine.ctx = null;
+    try { if (ctx && typeof ctx.close === "function") ctx.close().catch(() => {}); } catch (_) {}
+    finishSetupAudition(seq, false, "the browser held the playback back — press “▶ Listen from here” to start it");
+    return;
+  }
+  const layers = [];
+  for (const { commit: c } of buildChain(commit)) {
+    try { layers.push({ c, layer: await decodeLayer(ctx, c.url) }); }
+    catch (err) { layers.push({ c, layer: null, err }); }
+  }
+  // Superseded while decoding (another audition started / dialog closed) → drop.
+  if (!setupAudition || setupAudition.seq !== seq || !audioEngine.ctx || audioEngine.ctx !== ctx) {
+    try { if (ctx && typeof ctx.close === "function") ctx.close().catch(() => {}); } catch (_) {}
+    return;
+  }
+  if (!layers[0] || !layers[0].layer) {
+    try { if (ctx && typeof ctx.close === "function") ctx.close().catch(() => {}); } catch (_) {}
+    finishSetupAudition(seq, false, "couldn't load the backing to listen to — check the connection and try again");
+    return;
+  }
+  const startAt = ctx.currentTime + 0.15;
+  let scheduled = 0;
+  for (const { c, layer } of layers) {
+    if (!layer) continue;
+    try {
+      scheduleSessionLayer(ctx, layer, c, F, startAt, undefined, commitVolume(c));
+      scheduled++;
+    } catch (_) {}
+  }
+  if (!scheduled) {
+    try { if (ctx && typeof ctx.close === "function") ctx.close().catch(() => {}); } catch (_) {}
+    finishSetupAudition(seq, false, "nothing to hear from that point — the song has already ended there");
+    return;
+  }
+  // Song length for the playhead's end detection, from the decoded layers.
+  let total = 0;
+  for (const { c, layer } of layers) {
+    if (!layer || !layer.buffer) continue;
+    const end = layerRootEnd(c, layer.buffer.duration);
+    if (end != null && end > total) total = end;
+  }
+  const endAt = total > F ? startAt + (total - F) + 0.2 : null;
+  const timer = setInterval(() => {
+    if (!audioEngine.ctx || audioEngine.ctx !== ctx || !setupAudition || setupAudition.seq !== seq) {
+      clearInterval(timer);
+      return;
+    }
+    const pos = F + Math.max(0, ctx.currentTime - startAt);
+    if (endAt == null || ctx.currentTime < endAt) {
+      setSetupTimeReadout(Math.min(total || pos, pos));
+    } else {
+      clearInterval(timer);
+      finishSetupAudition(seq, true, "");
+    }
+  }, 150);
+  setupAudition.teardown = () => clearInterval(timer);
+  setSetupAuditionUI(true, setupPlayingStatus(F));
+}
+
+/* Audition on iOS: render the chain's tail from F through the shared offline
+   pipeline, then play it like playIOSMix does (native <audio>, routed to the
+   chosen output), reporting the playhead so the dialog readout follows the
+   song. Because the render is async, play() happens outside the original tap's
+   gesture and iOS blocks it the first time — arm again on the next touch. */
+async function iosSetupAudition(commit, F, seq) {
+  setSetupAuditionUI(true, F > 0.05 ? "mixing from " + fmtStartTime(F) + "…" : "mixing the song…");
+  let blob = null;
+  try {
+    blob = await Promise.race([
+      renderIOSMixBlob(commit, null, F),
+      new Promise((_, rej) => setTimeout(() => rej(new Error("mixing took too long")), 40000)),
+    ]);
+  } catch (err) {
+    finishSetupAudition(seq, false, "couldn't audition from that point: " + err.message);
+    return;
+  }
+  if (!setupAudition || setupAudition.seq !== seq) return; // superseded
+  const url = URL.createObjectURL(blob);
+  const el = new Audio();
+  el.preload = "auto";
+  routeElToOutput(el); // keep the audition on the chosen output device
+  el._mixUrl = url;    // revoked in closeAudio()
+  const session = { seq, rootFrom: F, el };
+  const bailTimer = setTimeout(() => {
+    if (setupAudition === session) finishSetupAudition(seq, false, "playback didn't start — try again");
+  }, 25000);
+  session.teardown = () => {
+    clearTimeout(bailTimer);
+    try { if (session.el === el) session.el = null; } catch (_) {}
+  };
+  setupAudition = session;
+  audioEngine.elements.push(el);
+  let started = false;
+  const live = () => setupAudition === session;
+  const playingNote = () => setSetupAuditionUI(true, setupPlayingStatus(F));
+  el.addEventListener("timeupdate", () => {
+    if (live() && started) setSetupTimeReadout(F + (el.currentTime || 0));
+  });
+  el.onended = () => { if (live() && started) finishSetupAudition(seq, true, ""); };
+  const play = () =>
+    el.play()
+      .then(() => { started = true; playingNote(); })
+      .catch((e) => {
+        if (!live()) return;
+        if (e && e.name === "NotAllowedError") {
+          // iOS needs a fresh user gesture for the play() — this retry IS one.
+          setSetupAuditionUI(true, F > 0.05 ? "tap once to play from " + fmtStartTime(F) : "tap once to play the song from the top");
+          const retry = () => {
+            window.removeEventListener("touchend", retry);
+            window.removeEventListener("click", retry);
+            if (!live() || started) return;
+            el.play().then(() => { started = true; playingNote(); }).catch((e2) => {
+              if (e2 && e2.name === "AbortError") return;
+              if (live()) finishSetupAudition(seq, false, "the browser blocked playback — press “▶ Listen from here” again");
+            });
+          };
+          window.addEventListener("touchend", retry, { once: true });
+          window.addEventListener("click", retry, { once: true });
+          return;
+        }
+        if (e && e.name === "AbortError") return; // stopped by closeAudio()
+        finishSetupAudition(seq, false, "couldn't play the mix: " + ((e && e.message) || e));
+      });
+  el.addEventListener("loadedmetadata", play, { once: true });
+  el.addEventListener("canplay", play, { once: true });
+  setSetupAuditionUI(true, "mixing done — starting playback…");
+}
 async function playCommit(commit, extra) {
   closeAudio();
   // On iOS, skip the live Web Audio mix entirely: its clock can report
@@ -1144,33 +1633,50 @@ async function playIOSMix(commit, extra) {
    the finally below). */
 let iosMixDecoder = null;
 
-/* Decode every chain layer, render the mix offline, and return a WAV Blob. */
-async function renderIOSMixBlob(commit, extra) {
+/* Decode every chain layer, render the mix offline, and return a WAV Blob.
+   fromRoot (> 0) renders only the tail from that root position — used by the
+   record-setup "Listen from here" audition so the singer hears the same
+   mid-song backing the take will start with. */
+async function renderIOSMixBlob(commit, extra, fromRoot) {
   const RATE = 44100;
   const OAC = window.OfflineAudioContext || window.webkitOfflineAudioContext;
   const dec = iosMixDecoder || (iosMixDecoder = new OAC(2, 1, RATE)); // decoder only — its length is irrelevant
+  const F = Math.max(0, Number(fromRoot) || 0);
   const layers = [];
-  for (const { commit: c, offset } of buildChain(commit)) {
+  for (const { commit: c } of buildChain(commit)) {
     const layer = await decodeLayer(dec, c.url);
+    const win = layerReadWindow(c, layer.buffer.duration, F);
+    if (!win) continue; // this layer finished before fromRoot
     layers.push({
       buffer: layer.buffer,
-      offset,
-      readOff: Math.max(0, (Number(c.start_time) || 0) - (Number(c.lead) || 0)),
-      dur: takeDuration(c),
+      offset: win.whenOffset,
+      readOff: win.readStart,
+      dur: win.readDur,
       gain: commitVolume(c),
     });
   }
   if (extra && extra.url) {
     const layer = await decodeLayer(dec, extra.url);
-    layers.push({
-      buffer: layer.buffer,
-      offset: Math.max(0, Number(extra.start_time) || 0),
-      readOff: Math.max(0, (Number(extra.start_time) || 0) - (Number(extra.lead) || 0)),
-      dur: extra.duration,
-      gain: extra.volume,
-    });
+    // The "with original" preview overlay is just another chain layer to read:
+    // its take content spans [start_time, start_time + duration] on the root
+    // timeline (a finite duration; without one it plays the buffer's tail).
+    const preview = {
+      lead: Math.max(0, Number(extra.lead) || 0),
+      start_time: Math.max(0, Number(extra.start_time) || 0),
+      end_time: extra.duration ? Math.max(0, Number(extra.start_time) || 0) + extra.duration : null,
+    };
+    const win = layerReadWindow(preview, layer.buffer.duration, F);
+    if (win) {
+      layers.push({
+        buffer: layer.buffer,
+        offset: win.whenOffset,
+        readOff: win.readStart,
+        dur: win.readDur,
+        gain: extra.volume,
+      });
+    }
   }
-  if (!layers.length) throw new Error("no audio layers to mix");
+  if (!layers.length) throw new Error("nothing to hear from that point — the song has already ended there");
   // Total length = the latest end across all sources (root plays to its end).
   let total = 1;
   for (const l of layers) {
@@ -1323,13 +1829,15 @@ const studio = {
   recording: false,
   cancelled: false,
   backingCommit: null,
-  lead: 0, // blob zero = backing start (0 for new takes; was TAKE_PRE_ROLL pre-roll)
+  sessionFrom: 0, // root position where this take's session begins — 0 = song's start; mid-song = the chosen “start point” minus the TAKE_PRE_ROLL lead-in, so the last count-in tick lands exactly on the point
+  lead: 0, // root-timeline position of the take blob's zero = sessionFrom; the mix reads the blob from (start_time − lead)
 };
 
 /* Seconds of audible count-in after the backing starts (four ticks cueing
    "start singing as the last one ends"). The recorder starts together with the
-   backing, so a take captures everything from the backing's first instant and
-   is placed at mix time by its own detected start_time (lead = 0). The
+   backing at the session's chosen start point on the song timeline
+   (studio.sessionFrom), so a take captures everything from that instant and is
+   placed at mix time by its own detected start_time (lead = sessionFrom). The
    pre-roll, ticks, and any DSP convergence at the blob's start are never heard
    because the mix reads the blob from (start_time − lead). */
 const TAKE_PRE_ROLL = 1.5;
@@ -1889,6 +2397,16 @@ async function startTakeRecording() {
   const chain = buildChain(commit);
   const backingMuted = muteBackingForTake(); // "No backing" — only the ticks play
 
+  // The setup dialog's chosen "start point" is where the singer should come in
+  // (the last count-in tick lands exactly there), so the session begins
+  // TAKE_PRE_ROLL earlier on the root timeline — the backing rolls INTO the
+  // phrase instead of starting cold at it. A whole-song take keeps
+  // setupChosenStart 0 → sessionFrom 0 → the classic whole-song count-in.
+  const startPoint = Math.max(0, Number(setupChosenStart) || 0);
+  setupChosenStart = 0; // the value belongs to the dialog that just closed
+  const sessionFrom = startPoint > 0 ? Math.max(0, startPoint - TAKE_PRE_ROLL) : 0;
+  studio.sessionFrom = sessionFrom;
+
   // Phase 1 — decode EVERY backing buffer BEFORE fixing the timeline, UNLESS
   // the backing is muted ("No backing"): then skip fetch + decode entirely so
   // the count-in starts instantly and nothing can bleed into the mic. Decoding
@@ -1932,8 +2450,12 @@ async function startTakeRecording() {
   backingGain.gain.value = backingMuted ? 0 : getBackingVolume();
   backingGain.connect(ctx.destination);
 
-  for (const { c, offset, layer } of decoded) {
-    scheduleLayer(ctx, layer, offset, Math.max(0, (Number(c.start_time) || 0) - (Number(c.lead) || 0)), takeDuration(c), backingStartAt, backingGain, commitVolume(c));
+  // Schedule every backing layer from the session's point on the root
+  // timeline (sessionFrom = 0 reproduces the whole-song scheduling exactly;
+  // mid-song sessions read each layer's tail through layerReadWindow so a
+  // previous take that ended before the point simply isn't heard).
+  for (const { c, layer } of decoded) {
+    scheduleSessionLayer(ctx, layer, c, studio.sessionFrom || 0, backingStartAt, backingGain, commitVolume(c));
   }
 
   // Audible count-in ticks over the pre-roll — the 4th ends exactly at
@@ -1957,13 +2479,15 @@ async function startTakeRecording() {
     setStudioStatus("✗ this browser cannot record audio (no Web Audio capture)", true);
     return;
   }
-  // The take blob starts at the same instant as the backing (blob zero = root
-  // zero), so lead is 0 and the take is positioned purely by its detected
-  // start_time. Recording from the backing start is the key to a clean take
-  // top: the old code started the recorder TAKE_PRE_ROLL after the backing, so
-  // anything sung during the count-in was cut and the take began mid-phrase —
-  // exactly the "first seconds sound messed up" symptom.
-  studio.lead = 0;
+  // The take blob starts at the same instant as the backing (blob zero = the
+  // session's zero on the root timeline = studio.sessionFrom), so lead equals
+  // sessionFrom and the take is positioned by its detected blob start + lead
+  // (a whole-song take → sessionFrom 0 → lead 0 → placed purely by detection).
+  // Recording from the backing start is the key to a clean take top: the old
+  // code started the recorder TAKE_PRE_ROLL after the backing, so anything
+  // sung during the count-in was cut and the take began mid-phrase — exactly
+  // the "first seconds sound messed up" symptom.
+  studio.lead = studio.sessionFrom;
 
   // Count-in pre-roll: the recorder starts at backingStartAt; the four ticks
   // run over the next TAKE_PRE_ROLL seconds as a musical count ("start singing
@@ -1993,6 +2517,7 @@ async function startTakeRecording() {
 let modalEl = null;
 
 function closeModal() {
+  stopSetupAudition(); // stop any "Listen from here" preview before the dialog's context disappears
   if (modalEl) {
     modalEl.remove();
     modalEl = null;
@@ -2113,11 +2638,11 @@ function decodeBlobDuration(blob) {
 }
 
 /* Decode the recorded take to find its exact duration and its audible range
-   (first/last non-silent sample). The times returned here are BLOB-RELATIVE:
-   new takes record from the backing start (lead = 0), so blob position == root
-   position; the commit modal still adds `lead` for generality. At mix time the
-   blob is read from (start_time − lead), which keeps every blob position at its
-   true root spot.
+   (first/last non-silent sample). The times returned here are BLOB-RELATIVE.
+   A take's blob zero is the session start — studio.sessionFrom on the root
+   timeline (0 for whole-song takes) — so the Review modal lands the take at
+   (blob position + lead). At mix time the blob is read from (start_time −
+   lead), which keeps every blob position at its true root spot.
 
    Decoding via decodeAudioData (WAV always decodes) gives exact sample-level
    duration/level on every browser — <audio>.duration is unreliable for
@@ -2203,9 +2728,15 @@ function openRecordSetup() {
   const repoId = hub.checkedOut.repoId;
   const commit = (hub.commits.get(repoId) || []).find((c) => c.id === hub.checkedOut.commitId);
   if (!commit) return;
+  // The dialog's song transport always shows: the checked-out chain plays from
+  // the top right away so the singer can drag the progress bar to where the take
+  // should start (the default is where this commit's own content begins — 0:00
+  // for a whole-song commit is the classic full pass). The session later starts
+  // TAKE_PRE_ROLL before the chosen point so the last count-in tick lands on it.
+  setupChosenStart = 0;
   showModal(`
     <h3 class="rc-modal-title">Record over ${commitHash(commit.id)}</h3>
-    <p class="rc-modal-sub">Confirm this take — the count-in starts as soon as you hit Start. The microphone and playback output are chosen once in the top bar (the two dropdowns right next to “● Record Take”); this dialog confirms those and carries every other take option.</p>
+    <p class="rc-modal-sub">Pick where in the song this take starts, then hit Start: the song plays from the top while you drag the progress bar, and the count-in begins ${TAKE_PRE_ROLL.toFixed(1)} s before your point so the song reaches it exactly as the last tick ends. The microphone and playback output are chosen once in the top bar (the two dropdowns right next to “● Record Take”); this dialog confirms those and carries every other take option.</p>
     <div class="rc-field">Microphone for this take
       <p class="rc-device-note" id="setup-device-note"></p>
       <span class="rc-hint">Mirrors the top bar’s mic dropdown — the take always records through that one choice.</span>
@@ -2213,6 +2744,17 @@ function openRecordSetup() {
     <div class="rc-field">Playback output for this take
       <p class="rc-device-note" id="setup-output-note"></p>
       <span class="rc-hint">Mirrors the top bar’s Playback output dropdown — pick your headphones there so the song you sing along to doesn't blast from the room speakers and bleed into the mic; “System default” follows your OS sound output.</span>
+    </div>
+    <div class="rc-field rc-start-pick">
+      <label class="rc-start-label" for="setup-start-bar">Where in the song the take starts
+        <span class="rc-start-time" id="setup-start-time">0:00</span>
+      </label>
+      <input type="range" id="setup-start-bar" min="0" max="0" step="0.1" value="0" disabled="" aria-label="Where in the song this take starts" />
+      <span class="rc-start-actions">
+        <button type="button" class="rc-btn rc-btn-ghost rc-btn-sm" id="setup-listen-btn" disabled="">▶ Listen from here</button>
+        <button type="button" class="rc-btn rc-btn-ghost rc-btn-sm" id="setup-to-top-btn">↶ From the top</button>
+      </span>
+      <span class="rc-hint" id="setup-start-hint">Measuring the song… it starts playing from the top so you can drag to pick where to record.</span>
     </div>
     <label class="rc-field">Input channel
       <select id="setup-channel" title="Which physical input of the interface to record + monitor: Left = input 1, Right = input 2. A single-channel device ignores this and uses L+R.">
@@ -2247,6 +2789,9 @@ function openRecordSetup() {
     hpEl.checked = localStorage.getItem(STUDIO_PHONES_KEY) === "1";
     const nbEl = overlay.querySelector("#setup-no-backing");
     nbEl.checked = muteBackingForTake();
+    // Every take gets the song transport + start-point scrubber — pick where in
+    // the song the take starts and hear the exact spot before committing to it.
+    wireSetupStartPicker(overlay, commit);
     // The mic + playback output live ONCE in the top bar's #studio-device /
     // #studio-output selects (getUserMic()/routeCtxToOutput() read them when the
     // take starts), so this dialog only confirms them instead of asking a second
@@ -2289,6 +2834,110 @@ function openRecordSetup() {
   });
 }
 
+/* Wire the record-setup dialog's song transport: the checked-out chain starts
+   playing from the top on open, the progress bar is its scrubber, and
+   setupChosenStart holds the settled point where the take starts (the session
+   later begins TAKE_PRE_ROLL before it so the count-in's last tick lands
+   exactly on it). The bar stays disabled only until the backing's length is
+   measured — the playback itself starts immediately and derives its end from
+   the decoded layers, so it never waits for that read. */
+async function wireSetupStartPicker(overlay, commit) {
+  const bar = overlay.querySelector("#setup-start-bar");
+  const timeEl = overlay.querySelector("#setup-start-time");
+  const hintEl = overlay.querySelector("#setup-start-hint");
+  const listenBtn = overlay.querySelector("#setup-listen-btn");
+  const topBtn = overlay.querySelector("#setup-to-top-btn");
+  if (!bar || !timeEl || !hintEl || !listenBtn || !topBtn) return;
+  // Default: re-record where this take's own content begins (0:00 whole-song).
+  setupChosenStart = Math.max(0, Number(commit.start_time) || 0);
+  setSetupClock(setupChosenStart);
+  // Auto-play from the top right away (still inside the dialog-open click's
+  // gesture, so the AudioContext can start) — the singer then drags the bar to
+  // where the take should start. If the browser holds the playback back, the
+  // audition reports it and “▶ Listen from here” retries inside a fresh tap.
+  listenBtn.disabled = false;
+  startSetupAudition(0);
+
+  const total = await backingChainTotal(commit);
+  if (!overlay.isConnected) return; // the dialog was closed while measuring
+  if (total == null) {
+    // No chain length: the bar can't be scaled, but playback/Listen still work
+    // (an audition's end comes from its decoded layers).
+    bar.disabled = true;
+    if (!setupAudition) {
+      hintEl.textContent =
+        "Couldn't measure the song's length, so the bar is off — press “▶ Listen from here” to hear from " +
+        fmtStartTime(setupChosenStart) + ", or hit “Start count-in →” to record from there.";
+    }
+    return;
+  }
+  bar.max = String(total);
+  bar.disabled = false;
+  // Clamp the default to the measured length (a commit whose start_time sat past
+  // the chain's end would otherwise schedule a silent backing at session time).
+  setupChosenStart = Math.max(0, Math.min(setupChosenStart, total));
+  if (!setupAudition) {
+    // Not playing (the auto-play finished or was held back while measuring) →
+    // settle the bar at the clamped default and go idle.
+    bar.value = String(setupChosenStart);
+    setSetupClock(setupChosenStart);
+    refreshIdleHint();
+  }
+  const clampBar = () => Math.max(0, Math.min(Number(bar.value) || 0, Math.max(0, Number(bar.max) || 0)));
+  const settleAt = (v) => {
+    setupChosenStart = v;
+    bar.value = String(v);
+    setSetupClock(v);
+  };
+  // Drag: while the thumb moves the singer owns the readout — the playhead
+  // clock/bar stand down until release. Release ("change") is the decision:
+  // the choice is recorded and, when the song is playing, it seeks there and
+  // keeps playing from the new point so the singer hears exactly what they
+  // picked before the count-in.
+  bar.addEventListener("input", () => {
+    setupScrubbing = true;
+    setSetupClock(clampBar());
+  });
+  bar.addEventListener("change", () => {
+    const v = clampBar();
+    setupScrubbing = false;
+    settleAt(v);
+    if (setupAudition) {
+      stopSetupAudition();          // silence the old schedule…
+      startSetupAudition(v);        // …and keep playing from the picked point
+    } else {
+      refreshIdleHint();
+    }
+  });
+
+  listenBtn.addEventListener("click", () => {
+    if (setupAudition) {
+      // “■ Stop”: silence the song. The choice stays wherever the bar was last
+      // settled (the default or the last drag-release), and the clock/bar snap
+      // back to it so the idle readout always shows what Start will use.
+      stopSetupAudition();
+      bar.value = String(setupChosenStart);
+      setSetupClock(setupChosenStart);
+      return;
+    }
+    startSetupAudition(setupChosenStart);
+  });
+  topBtn.addEventListener("click", () => {
+    bar.value = "0";
+    setupScrubbing = false;
+    if (setupAudition) {
+      // Seeking to the top: reset the choice and keep playing from 0:00.
+      setupChosenStart = 0;
+      setSetupClock(0);
+      stopSetupAudition();
+      startSetupAudition(0);
+    } else {
+      settleAt(0);
+      refreshIdleHint();
+    }
+  });
+}
+
 function showRecordSession() {
   const commit = studio.backingCommit;
   const backingMuted = muteBackingForTake();
@@ -2305,6 +2954,22 @@ function showRecordSession() {
     !backingMuted && (monitorForTake() || localStorage.getItem(STUDIO_PHONES_KEY) === "1");
   if (singAlongRaw && !outputDeviceForTake()) {
     sub += " ⚠ Singing along with the song while recording raw: the song plays through your system default output — if that comes out of the speakers (not your headphones), cancel and set Playback output to your headphones in the top bar (the dropdown next to “● Record Take”) before starting again.";
+  }
+  // Mid-song takes: say where the take actually lands so the singer watches for
+  // the chosen phrase rather than the song's beginning.
+  if (studio.sessionFrom > 0) {
+    if (backingMuted) {
+      sub +=
+        " The song is muted, so this is a cappella: count the four ticks, and when the last one ends (at " +
+        fmtStartTime(studio.sessionFrom + TAKE_PRE_ROLL) +
+        " in the song) start singing the phrase that lives there — the take is placed at that point when you preview it over the backing.";
+    } else {
+      sub +=
+        " This take starts inside the song — the backing begins at " +
+        fmtStartTime(studio.sessionFrom) + " and the " + TAKE_PRE_ROLL.toFixed(1) +
+        " s of lead-in carries the four ticks, so the last tick ends at " +
+        fmtStartTime(studio.sessionFrom + TAKE_PRE_ROLL) + ": start singing the phrase then.";
+    }
   }
   showModal(`
     <h3 class="rc-modal-title">Recording over ${commitHash(commit.id)}</h3>
@@ -2327,10 +2992,11 @@ function showRecordSession() {
 
 function openTakePreview() {
   const commit = studio.backingCommit;
-  // takeStartGuess is blob-relative. New takes record from the backing start
-  // (lead = 0), so blob position == root-timeline position and the Start field
-  // uses it directly; the `+ lead` keeps the formula correct for legacy
-  // commits whose blob started after a pre-roll.
+  // takeStartGuess is blob-relative. The blob's zero is the session start =
+  // studio.sessionFrom (lead); for a whole-song take sessionFrom is 0, so blob
+  // position == root-timeline position and the Start field uses it directly —
+  // the `+ lead` keeps the formula correct for mid-song takes whose session
+  // began TAKE_PRE_ROLL before the chosen point.
   const start = (isFinite(studio.takeStartGuess) && studio.takeStartGuess > 0 ? studio.takeStartGuess : 0) + (studio.lead || 0);
   const contributorDefault = displayName(hub.user) || "admin";
   const warnings = [];
@@ -2382,7 +3048,14 @@ function openTakePreview() {
       <button type="button" class="rc-btn rc-btn-primary" id="commit-take-btn">Commit take</button>
     </div>
   `, (overlay) => {
-    overlay.querySelector("#preview-take-btn").addEventListener("click", () => playDry(studio.blobUrl, studio.takeStartGuess));
+    overlay.querySelector("#preview-take-btn").addEventListener("click", () => {
+      // The Start field is a root-timeline position; the take blob's zero sits at
+      // studio.lead (sessionFrom), so seek blob-relative. For whole-song takes
+      // lead is 0 and this is the field value straight — same as before.
+      const fieldStart = parseFloat(overlay.querySelector("#commit-start").value);
+      const blobStart = isFinite(fieldStart) ? Math.max(0, fieldStart - (studio.lead || 0)) : studio.takeStartGuess;
+      playDry(studio.blobUrl, blobStart);
+    });
     const volInput = overlay.querySelector("#commit-volume");
     const volPct = overlay.querySelector("#commit-volume-pct");
     volInput.addEventListener("input", () => { volPct.textContent = volInput.value + "%"; });
