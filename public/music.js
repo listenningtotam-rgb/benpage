@@ -73,7 +73,12 @@ function buildWaveform(seed, count = 110) {
 
 /* ── Waveform canvas rendering ─────────────────────────── */
 function roundedRectPath(ctx, x, y, w, h, r) {
-  const rr = Math.min(r, w / 2, h / 2);
+  // Defensive: a waveform bar can only be drawn when it has real positive
+  // dimensions. Chrome throws IndexSizeError on arcTo when the radius is
+  // negative, which happens if a bar's box ever comes out non-positive (e.g.
+  // while a row is collapsing mid-redraw) — skip the bar instead of crashing.
+  if (!(w > 0) || !(h > 0) || !isFinite(r) || !isFinite(x) || !isFinite(y)) return;
+  const rr = Math.max(0, Math.min(r, w / 2, h / 2));
   ctx.moveTo(x + rr, y);
   ctx.arcTo(x + w, y, x + w, y + h, rr);
   ctx.arcTo(x + w, y + h, x, y + h, rr);
@@ -84,7 +89,7 @@ function roundedRectPath(ctx, x, y, w, h, r) {
 
 function drawWaveform(canvas, bars, progressPct) {
   const rect = canvas.getBoundingClientRect();
-  if (rect.width === 0 || rect.height === 0) return;
+  if (!(rect.width > 0) || !(rect.height > 0)) return;
 
   const dpr = window.devicePixelRatio || 1;
   const w = rect.width;
@@ -104,6 +109,7 @@ function drawWaveform(canvas, bars, progressPct) {
   const n = bars.length;
   const gap = Math.max(1, Math.round(w / 340));
   const bw = (w - gap * (n - 1)) / n;
+  if (!(bw > 0)) return; // the row is too narrow for any bar — nothing to draw
   const radius = Math.max(1, bw * 0.45);
 
   // Draw the full waveform in the bright base color.
