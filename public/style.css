@@ -2670,6 +2670,30 @@ body.app-standalone #app-detail {
   margin-top: -0.2rem;
 }
 
+/* Warning variants of .rc-hint. The app is served with a strict CSP
+   (style-src 'self' — no inline style attributes), so colors that used to be
+   inline styles live here as classes instead. */
+.rc-hint-danger {
+  color: #c0392b;
+  font-weight: 600;
+}
+.rc-hint-warn {
+  color: #ffd479;
+}
+
+/* Live take-audio trace inside the record-session modal (attachTakeAudioDiag):
+   context state + clock + graph signal at set points after Start, so a silent
+   take can be traced to the context, the graph, or the OS output device. */
+.rc-diag {
+  margin-top: 0.6rem;
+  font-family: "SF Mono", Menlo, monospace;
+  font-size: 0.68rem;
+  line-height: 1.6;
+  color: rgba(255, 255, 255, 0.45);
+  text-align: left;
+  white-space: pre-wrap;
+}
+
 /* Read-only confirmation of the take's mic + playback output inside the
    record-setup dialog. Both are chosen ONCE in the top bar (#studio-device /
    #studio-output selects) and mirrored here, so the singer never picks an

@@ -181,7 +181,7 @@ function renderHub() {
         <span class="studio-checkout" id="studio-checkout">Nothing checked out — click a commit to record over it</span>
         <button type="button" class="rc-btn rc-btn-record" id="record-take-btn" disabled>● Record Take</button>
         <select id="studio-device" class="studio-device" title="Microphone used for takes + new recordings — pick the real mic, not a loopback/stereo-mix device. Chosen once here: the take dialog and “Record from mic” both record through this same choice."></select>
-        <select id="studio-output" class="studio-device" style="display:none" title="Output for the backing + count-in + 监听 during a take, and for mix/preview playback. Pick your headphones here (Chrome/Edge) so the song you sing along to doesn't blast from the room speakers and bleed into the take; “System default” follows your OS sound output."></select>
+        <select id="studio-output" class="studio-device" hidden title="Output for the backing + count-in + 监听 during a take, and for mix/preview playback. Pick your headphones here (Chrome/Edge) so the song you sing along to doesn't blast from the room speakers and bleed into the take; “System default” follows your OS sound output."></select>
         <button type="button" class="rc-btn rc-btn-ghost" id="stop-playback-btn">■ Stop</button>
         <span class="studio-status" id="studio-status"></span>
       </div>
@@ -725,6 +725,14 @@ async function decodeLayer(ctx, url) {
 }
 
 function closeAudio() {
+  // A running take owns the live session context (backing + count-in ticks +
+  // monitor all hang off audioEngine.ctx). Nothing may tear it down mid-take:
+  // showModal → closeModal → stopSetupAudition calls this unconditionally when
+  // the session modal replaces the setup dialog, which used to close the
+  // brand-new session context the instant it appeared — every take recorded
+  // silent. Session audio is closed only by cleanupTakeMedia(), which every
+  // complete/cancel/error path reaches with studio.recording already false.
+  if (studio.recording) return;
   if (audioEngine.ctx) {
     audioEngine.sources.forEach((s) => {
       try { s.stop(); } catch (_) {}
@@ -1951,14 +1959,11 @@ async function populateOutputSelect(selOrId) {
   const sel = typeof selOrId === "string" ? document.getElementById(selOrId) : selOrId;
   if (!sel) return;
   const field = sel.closest ? sel.closest(".rc-field") : null;
-  const show = () => {
-    if (field) field.style.display = "";
-    else sel.style.display = "";
-  };
-  const hide = () => {
-    if (field) field.style.display = "none";
-    else sel.style.display = "none";
-  };
+  // The CSP is style-src 'self' (no unsafe-inline): visibility must not rely on
+  // inline style attributes, so toggle the hidden attribute ([hidden] in
+  // style.css) instead of element.style assignments on a markup style.
+  const show = () => { (field || sel).hidden = false; };
+  const hide = () => { (field || sel).hidden = true; };
   if (!navigator.mediaDevices || typeof navigator.mediaDevices.enumerateDevices !== "function") {
     hide();
     return;
@@ -2280,10 +2285,13 @@ function getBackingVolume() {
    browser's AEC echo reference and are cancelled from the mic; even if a sliver
    reaches the blob, the mix reads the take from its own start_time, so ticks
    and pre-roll are never heard. */
-function scheduleCountIn(ctx, backingStartAt, chainStartAt) {
+function scheduleCountIn(ctx, backingStartAt, chainStartAt, probe) {
   const out = ctx.createGain();
   out.gain.value = 0.45;
-  out.connect(ctx.destination);
+  // The ticks are the session's canary: scheduled unconditionally into the
+  // session output, so when the take-audio diagnostic sees graphPeak here the
+  // graph is producing sound and any silence is the OS output device, not code.
+  out.connect(probe || ctx.destination);
   const n = 4;
   const dur = 0.09; // osc length per tick (gain is inaudible after ~when + 0.08)
   const span = chainStartAt - backingStartAt;
@@ -2304,6 +2312,55 @@ function scheduleCountIn(ctx, backingStartAt, chainStartAt) {
     osc.start(when);
     osc.stop(end);
   }
+}
+
+/* Live audio diagnostic for the "silent take" reports. The count-in ticks are
+   scheduled unconditionally into the session context, so a running context with
+   a live graph MUST be audible; when it is not, this readout says which layer
+   broke: the context (suspended/closed right after Start), the graph (signal
+   scheduled but silent), or the OS output device (graph peak is loud yet
+   nothing is heard — check the Playback output dropdown / system volume).
+   Mirrors into the session modal's #take-diag line and the console. */
+function attachTakeAudioDiag(ctx, times, probe) {
+  if (!ctx) return;
+  const buf = probe && probe.fftSize ? new Uint8Array(probe.fftSize) : null;
+  const graphPeak = () => {
+    if (!buf || !probe) return -1;
+    try {
+      probe.getByteTimeDomainData(buf);
+      let mx = 0;
+      for (let i = 0; i < buf.length; i++) {
+        const d = Math.abs(buf[i] - 128);
+        if (d > mx) mx = d;
+      }
+      return mx / 128; // 0 = digital silence, ~0.3+ = clearly audible signal
+    } catch (_) { return -1; }
+  };
+  const snap = (label) => {
+    let state = "?";
+    let now = -1;
+    try { state = ctx.state; now = ctx.currentTime; } catch (_) { state = "closed"; }
+    let rel = "";
+    const bt = times && times.backingStartAt;
+    if (bt >= 0 && now >= 0) {
+      const d = now - bt;
+      rel = d < 0
+        ? "ticks begin in " + (-d).toFixed(2) + "s"
+        : d < 1.6
+          ? "inside the count-in (+" + d.toFixed(2) + "s)"
+          : "past the backing start by " + d.toFixed(1) + "s";
+    }
+    const pk = graphPeak();
+    const line = label + " — ctx=" + state + ", clock=" + now.toFixed(3) + "s (" + rel + "), graphPeak=" + (pk < 0 ? "n/a" : pk.toFixed(3));
+    console.log("[take-audio-diag] " + line);
+    const el = document.getElementById("take-diag");
+    if (el) {
+      el.hidden = false;
+      el.textContent = (el.textContent ? el.textContent + "\n" : "") + line;
+    }
+  };
+  snap("scheduled");
+  [700, 1800, 4200].forEach((ms) => setTimeout(() => snap("+" + ms + "ms"), ms));
 }
 
 async function populateMicDevices(selOrId) {
@@ -2466,7 +2523,19 @@ async function startTakeRecording() {
   // the speakers into the mic.
   const backingGain = ctx.createGain();
   backingGain.gain.value = backingMuted ? 0 : getBackingVolume();
-  backingGain.connect(ctx.destination);
+  // Pass-through probe on the session's whole output (backing + count-in
+  // ticks) for the take-audio diagnostic below. AnalyserNode does not alter
+  // the audio; without one the graph connects exactly as before.
+  let diagProbe = null;
+  if (typeof ctx.createAnalyser === "function") {
+    try {
+      diagProbe = ctx.createAnalyser();
+      diagProbe.fftSize = 1024;
+      backingGain.connect(diagProbe);
+      diagProbe.connect(ctx.destination);
+    } catch (_) { diagProbe = null; }
+  }
+  if (!diagProbe) backingGain.connect(ctx.destination);
 
   // Schedule every backing layer from the session's point on the root
   // timeline (sessionFrom = 0 reproduces the whole-song scheduling exactly;
@@ -2481,7 +2550,7 @@ async function startTakeRecording() {
   // echo reference the browser cancels from the mic; even if a sliver bleeds
   // in, the mix reads the take from its own start_time, so pre-roll content
   // (ticks, backing bleed, DSP convergence) is never heard in the take.
-  scheduleCountIn(ctx, backingStartAt, chainStartAt);
+  scheduleCountIn(ctx, backingStartAt, chainStartAt, diagProbe);
 
   // Record the RAW mic stream directly — same capture path as the initial
   // recording. The take is the clean dry mic: nothing from the backing or the
@@ -2514,6 +2583,7 @@ async function startTakeRecording() {
   // capturing, so singing early loses nothing, and at mix time the take is read
   // from its own start_time, so pre-roll audio never appears in the take.
   showRecordSession();
+  attachTakeAudioDiag(ctx, { backingStartAt, chainStartAt }, diagProbe);
   const tt = document.getElementById("take-timer");
   if (tt) tt.textContent = "♪ count-in…";
 
@@ -2996,6 +3066,7 @@ function showRecordSession() {
       <span class="rc-rec-dot"></span>
       <span class="rc-timer" id="take-timer">0:00</span>
     </div>
+    <p class="rc-diag" id="take-diag" hidden></p>
     <div class="rc-modal-actions">
       <button type="button" class="rc-btn rc-btn-ghost" id="cancel-take-btn">Cancel</button>
       <button type="button" class="rc-btn rc-btn-primary" id="complete-take-btn">■ Complete</button>
@@ -3025,7 +3096,7 @@ function openTakePreview() {
     warnings.push(`This take is ${(studio.blob.size / (1024 * 1024)).toFixed(1)} MB — near the ${MAX_AUDIO_UPLOAD_MB} MB upload cap. Consider re-recording a shorter take.`);
   }
   const warnHtml = warnings.length
-    ? warnings.map((w) => `<p class="rc-hint" style="color:#c0392b;font-weight:600">⚠ ${w}</p>`).join("")
+    ? warnings.map((w) => `<p class="rc-hint rc-hint-danger">⚠ ${w}</p>`).join("")
     : "";
   showModal(`
     <h3 class="rc-modal-title">Review take</h3>
@@ -3321,7 +3392,7 @@ async function openNewRecording() {
         ? `<label class="rc-field">Band <span class="rc-hint">(recording is private to this band's members)</span>
         <select id="new-band">${bandOptions}</select>
       </label>`
-        : `<p class="rc-hint" style="color:#ffd479">No bands yet — ask the admin to create one (admin page → Bands).</p>`
+        : `<p class="rc-hint rc-hint-warn">No bands yet — ask the admin to create one (admin page → Bands).</p>`
     }
     <label class="rc-field">Title
       <input type="text" id="new-title" maxlength="300" placeholder="e.g. Midnight Dreams" />
