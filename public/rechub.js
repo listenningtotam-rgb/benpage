@@ -525,17 +525,34 @@ function attachRepoListEvents() {
     } else if (action === "delete-commit") {
       const c = findCommit(Number(btn.dataset.commit));
       if (!c || !canEdit) return;
-      if (!window.confirm(`Delete commit ${commitHash(c.id)} "${c.message}"? This cannot be undone.`)) return;
+      // Deleting a take re-parents any takes recorded over it onto ITS parent
+      // (server-side), so the remaining stack stays one connected chain and the
+      // newest take still mixes every survivor. Say so in the prompt.
+      const nKids = (hub.commits.get(repoId) || []).filter((x) => x.parent_id === c.id).length;
+      if (
+        !window.confirm(
+          `Delete commit ${commitHash(c.id)} "${c.message}"? This cannot be undone.` +
+            (nKids ? ` The ${nKids} take${nKids === 1 ? "" : "s"} recorded over it ${nKids === 1 ? "re-connects" : "re-connect"} to its parent.` : "")
+        )
+      )
+        return;
       const playing = document.querySelector(".rc-commit.playing");
       if (playing && Number(playing.dataset.commit) === c.id) stopPlayback();
+      // If the deleted commit was the ✓ record base, move the ✓ onto the repo's
+      // surviving head so the next ● Record Take keeps stacking from the top.
+      const wasCheckedOut = !!(hub.checkedOut && hub.checkedOut.repoId === repoId && hub.checkedOut.commitId === c.id);
+      const newHead = (hub.commits.get(repoId) || [])
+        .filter((x) => x.id !== c.id)
+        .reduce((m, x) => (!m || x.id > m.id ? x : m), null);
+      if (wasCheckedOut) {
+        hub.checkedOut = newHead ? { repoId, commitId: newHead.id } : null;
+      }
       hubApi(`/api/recordings/${repoId}/commits/${c.id}`, { method: "DELETE" })
-        .then(() => {
-          if (hub.checkedOut && hub.checkedOut.repoId === repoId && hub.checkedOut.commitId === c.id) {
-            hub.checkedOut = null;
-          }
-          return loadHub();
-        })
-        .catch((err) => alert(err.message));
+        .then(() => loadHub())
+        .catch((err) => {
+          alert(err.message);
+          loadHub(); // restore the pre-delete ✓/highlight state
+        });
     } else if (action === "delete-repo") {
       if (!canEdit) return;
       if (!repo) return;
@@ -2896,8 +2913,28 @@ function openRecordSetup() {
     return;
   }
   const repoId = hub.checkedOut.repoId;
-  const commit = (hub.commits.get(repoId) || []).find((c) => c.id === hub.checkedOut.commitId);
+  let commit = (hub.commits.get(repoId) || []).find((c) => c.id === hub.checkedOut.commitId);
   if (!commit) return;
+  // Record Take expects to STACK: the new take becomes a child of the commit it
+  // is recorded over, so the repo's history stays one linear chain (root →
+  // take1 → take2 → …) and playing the newest take mixes every layer. If the ✓
+  // still sits on an OLDER commit, recording there would fork a sibling branch
+  // that never plays with the newer takes — warn about that and offer to
+  // re-target the newest take (the head) instead, which is what was meant in
+  // almost every case.
+  const cs = hub.commits.get(repoId) || [];
+  const head = cs.reduce((m, x) => (!m || x.id > m.id ? x : m), null);
+  if (head && head.id !== commit.id) {
+    const toHead = window.confirm(
+      `● Record Take is about to layer the new take over ${commitHash(commit.id)} (${commit.message}), but the newest take in this recording is ${commitHash(head.id)} (${head.message}). Recorded this way the new take would NOT play together with that newer take — it becomes a separate branch. Layer the new take over ${commitHash(head.id)} (the newest) instead?`
+    );
+    if (toHead) {
+      hub.checkedOut = { repoId, commitId: head.id };
+      commit = head;
+      updateStudioBar();
+      renderRepos(); // move the ✓ onto the newest take
+    }
+  }
   // The dialog's song transport always shows: the checked-out chain plays from
   // the top right away so the singer can drag the progress bar to where the take
   // should start (the default is where this commit's own content begins — 0:00
@@ -3914,11 +3951,21 @@ async function commitTake(overlay) {
   btn.textContent = "Uploading…";
   try {
     const url = await uploadBlob(studio.blob);
-    await hubApi(`/api/recordings/${commit.repo_id}/commits`, {
+    const data = await hubApi(`/api/recordings/${commit.repo_id}/commits`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ parent_id: commit.id, message, url, start_time: start, end_time: end, mode, volume, lead: studio.lead || 0, contributor }),
     });
+    // The committed take is now this repo's newest commit — advance the ✓ onto
+    // it so the next ● Record Take layers on top of this one. (Before this, the
+    // ✓ stayed on the original base forever, so every repeated Record Take
+    // became a SIBLING of the root and the newest take's chain only ever held
+    // that one parent — the earlier takes were never mixed under it. With every
+    // take parented, the history grows as one stack root → take1 → take2 → …
+    // and playing the newest one mixes the whole ancestor chain.)
+    if (data && data.commit && data.commit.id != null) {
+      hub.checkedOut = { repoId: commit.repo_id, commitId: data.commit.id };
+    }
     studio.cancelled = true;
     cleanupTakeMedia();
     if (studio.blobUrl) URL.revokeObjectURL(studio.blobUrl);
@@ -4315,11 +4362,16 @@ async function createNewRecording(overlay) {
     if (newRecBlob) {
       url = await uploadBlob(newRecBlob);
     }
-    await hubApi("/api/recordings", {
+    const data = await hubApi("/api/recordings", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ title, message, url, sort_order: 0, contributor, source_type: sourceType, band_id: bandId }),
     });
+    // Check out the new repo's initial commit so ● Record Take is armed for it
+    // right away — its first take then parents onto this commit (root → take1).
+    if (data && data.repo && data.repo.id != null && data.commit && data.commit.id != null) {
+      hub.checkedOut = { repoId: data.repo.id, commitId: data.commit.id };
+    }
     cancelNewRec();
     closeModal();
     await loadHub();

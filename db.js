@@ -662,10 +662,16 @@ function updateRecordingCommitUrl(id, url) {
 }
 
 function deleteRecordingCommit(id) {
-  // Orphan any children so the chain still plays: same behaviour as the
-  // FK's ON DELETE SET NULL, but explicit so it works even without
-  // PRAGMA foreign_keys enabled.
-  db.prepare("UPDATE recording_commits SET parent_id = NULL WHERE parent_id = ?").run(id);
+  // A repo's history is meant to be one linear chain (root → take1 → take2 →
+  // …), so re-parent any children onto the deleted commit's OWN parent instead
+  // of orphaning them to NULL: deleting a bad take splices the rest back
+  // together (… → A → C → …) and every surviving commit keeps its parent, so
+  // the newest take still mixes the whole stack. Deleting a root commit (no
+  // parent) leaves its children parentless as before — remove the whole repo
+  // with delete-repo when nothing under the root should survive.
+  const victim = db.prepare("SELECT parent_id FROM recording_commits WHERE id = ?").get(id);
+  const parentId = victim && victim.parent_id != null ? victim.parent_id : null;
+  db.prepare("UPDATE recording_commits SET parent_id = ? WHERE parent_id = ?").run(parentId, id);
   db.prepare("DELETE FROM recording_commits WHERE id = ?").run(id);
 }
 
