@@ -1007,7 +1007,7 @@ async function backingChainTotal(commit) {
    volume balance, the same output routing as a take); iOS renders the mix
    offline and plays it through a native <audio> element (its Web Audio clock
    silently drops live sources). One audition is active at a time; closing the
-   dialog, pressing "Start count-in", or starting a new audition stops it. */
+   dialog, pressing "Start from here", or starting a new audition stops it. */
 
 let setupAudition = null;     // { seq, rootFrom, teardown() } | null
 let setupAuditionSeq = 0;     // monotonic — invalidates stale async decodes
@@ -1049,7 +1049,7 @@ function setSetupClock(secs) {
 function setupPlayingStatus(F) {
   return (
     (Number(F) > 0.05 ? "Playing from " + fmtStartTime(F) : "Playing the song from the top") +
-    " — drag the bar to where this take starts (releasing keeps playing from there), then hit “Start count-in →”."
+    " — drag the bar to where this take starts (releasing keeps playing from there), then hit “Start from here →”."
   );
 }
 
@@ -1071,7 +1071,7 @@ function refreshIdleHint() {
   if (!els.hint) return;
   if (setupChosenStart <= 0) {
     els.hint.textContent =
-      "Whole-song take — starts at the song's beginning (0:00) and spans the whole length you record. Hit “Start count-in →” to go, or play and drag to choose a mid-song start instead.";
+      "Whole-song take — starts at the song's beginning (0:00) and spans the whole length you record. Hit “Start from here →” to go, or play and drag to choose a mid-song start instead.";
     return;
   }
   // A point inside the opening TAKE_PRE_ROLL can't be rolled into (the session
@@ -1094,7 +1094,7 @@ function refreshIdleHint() {
   els.hint.textContent =
     "The count-in starts " + TAKE_PRE_ROLL.toFixed(1) + " s before this point, so the song reaches " +
     fmtStartTime(setupChosenStart) +
-    " exactly as the last tick ends — start singing then and the take lands right here. Press “▶ Listen from here” to double-check the spot, or “Start count-in →” to go.";
+    " exactly as the last tick ends — start singing then and the take lands right here. Press “▶ Listen from here” to double-check the spot, or “Start from here →” to go.";
 }
 
 /* Reflect an audition state in the record-setup dialog (no-op once the dialog
@@ -1838,14 +1838,18 @@ const studio = {
   cancelled: false,
   backingCommit: null,
   sessionFrom: 0, // root position where this take's session begins — 0 = song's start; mid-song = the chosen “start point” minus the TAKE_PRE_ROLL lead-in, so the last count-in tick lands exactly on the point
-  lead: 0, // root-timeline position of the take blob's zero = sessionFrom; the mix reads the blob from (start_time − lead)
+  lead: 0, // root-timeline position of the take blob's zero = sessionFrom (minus the sync-delay compensation when the take was sung along with the audible backing); the mix reads the blob from (start_time − lead)
+  takeCompEnabled: false, // this session qualifies for sync-delay compensation (mid-song AND backing audible) — a-cappella / whole-song sessions never compensate
+  sessionLatencyMs: 0,    // round-trip (output + input) latency measured from the browser for this session's recording chain
+  latencyCompMs: 0,       // sync delay backed out of `lead` — 0 unless takeCompEnabled
 };
 
 /* Seconds of audible count-in after the backing starts (four ticks cueing
    "start singing as the last one ends"). The recorder starts together with the
    backing at the session's chosen start point on the song timeline
    (studio.sessionFrom), so a take captures everything from that instant and is
-   placed at mix time by its own detected start_time (lead = sessionFrom). The
+   placed at mix time by its own detected start_time (lead = sessionFrom, minus
+   the sing-along sync-delay compensation — see applyLatencyComp). The
    pre-roll, ticks, and any DSP convergence at the blob's start are never heard
    because the mix reads the blob from (start_time − lead). */
 const TAKE_PRE_ROLL = 1.5;
@@ -1893,6 +1897,11 @@ const STUDIO_MUTE_BACKING_KEY = "studio_mute_backing";
 const STUDIO_CHANNEL_KEY = "studio_input_channel";
 const STUDIO_MONITOR_KEY = "studio_monitor";
 const STUDIO_OUTPUT_KEY = "studio_output_device";
+// Sing-along sync calibration in MILLISECONDS, remembered per device/browser.
+// A take sung while the backing is audible lands ~round-trip late (see
+// applyLatencyComp); the Review dialog's “Sync delay (ms)” tunes the value on
+// the device it was recorded on and this key keeps it for the next take there.
+const STUDIO_TAKE_DELAY_KEY = "studio_take_delay_ms";
 
 /* Level of the optional input monitor (0..1). The monitor is a parallel
    output-only path — the take recorder's sink gain stays pinned to 0, so
@@ -2209,6 +2218,75 @@ function createRecorder(ctxIn, stream, handlers, pick) {
       handlers.onStop(encodeWav(pcm, ctx.sampleRate || 44100, 22050));
     },
   };
+}
+
+/* ── Sing-along sync (latency compensation) ───────────────────────────────
+   A take sung while the backing is AUDIBLE is recorded late by the device's
+   round trip: the phrase the singer follows is heard ~output latency after its
+   root-timeline point, and the capture path adds ~input latency before the
+   voice lands in the take blob. The take's blob zero (lead) is pulled earlier
+   by that amount so the recorded phrase sits where it was sung — `lead` is the
+   only knob that moves recorded content, because every mix path maps
+   blob position p to root (lead + p) and reads the blob from (start_time −
+   lead). The compensation rides the commit's `lead` metadata, so the live
+   mix, the iOS offline render, the share page and later mid-song sessions all
+   inherit it with no schema or server change. Browsers expose the round trip
+   only partially (Chromium: AudioContext.baseLatency/outputLatency + the mic
+   track's input latency; Safari: none of them), so the Review dialog's “Sync
+   delay (ms)” tunes the value on the actual device once and applyLatencyComp
+   reuses the saved calibration from then on. */
+
+function measureTakeRoundTripLatency(ctx, stream) {
+  let secs = 0;
+  if (ctx) {
+    const b = Number(ctx.baseLatency);
+    const o = Number(ctx.outputLatency);
+    if (isFinite(b) && b > 0) secs += b;
+    if (isFinite(o) && o > 0) secs += o;
+  }
+  try {
+    const track = stream && stream.getAudioTracks && stream.getAudioTracks()[0];
+    const s = track && typeof track.getSettings === "function" ? track.getSettings() : null;
+    const il = s ? Number(s.latency) : NaN;
+    if (isFinite(il) && il > 0) secs += il;
+  } catch (_) {}
+  return Math.max(0, secs);
+}
+
+function storedTakeDelayMs() {
+  const v = parseInt(localStorage.getItem(STUDIO_TAKE_DELAY_KEY) || "", 10);
+  return isFinite(v) && v > 0 ? v : 0;
+}
+
+/* Cap on sync compensation for a session: blob zero must stay on the root
+   timeline (lead ≥ 0 — the blob can't begin before the song's top), and more
+   than two seconds of compensation is never a real device round trip. */
+function maxTakeDelayMs(sessionFrom) {
+  return Math.min(2000, Math.max(0, Math.floor((Number(sessionFrom) || 0) * 1000)));
+}
+
+/* Decide + apply this take session's sync compensation to studio.lead. Only a
+   mid-song take with the backing audible qualifies — singing along with the
+   song is what makes every phrase land late. An a-cappella (“No backing”) or
+   whole-song session keeps lead = sessionFrom exactly (as before). */
+function applyLatencyComp(ctx, stream) {
+  const backingMuted = muteBackingForTake();
+  const measured = Math.round(measureTakeRoundTripLatency(ctx, stream) * 1000);
+  studio.sessionLatencyMs = measured;
+  const canComp = !backingMuted && (studio.sessionFrom || 0) > 0;
+  if (!canComp) {
+    studio.takeCompEnabled = false;
+    studio.latencyCompMs = 0;
+    studio.lead = studio.sessionFrom || 0;
+    return;
+  }
+  const saved = storedTakeDelayMs();
+  // The browser-measured round trip by default; a saved calibration (this
+  // device was tuned on an earlier take) wins over a fresh measurement.
+  const base = saved > 0 ? saved : measured;
+  studio.takeCompEnabled = true;
+  studio.latencyCompMs = Math.min(Math.max(0, Math.round(base)), maxTakeDelayMs(studio.sessionFrom));
+  studio.lead = Math.max(0, studio.sessionFrom - studio.latencyCompMs / 1000);
 }
 
 async function getUserMic() {
@@ -2567,14 +2645,16 @@ async function startTakeRecording() {
     return;
   }
   // The take blob starts at the same instant as the backing (blob zero = the
-  // session's zero on the root timeline = studio.sessionFrom), so lead equals
-  // sessionFrom and the take is positioned by its detected blob start + lead
-  // (a whole-song take → sessionFrom 0 → lead 0 → placed purely by detection).
-  // Recording from the backing start is the key to a clean take top: the old
-  // code started the recorder TAKE_PRE_ROLL after the backing, so anything
-  // sung during the count-in was cut and the take began mid-phrase — exactly
-  // the "first seconds sound messed up" symptom.
-  studio.lead = studio.sessionFrom;
+  // session's zero on the root timeline), so the take is positioned by its
+  // detected blob start + lead (a whole-song take → sessionFrom 0 → lead 0 →
+  // placed purely by detection). When the backing is AUDIBLE the take also
+  // lands late by the device round trip (see applyLatencyComp) — lead is then
+  // sessionFrom minus that compensation, so the phrase lands where it was
+  // sung. Recording from the backing start is the key to a clean take top:
+  // the old code started the recorder TAKE_PRE_ROLL after the backing, so
+  // anything sung during the count-in was cut and the take began mid-phrase —
+  // exactly the "first seconds sound messed up" symptom.
+  applyLatencyComp(ctx, stream);
 
   // Count-in pre-roll: the recorder starts at backingStartAt; the four ticks
   // run over the next TAKE_PRE_ROLL seconds as a musical count ("start singing
@@ -2606,6 +2686,7 @@ let modalEl = null;
 
 function closeModal() {
   stopSetupAudition(); // stop any "Listen from here" preview before the dialog's context disappears
+  stopReviewPreview(); // stop any review-take preview transport playback the same way
   if (modalEl) {
     modalEl.remove();
     modalEl = null;
@@ -2727,8 +2808,9 @@ function decodeBlobDuration(blob) {
 
 /* Decode the recorded take to find its exact duration and its audible range
    (first/last non-silent sample). The times returned here are BLOB-RELATIVE.
-   A take's blob zero is the session start — studio.sessionFrom on the root
-   timeline (0 for whole-song takes) — so the Review modal lands the take at
+   A take's blob zero is the session's zero — studio.sessionFrom minus the
+   sing-along sync-delay compensation, i.e. studio.lead, on the root timeline
+   (0 for whole-song takes) — so the Review modal lands the take at
    (blob position + lead). At mix time the blob is read from (start_time −
    lead), which keeps every blob position at its true root spot.
 
@@ -2803,7 +2885,7 @@ function analyzeTake(blob) {
    routeCtxToOutput() the latter). THEN the count-in flow runs. Without mic
    permission the browser hides device names, so opening the dialog re-populates
    the two top-bar lists (stale until then) and mirrors their current choices
-   into read-only notes; the actual getUserMedia happens on "Start count-in",
+   into read-only notes; the actual getUserMedia happens on "Start from here",
    inside the click. The four dialog options are persisted to the same
    localStorage keys the old bar toggles wrote, so every other path
    (new recording → Record from mic) keeps working with the last-used values. */
@@ -2864,7 +2946,7 @@ function openRecordSetup() {
     </div>
     <div class="rc-modal-actions">
       <button type="button" class="rc-btn rc-btn-ghost" id="setup-cancel-btn">Cancel</button>
-      <button type="button" class="rc-btn rc-btn-primary" id="setup-start-btn">Start count-in →</button>
+      <button type="button" class="rc-btn rc-btn-primary" id="setup-start-btn">Start from here →</button>
     </div>
   `, (overlay) => {
     const devNote = overlay.querySelector("#setup-device-note");
@@ -2955,7 +3037,7 @@ async function wireSetupStartPicker(overlay, commit) {
     if (!setupAudition) {
       hintEl.textContent =
         "Couldn't measure the song's length, so the bar is off — press “▶ Listen from here” to hear from " +
-        fmtStartTime(setupChosenStart) + ", or hit “Start count-in →” to record from there.";
+        fmtStartTime(setupChosenStart) + ", or hit “Start from here →” to record from there.";
     }
     return;
   }
@@ -3078,15 +3160,612 @@ function showRecordSession() {
   updateTakeTimer();
 }
 
+/* ── Review-take preview transport ─────────────────────────
+
+   The “Review take” dialog's two preview buttons used to be fire-and-forget:
+   press ▶ and the audio ran until it ended or the next action replaced it.
+   Each preview now runs inside a small transport — a scrubber bar with an
+   m:ss.t clock that follows the playhead, a “↶ From the start” reset, and the
+   active preview button flipping to “■ Stop” (press it again to stop; pressing
+   the other ▶ switches previews). One preview runs at a time; closing the
+   modal or starting another preview stops it.
+
+   The bar spans ROOT-timeline seconds — the same clock the Start/End fields
+   speak. “Take only” reads the take blob (whose zero sits `lead` seconds into
+   the parent), so its bar covers [lead, lead + take length]; “With original”
+   plays the whole chain with this take over it, so its bar covers [0, mix
+   end]. Dragging while a preview plays jumps it — release restarts the preview
+   from the new point, exactly like the record-setup scrubber, and the playhead
+   readout stands down while the thumb is being dragged.
+
+   Playback paths mirror the rest of the app: “Take only” is a native <audio>
+   element with a Web Audio decode fallback (playDry / playBlobViaWebAudio);
+   “With original” is the live Web Audio schedule on desktop and the
+   offline-rendered mix + native element on iOS (the playCommit paths). */
+
+let reviewPreview = null;    // active preview { seq, kind, F, teardown } | null
+let reviewSeq = 0;           // monotonic — invalidates stale async preview engines
+let reviewScrubbing = false; // the user is dragging the bar — playhead UI stands down
+let reviewGeo = { kind: null, min: 0, max: 0, start: 0 }; // bar span, in root seconds
+
+function reviewTransportEls() {
+  return {
+    wrap: document.getElementById("review-transport"),
+    label: document.getElementById("review-prev-label"),
+    bar: document.getElementById("review-prev-bar"),
+    time: document.getElementById("review-prev-time"),
+    note: document.getElementById("review-prev-note"),
+    reset: document.getElementById("review-prev-reset"),
+  };
+}
+
+function reviewLive(seq) {
+  return !!reviewPreview && reviewPreview.seq === seq;
+}
+
+/* Snap a root-timeline position into the bar's current span (clamped to
+   [min, max] once the length is known). */
+function reviewClamp(pos) {
+  const v = Math.max(reviewGeo.min, Number(pos) || 0);
+  return reviewGeo.max > reviewGeo.min ? Math.min(reviewGeo.max, v) : v;
+}
+
+function reviewClockText(pos) {
+  const v = reviewClamp(pos);
+  return reviewGeo.max > reviewGeo.min
+    ? fmtStartTime(v) + " / " + fmtStartTime(reviewGeo.max)
+    : fmtStartTime(v);
+}
+
+function reviewSetClock(pos) {
+  const els = reviewTransportEls();
+  if (els.time) els.time.textContent = reviewClockText(pos);
+}
+
+function reviewSetNote(text) {
+  const els = reviewTransportEls();
+  if (els.note) els.note.textContent = text;
+}
+
+/* Size the bar once the preview's content length is known. */
+function reviewSetRange(minRoot, maxRoot) {
+  const els = reviewTransportEls();
+  if (!els.bar) return;
+  reviewGeo.min = Math.max(0, Number(minRoot) || 0);
+  reviewGeo.max = Math.max(reviewGeo.min, Number(maxRoot) || 0);
+  els.bar.min = String(reviewGeo.min);
+  els.bar.max = String(reviewGeo.max);
+  els.bar.disabled = !(reviewGeo.max > reviewGeo.min);
+}
+
+/* Playhead tick from a sounding preview: moves the bar + clock unless the user
+   is dragging the thumb (then they own the readout until release). */
+function reviewTick(seq, pos) {
+  if (!reviewLive(seq) || reviewScrubbing) return;
+  const els = reviewTransportEls();
+  const v = reviewClamp(pos);
+  if (els.bar && document.activeElement !== els.bar) els.bar.value = String(v);
+  reviewSetClock(v);
+}
+/* The active preview button flips to “■ Stop”; the other stays a ▶ (pressing
+   it switches previews). activeKind null → both sit idle as ▶. */
+function reviewSetButtons(activeKind) {
+  const flip = (btn, idleLabel, active) => {
+    if (!btn) return;
+    btn.textContent = active ? "■ Stop" : idleLabel;
+    btn.classList.toggle("rc-btn-live", !!active);
+  };
+  flip(document.getElementById("preview-take-btn"), "▶ Take only", activeKind === "take");
+  flip(document.getElementById("preview-mix-btn"), "▶ With original", activeKind === "mix");
+}
+
+/* Stop whatever review preview is sounding and release its audio. Idempotent —
+   called on modal close, before a new preview starts, and on “■ Stop”.
+   Mirrors stopSetupAudition: closeAudio() also clears hub.playing and any blue
+   .playing row (the modal can sit over the hub list). */
+function stopReviewPreview() {
+  const p = reviewPreview;
+  if (!p) return;
+  reviewPreview = null;
+  reviewScrubbing = false;
+  if (typeof p.teardown === "function") {
+    try { p.teardown(); } catch (_) {}
+  }
+  closeAudio();
+}
+
+/* Natural end / failure / user stop of the preview whose seq matches — the
+   transport stays visible but idle: buttons back to ▶, the bar frozen where
+   playback stopped, reset disabled, and the note explaining the state. */
+function reviewFinish(seq, note) {
+  if (!reviewLive(seq)) return;
+  stopReviewPreview();
+  reviewSetButtons(null);
+  const els = reviewTransportEls();
+  if (els.reset) els.reset.disabled = true;
+  if (els.bar) els.bar.disabled = true;
+  reviewSetNote(note);
+  setStudioStatus(""); // the transport is now the source of truth
+}
+/* The point where a fresh preview begins, on the root timeline. The take-only
+   preview starts where the Start field says the take sits (auto-detected take
+   start + lead; never before lead — the blob has no content there). “With
+   original” starts at the song's top so the take is heard in full context,
+   over everything it was recorded against. */
+function reviewStartRoot(kind) {
+  const lead = studio.lead || 0;
+  if (kind !== "take") return 0;
+  const fieldEl = document.getElementById("commit-start");
+  const field = fieldEl ? parseFloat(fieldEl.value) : NaN;
+  if (isFinite(field)) return Math.max(lead, field);
+  const guess = isFinite(studio.takeStartGuess) && studio.takeStartGuess > 0 ? studio.takeStartGuess : 0;
+  return lead + guess;
+}
+
+/* The two preview buttons: start that kind's preview, or — when that kind is
+   already sounding and its button reads “■ Stop” — stop it instead. */
+function reviewStart(kind) {
+  if (kind === "take" && !studio.blobUrl) return;
+  if (reviewPreview && reviewPreview.kind === kind) {
+    reviewFinish(reviewPreview.seq, "Preview stopped.");
+    return;
+  }
+  reviewBegin(kind, reviewStartRoot(kind), false);
+}
+
+/* Begin — or, when keepRange, restart — a preview of `kind` from root position
+   F. keepRange is set by a scrub release / the reset button: the measured bar
+   span stays put (no re-measure flicker) while the engine starts fresh at F. */
+function reviewBegin(kind, F, keepRange) {
+  stopReviewPreview();
+  // A preview is now the page's only audio: silence anything else that was
+  // sounding (a hub-row play, a leftover fallback context) so the two can't
+  // mix. The old inline preview handlers' playCommit/playDry did the same.
+  if (audioEngine.ctx || audioEngine.elements.length) closeAudio();
+  const lead = studio.lead || 0;
+  const seq = ++reviewSeq;
+  if (!keepRange) {
+    reviewGeo.kind = kind;
+    reviewGeo.min = kind === "take" ? lead : 0;
+    reviewGeo.max = 0; // unknown yet — the engine measures and enables the bar
+    reviewGeo.start = Math.max(reviewGeo.min, F);
+  }
+  reviewPreview = { seq, kind, F, teardown: null };
+  const els = reviewTransportEls();
+  if (els.wrap) els.wrap.hidden = false;
+  if (els.label) els.label.textContent = kind === "take" ? "Take-only preview" : "With-original preview";
+  if (els.bar) {
+    els.bar.min = String(reviewGeo.min);
+    els.bar.max = String(reviewGeo.max);
+    els.bar.disabled = !(reviewGeo.max > reviewGeo.min);
+    els.bar.value = String(reviewGeo.max > reviewGeo.min ? reviewClamp(F) : Math.max(reviewGeo.min, F));
+  }
+  reviewSetClock(F);
+  reviewSetButtons(kind);
+  if (els.reset) els.reset.disabled = false;
+  if (kind === "take") reviewTakeEngine(seq, F);
+  else reviewMixEngine(seq, F);
+}
+/* “Take only”: the dry take. Primary path is a native <audio> element (instant,
+   no decode); if the device won't start blob audio (the iOS quirk playDry
+   exists for) or the element stalls, fall back to a Web Audio decode. */
+function reviewTakeEngine(seq, F) {
+  const lead = studio.lead || 0;
+  const url = studio.blobUrl;
+  const off = Math.max(0, F - lead); // blob seconds — the take blob's zero sits at root `lead`
+  if (!url) {
+    reviewFinish(seq, "This take's audio is gone — re-record it before previewing.");
+    return;
+  }
+  reviewSetNote(off > 0.05 ? "Loading the take from " + fmtStartTime(F) + "…" : "Loading the take…");
+  const el = new Audio(url);
+  routeElToOutput(el); // keep the preview on the chosen output device
+  let torn = false;    // stopped / superseded / fell back
+  let sounding = false;
+  let tick = null;
+  let stall = null;
+  const teardown = () => {
+    if (torn) return;
+    torn = true;
+    if (stall) clearTimeout(stall);
+    if (tick) clearInterval(tick);
+    try { el.pause(); el.removeAttribute("src"); el.load(); } catch (_) {}
+  };
+  if (reviewPreview && reviewPreview.seq === seq) reviewPreview.teardown = teardown;
+  const fallback = () => {
+    if (torn || !reviewLive(seq)) return;
+    teardown();
+    reviewTakeWAEngine(seq, F); // decode the in-memory blob through Web Audio
+  };
+  stall = setTimeout(fallback, 4000); // the element never started → decode path
+  tick = setInterval(() => {
+    if (torn || !reviewLive(seq)) { clearInterval(tick); return; }
+    if (!sounding) return; // not playing yet — leave the readout where reviewBegin put it
+    reviewTick(seq, lead + (el.currentTime || 0));
+  }, 150);
+  el.onerror = fallback;
+  el.onloadedmetadata = () => {
+    if (torn || !reviewLive(seq)) return;
+    const d = el.duration;
+    if (isFinite(d) && d > 0) reviewSetRange(lead, lead + d);
+  };
+  el.onplaying = () => {
+    if (torn || !reviewLive(seq)) return;
+    clearTimeout(stall);
+    sounding = true;
+    const d = el.duration;
+    if (isFinite(d) && d > 0) reviewSetRange(lead, lead + d);
+    reviewSetNote(
+      "▶ take-only preview playing" +
+        (off > 0.05 ? " from " + fmtStartTime(F) : " from its top") +
+        " — drag the bar to jump, or press “■ Stop” above to silence it."
+    );
+  };
+  el.onended = () => {
+    if (!sounding || torn || !reviewLive(seq)) return;
+    reviewFinish(seq, "Take-only preview finished.");
+  };
+  if (off > 0) el.currentTime = off;
+  el.play().catch(() => { if (!torn && reviewLive(seq)) fallback(); });
+  audioEngine.elements.push(el); // paused + released by closeAudio() on stop
+}
+/* The take decoded + played through Web Audio — the element engine's fallback
+   (mirrors playBlobViaWebAudio, steered by the transport). */
+async function reviewTakeWAEngine(seq, F) {
+  const lead = studio.lead || 0;
+  const url = studio.blobUrl;
+  if (!url) return;
+  reviewSetNote("Loading the take…");
+  let ctx = null;
+  try {
+    ctx = new (window.AudioContext || window.webkitAudioContext)();
+  } catch (_) {
+    ctx = null;
+  }
+  if (!ctx) {
+    reviewFinish(seq, "Web Audio is unavailable on this device.");
+    return;
+  }
+  audioEngine.ctx = ctx;
+  await routeCtxToOutput(ctx);
+  if (!(await ensureCtxRunning(ctx))) {
+    audioEngine.ctx = null;
+    try { if (ctx && typeof ctx.close === "function") ctx.close().catch(() => {}); } catch (_) {}
+    reviewFinish(seq, "the browser held the playback back — press “▶ Take only” again to start it");
+    return;
+  }
+  let layer = null;
+  try {
+    layer = await decodeLayer(ctx, url); // cached by URL; re-decodes cost nothing
+  } catch (_) {
+    layer = null;
+  }
+  if (!reviewLive(seq) || !audioEngine.ctx || audioEngine.ctx !== ctx) {
+    try { if (ctx && typeof ctx.close === "function") ctx.close().catch(() => {}); } catch (_) {}
+    return; // superseded while decoding
+  }
+  const closeCtx = () => {
+    try { if (ctx && typeof ctx.close === "function") ctx.close().catch(() => {}); } catch (_) {}
+    if (audioEngine.ctx === ctx) audioEngine.ctx = null;
+  };
+  if (!layer || !layer.buffer) {
+    closeCtx();
+    reviewFinish(seq, "couldn't load the take to preview it — check the connection and try again");
+    return;
+  }
+  const dur = layer.buffer.duration || 0;
+  const off = Math.max(0, F - lead); // blob seconds
+  if (off >= Math.max(0.05, dur - 0.05)) {
+    closeCtx();
+    reviewFinish(seq, "Nothing to hear from that point — the take has already ended there.");
+    return;
+  }
+  reviewSetRange(lead, lead + dur);
+  const startAt = ctx.currentTime + 0.05;
+  let src = null;
+  try {
+    src = ctx.createBufferSource();
+    src.buffer = layer.buffer;
+    src.connect(ctx.destination);
+    src.start(startAt, Math.min(off, Math.max(0, dur - 0.001)), undefined);
+    audioEngine.sources.push(src);
+  } catch (_) {
+    src = null;
+  }
+  if (!src) {
+    closeCtx();
+    reviewFinish(seq, "couldn't start the preview in this browser");
+    return;
+  }
+  const endAt = startAt + Math.max(0.05, dur - off) + 0.2;
+  const tick = setInterval(() => {
+    if (!audioEngine.ctx || audioEngine.ctx !== ctx || !reviewLive(seq)) { clearInterval(tick); return; }
+    if (ctx.currentTime < endAt) reviewTick(seq, F + Math.max(0, ctx.currentTime - startAt));
+    else {
+      clearInterval(tick);
+      reviewFinish(seq, "Take-only preview finished.");
+    }
+  }, 150);
+  if (reviewPreview && reviewPreview.seq === seq) reviewPreview.teardown = () => clearInterval(tick);
+  reviewSetNote(
+    "▶ take-only preview playing" +
+      (off > 0.05 ? " from " + fmtStartTime(F) : " from its top") +
+      " — drag the bar to jump, or press “■ Stop” above to silence it."
+  );
+}
+/* The take as an overlay layer for “With original”, from the modal fields — the
+   same geometry the commit will use. The take blob's zero sits at root `lead`;
+   its audible content starts at Start (root seconds), and End, when set past
+   Start, trims it. Volume comes from the modal's % slider (100 = unchanged). */
+function reviewMixExtra() {
+  const startEl = document.getElementById("commit-start");
+  const startT = parseFloat(startEl && startEl.value) || 0;
+  const endEl = document.getElementById("commit-end");
+  const endT = parseFloat(endEl ? endEl.value : ""); // NaN for "end"
+  const duration = isFinite(endT) && endT > startT ? endT - startT : undefined;
+  const volEl = document.getElementById("commit-volume");
+  const rawVol = parseFloat(volEl && volEl.value);
+  return {
+    url: studio.blobUrl,
+    start_time: startT,
+    duration,
+    volume: isFinite(rawVol) ? Math.max(0, Math.min(2, rawVol / 100)) : 1, // 0–200%
+    lead: studio.lead || 0,
+  };
+}
+
+/* One-line playing status for the with-original transport note. */
+function reviewMixPlayingNote(F) {
+  return (
+    "▶ with-original preview playing" +
+    (Number(F) > 0.05 ? " from " + fmtStartTime(F) : " from the top") +
+    " — drag the bar to jump, or press “■ Stop” above to silence it."
+  );
+}
+
+function reviewMixEngine(seq, F) {
+  const commit = studio.backingCommit;
+  const extra = reviewMixExtra();
+  if (!commit) {
+    reviewFinish(seq, "No parent recording to preview against.");
+    return;
+  }
+  if (!extra.url) {
+    reviewFinish(seq, "This take's audio is gone — re-record it before previewing.");
+    return;
+  }
+  reviewSetNote(Number(F) > 0.05 ? "Mixing from " + fmtStartTime(F) + "…" : "Mixing the song with this take…");
+  if (isIOS()) reviewMixIOSEngine(seq, F, commit, extra);
+  else reviewMixWAEngine(seq, F, commit, extra);
+}
+/* Desktop with-original preview: the live Web Audio schedule of the chain + the
+   take overlay (mirrors the record-setup audition, which shares its layer read
+   windows with the iOS render — a scrubbed restart schedules the same geometry
+   from root F). The bar's max is the mix's end across the decoded layers. */
+async function reviewMixWAEngine(seq, F, commit, extra) {
+  let ctx = null;
+  try {
+    ctx = new (window.AudioContext || window.webkitAudioContext)();
+  } catch (_) {
+    ctx = null; // e.g. the iOS 4-context cap
+  }
+  if (!ctx) {
+    reviewFinish(seq, "Web Audio is unavailable on this device.");
+    return;
+  }
+  audioEngine.ctx = ctx;
+  await routeCtxToOutput(ctx);
+  if (!(await ensureCtxRunning(ctx))) {
+    audioEngine.ctx = null;
+    try { if (ctx && typeof ctx.close === "function") ctx.close().catch(() => {}); } catch (_) {}
+    reviewFinish(seq, "the browser held the playback back — press “▶ With original” again to start it");
+    return;
+  }
+  // Decode the whole chain + this take's blob (cached per URL, so a reseek is
+  // a fast re-schedule). A layer that fails to decode is skipped, not fatal.
+  const layers = [];
+  for (const { commit: c } of buildChain(commit)) {
+    try {
+      layers.push({ c, layer: await decodeLayer(ctx, c.url) });
+    } catch (err) {
+      layers.push({ c, layer: null, err });
+    }
+  }
+  if (extra && extra.url) {
+    const c = {
+      lead: extra.lead,
+      start_time: extra.start_time,
+      end_time: extra.duration != null ? extra.start_time + extra.duration : null,
+    };
+    try {
+      layers.push({ c, layer: await decodeLayer(ctx, extra.url), gain: extra.volume });
+    } catch (err) {
+      layers.push({ c, layer: null, err });
+    }
+  }
+  if (!reviewLive(seq) || !audioEngine.ctx || audioEngine.ctx !== ctx) {
+    try { if (ctx && typeof ctx.close === "function") ctx.close().catch(() => {}); } catch (_) {}
+    return; // superseded while decoding
+  }
+  const closeCtx = () => {
+    try { if (ctx && typeof ctx.close === "function") ctx.close().catch(() => {}); } catch (_) {}
+    if (audioEngine.ctx === ctx) audioEngine.ctx = null;
+  };
+  const failed = [];
+  const startAt = ctx.currentTime + 0.05;
+  let scheduled = 0;
+  for (const { c, layer, gain } of layers) {
+    if (!layer) continue;
+    try {
+      scheduleSessionLayer(ctx, layer, c, F, startAt, undefined, gain !== undefined ? gain : commitVolume(c));
+      scheduled++;
+    } catch (err) {
+      failed.push(err);
+    }
+  }
+  if (!scheduled) {
+    closeCtx();
+    reviewFinish(seq, "nothing to hear from that point — the song has already ended there");
+    return;
+  }
+  // Bar max = the mix's end across the decoded layers (root seconds); the bar
+  // keeps its kind's min (0 for a mix) so a scrub can restart anywhere inside it.
+  let total = F;
+  for (const { c, layer } of layers) {
+    if (!layer || !layer.buffer || !c) continue;
+    const end = layerRootEnd(c, layer.buffer.duration);
+    if (end != null && end > total) total = end;
+  }
+  reviewSetRange(reviewGeo.min, total);
+  const endAt = startAt + (total - F) + 0.2;
+  const tick = setInterval(() => {
+    if (!audioEngine.ctx || audioEngine.ctx !== ctx || !reviewLive(seq)) { clearInterval(tick); return; }
+    if (ctx.currentTime < endAt) reviewTick(seq, F + Math.max(0, ctx.currentTime - startAt));
+    else {
+      clearInterval(tick);
+      reviewFinish(seq, "With-original preview finished.");
+    }
+  }, 150);
+  if (reviewPreview && reviewPreview.seq === seq) reviewPreview.teardown = () => clearInterval(tick);
+  const row = document.querySelector(`.rc-commit[data-commit="${commit.id}"]`);
+  if (row) row.classList.add("playing");
+  hub.playing = { repoId: commit.repo_id, commitId: commit.id };
+  syncPlayState();
+  if (commit.repo_id) countRepoPlay(commit.repo_id);
+  setStudioStatus(
+    failed.length
+      ? "⚠ " + failed.length + " layer(s) couldn't decode for the preview — " + (failed[0].message || "")
+      : "▶ with-original preview"
+  );
+  reviewSetNote(reviewMixPlayingNote(F));
+}
+/* iOS with-original preview: WebKit drops live Web Audio sources silently, so
+   the chain + take is rendered OFFLINE (renderIOSMixBlob — pure DSP, same as
+   the record-setup audition) and the resulting WAV plays through a native
+   <audio> element, the proven iOS path. The render is async, so play() falls
+   outside the original tap's gesture and iOS blocks it the first time — arm
+   again on the next touch (iosSetupAudition does the same). */
+async function reviewMixIOSEngine(seq, F, commit, extra) {
+  const from = Number(F) > 0.05 ? fmtStartTime(F) : "the top";
+  let blob = null;
+  try {
+    blob = await Promise.race([
+      renderIOSMixBlob(commit, extra, F),
+      new Promise((_, rej) => setTimeout(() => rej(new Error("mixing took too long")), 40000)),
+    ]);
+  } catch (err) {
+    reviewFinish(seq, "couldn't render the layered mix on this phone (" + err.message + ") — press “▶ With original” again");
+    return;
+  }
+  if (!reviewLive(seq)) return; // superseded while rendering
+  const url = URL.createObjectURL(blob);
+  const el = new Audio();
+  el.preload = "auto";
+  routeElToOutput(el); // keep the rendered mix on the chosen output device
+  el._mixUrl = url;    // revoked in closeAudio()
+  reviewSetNote("Mixing done — starting playback…");
+  let torn = false;
+  let sounding = false;
+  let tick = null;
+  let bail = null;
+  const teardown = () => {
+    if (torn) return;
+    torn = true;
+    if (bail) clearTimeout(bail);
+    if (tick) clearInterval(tick);
+    try { el.pause(); el.removeAttribute("src"); el.load(); } catch (_) {}
+  };
+  if (reviewPreview && reviewPreview.seq === seq) reviewPreview.teardown = teardown;
+  audioEngine.elements.push(el); // paused + _mixUrl revoked by closeAudio()
+  tick = setInterval(() => {
+    if (torn || !reviewLive(seq)) { clearInterval(tick); return; }
+    if (!sounding) return; // not playing yet — leave the readout where reviewBegin put it
+    reviewTick(seq, F + (el.currentTime || 0));
+  }, 150);
+  bail = setTimeout(() => {
+    if (!torn && reviewLive(seq) && !sounding) {
+      reviewFinish(seq, "playback didn't start — press “▶ With original” to retry");
+    }
+  }, 25000);
+  el.onloadedmetadata = () => {
+    if (torn || !reviewLive(seq)) return;
+    const d = el.duration;
+    if (isFinite(d) && d > 0) reviewSetRange(0, Math.max(reviewGeo.max, F + d));
+  };
+  const markPlaying = () => {
+    if (torn || !reviewLive(seq) || sounding) return;
+    sounding = true;
+    if (bail) clearTimeout(bail);
+    const d = el.duration;
+    if (isFinite(d) && d > 0) reviewSetRange(0, Math.max(reviewGeo.max, F + d));
+    const row = document.querySelector(`.rc-commit[data-commit="${commit.id}"]`);
+    if (row) row.classList.add("playing");
+    hub.playing = { repoId: commit.repo_id, commitId: commit.id };
+    syncPlayState();
+    if (commit.repo_id) countRepoPlay(commit.repo_id);
+    setStudioStatus("▶ with-original preview (rendered mix)");
+    reviewSetNote(reviewMixPlayingNote(F));
+  };
+  el.onplaying = markPlaying;
+  el.onended = () => { if (sounding && reviewLive(seq)) reviewFinish(seq, "With-original preview finished."); };
+  const tryPlay = () => {
+    if (torn || !reviewLive(seq) || sounding) return;
+    el.play()
+      .then(() => { if (!torn && reviewLive(seq)) markPlaying(); })
+      .catch((e) => {
+        if (torn || !reviewLive(seq)) return;
+        if (e && e.name === "AbortError") return; // stopped by closeAudio()
+        if (e && e.name === "NotAllowedError") {
+          // iOS needs a fresh user gesture for the play() — the next touch IS one.
+          reviewSetNote("Rendering done — tap once to play from " + from + ".");
+          const retry = () => {
+            window.removeEventListener("touchend", retry);
+            window.removeEventListener("click", retry);
+            if (torn || !reviewLive(seq) || sounding) return;
+            el.play()
+              .then(() => { if (!torn && reviewLive(seq)) markPlaying(); })
+              .catch((e2) => {
+                if (torn || !reviewLive(seq)) return;
+                if (e2 && e2.name === "AbortError") return;
+                reviewFinish(seq, "the browser blocked the preview — press “▶ With original” again");
+              });
+          };
+          window.addEventListener("touchend", retry, { once: true });
+          window.addEventListener("click", retry, { once: true });
+          return;
+        }
+        reviewFinish(seq, "couldn't play the rendered mix: " + ((e && e.message) || e));
+      });
+  };
+  el.addEventListener("loadedmetadata", tryPlay, { once: true });
+  el.addEventListener("canplay", tryPlay, { once: true });
+}
 
 function openTakePreview() {
   const commit = studio.backingCommit;
   // takeStartGuess is blob-relative. The blob's zero is the session start =
-  // studio.sessionFrom (lead); for a whole-song take sessionFrom is 0, so blob
-  // position == root-timeline position and the Start field uses it directly —
-  // the `+ lead` keeps the formula correct for mid-song takes whose session
-  // began TAKE_PRE_ROLL before the chosen point.
+  // studio.sessionFrom on the root timeline (minus the sing-along sync-delay
+  // compensation, which pulls lead earlier — see applyLatencyComp); for a
+  // whole-song take sessionFrom is 0, so blob position == root position and
+  // the Start field uses it directly — the `+ lead` keeps the formula correct
+  // for mid-song takes whose session began TAKE_PRE_ROLL before the point.
   const start = (isFinite(studio.takeStartGuess) && studio.takeStartGuess > 0 ? studio.takeStartGuess : 0) + (studio.lead || 0);
+  // “Sync delay (ms)”: only a mid-song take sung along with the audible
+  // backing gets compensated (takeCompEnabled). studio.lead already includes
+  // the session's compensation; this field lets the singer fine-tune it for
+  // THIS device — the Start field above follows live, and the value rides
+  // `lead` into the commit and is remembered for the next take on this device.
+  const syncEnabled = !!studio.takeCompEnabled;
+  const syncMax = syncEnabled ? maxTakeDelayMs(studio.sessionFrom) : 0;
+  const syncMs = syncEnabled ? Math.min(Math.max(0, Math.round(studio.latencyCompMs)), syncMax) : 0;
+  const measuredMs = Math.round(studio.sessionLatencyMs || 0);
+  const syncHtml = syncEnabled
+    ? `
+    <label class="rc-field" title="A take sung along with the audible backing is recorded this many ms late (you follow what you hear, and the capture path adds its own input latency). The browser-measured round trip for this device is ${measuredMs} ms — listen to “With original” and nudge until your voice locks to the song. Remembered on this device for future takes.">
+      <span>Sync delay (ms)${syncMs ? ` — ${syncMs} ms applied` : ""}</span>
+      <input type="number" id="commit-sync-ms" min="0" max="${syncMax}" step="10" value="${syncMs}" />
+    </label>`
+    : "";
   const contributorDefault = displayName(hub.user) || "admin";
   const warnings = [];
   if (typeof studio.takeLevel === "number" && studio.takeLevel < 0.002) {
@@ -3104,6 +3783,16 @@ function openTakePreview() {
     <div class="rc-preview-row">
       <button type="button" class="rc-btn rc-btn-ghost" id="preview-take-btn">▶ Take only</button>
       <button type="button" class="rc-btn rc-btn-ghost" id="preview-mix-btn">▶ With original</button>
+    </div>
+    <div class="rc-preview-transport" id="review-transport" hidden>
+      <label class="rc-start-label" for="review-prev-bar"><span id="review-prev-label">Take-only preview</span>
+        <span class="rc-start-time" id="review-prev-time">0:00</span>
+      </label>
+      <input type="range" id="review-prev-bar" min="0" max="0" step="0.1" value="0" disabled="" aria-label="Preview position — drag to jump" />
+      <span class="rc-preview-actions">
+        <button type="button" class="rc-btn rc-btn-ghost rc-btn-sm" id="review-prev-reset" disabled="">↶ From the start</button>
+      </span>
+      <span class="rc-hint" id="review-prev-note">Press ▶ Take only to hear the dry take, or ▶ With original to hear it over the song — while either plays, this bar scrubs and the preview button above becomes “■ Stop”.</span>
     </div>
     <label class="rc-field">Commit message
       <input type="text" id="commit-message" maxlength="500" placeholder="e.g. second take, stronger chorus" />
@@ -3124,38 +3813,72 @@ function openTakePreview() {
           <option value="single">single — standalone sound</option>
         </select>
       </label>
-    </div>
+    </div>${syncHtml}
     <label class="rc-vol-field" title="How loud this take plays against the parent — 100% is unchanged">
       <span>Volume</span>
       <input type="range" id="commit-volume" min="0" max="200" step="5" value="100" />
       <span class="rc-vol-pct" id="commit-volume-pct">100%</span>
     </label>
-    <p class="rc-hint">Start is auto-detected from the first sound in your take — adjust if needed. Leave End as "end" to play the take's natural length.</p>
+    <p class="rc-hint">Start is auto-detected from the first sound in your take — adjust if needed.${syncEnabled ? ` Sync delay backs out the recording round trip so a take sung along with the audible backing lands where it was sung (this device measured ${measuredMs} ms; tune it with “With original” preview and it is remembered here).` : ""} Leave End as "end" to play the take's natural length.</p>
     ${warnHtml}
     <div class="rc-modal-actions">
       <button type="button" class="rc-btn rc-btn-ghost" id="discard-take-btn">Discard</button>
       <button type="button" class="rc-btn rc-btn-primary" id="commit-take-btn">Commit take</button>
     </div>
   `, (overlay) => {
-    overlay.querySelector("#preview-take-btn").addEventListener("click", () => {
-      // The Start field is a root-timeline position; the take blob's zero sits at
-      // studio.lead (sessionFrom), so seek blob-relative. For whole-song takes
-      // lead is 0 and this is the field value straight — same as before.
-      const fieldStart = parseFloat(overlay.querySelector("#commit-start").value);
-      const blobStart = isFinite(fieldStart) ? Math.max(0, fieldStart - (studio.lead || 0)) : studio.takeStartGuess;
-      playDry(studio.blobUrl, blobStart);
-    });
+    // ▶ Take only / ▶ With original run inside the transport below the buttons:
+    // the active preview button flips to “■ Stop” (reviewStart stops it when
+    // re-pressed) and the bar scrubs root-timeline seconds.
+    overlay.querySelector("#preview-take-btn").addEventListener("click", () => reviewStart("take"));
+    overlay.querySelector("#preview-mix-btn").addEventListener("click", () => reviewStart("mix"));
+    const prevBar = overlay.querySelector("#review-prev-bar");
+    if (prevBar) {
+      // Drag: while the thumb moves the user owns the readout — the playhead
+      // clock/bar stand down until release. Release is the seek: restart the
+      // preview from the new point so it keeps playing from there (same as the
+      // record-setup scrubber).
+      prevBar.addEventListener("input", () => {
+        if (prevBar.disabled) return;
+        reviewScrubbing = true;
+        reviewSetClock(reviewClamp(Number(prevBar.value) || 0));
+      });
+      prevBar.addEventListener("change", () => {
+        reviewScrubbing = false;
+        if (!reviewPreview) return;
+        const v = reviewClamp(Number(prevBar.value) || 0);
+        reviewBegin(reviewPreview.kind, v, true); // keep the measured span; play from v
+      });
+    }
+    const prevReset = overlay.querySelector("#review-prev-reset");
+    if (prevReset) {
+      prevReset.addEventListener("click", () => {
+        if (!reviewPreview) return;
+        reviewBegin(reviewPreview.kind, reviewGeo.start, true);
+      });
+    }
     const volInput = overlay.querySelector("#commit-volume");
     const volPct = overlay.querySelector("#commit-volume-pct");
     volInput.addEventListener("input", () => { volPct.textContent = volInput.value + "%"; });
-    overlay.querySelector("#preview-mix-btn").addEventListener("click", () => {
-      const startT = parseFloat(overlay.querySelector("#commit-start").value) || 0;
-      const endT = parseFloat(overlay.querySelector("#commit-end").value);
-      const duration = isFinite(endT) && endT > startT ? endT - startT : undefined;
-      const rawVol = parseFloat(volInput.value);
-      const volume = isFinite(rawVol) ? rawVol / 100 : 1; // 0 = muted
-      playCommit(commit, { url: studio.blobUrl, start_time: startT, duration, volume, lead: studio.lead || 0 });
-    });
+    // “Sync delay (ms)”: shifting the compensation changes studio.lead, and the
+    // Start field (root position = detected blob start + lead) follows so the
+    // “With original” preview and the commit use the corrected geometry.
+    const startInput = overlay.querySelector("#commit-start");
+    const syncInput = overlay.querySelector("#commit-sync-ms");
+    if (syncInput) {
+      const syncMaxV = Math.max(0, parseInt(syncInput.max, 10) || 0);
+      syncInput.addEventListener("input", () => {
+        const v = Math.max(0, Math.min(Math.round(parseFloat(syncInput.value) || 0), syncMaxV));
+        if (String(v) !== syncInput.value) syncInput.value = String(v);
+        studio.latencyCompMs = v;
+        studio.lead = Math.max(0, (studio.sessionFrom || 0) - v / 1000);
+        localStorage.setItem(STUDIO_TAKE_DELAY_KEY, String(v));
+        if (startInput) {
+          const s = (isFinite(studio.takeStartGuess) && studio.takeStartGuess > 0 ? studio.takeStartGuess : 0) + (studio.lead || 0);
+          startInput.value = s.toFixed(1);
+        }
+      });
+    }
+
     overlay.querySelector("#discard-take-btn").addEventListener("click", () => {
       studio.cancelled = true;
       setRecordUI(false);
