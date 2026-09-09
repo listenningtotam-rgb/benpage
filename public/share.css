@@ -187,6 +187,19 @@ a:hover {
   gap: 1.6rem;
 }
 
+/* Fallback cover art — tracks have no uploaded artwork, so the shared
+   /share-rec.png "Rec" vinyl cover shows on the page as well as in
+   WeChat/QQ link previews (og:image). */
+.share-cover {
+  width: clamp(180px, 38vw, 300px);
+  height: auto;
+  aspect-ratio: 1;
+  border-radius: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  box-shadow: 0 18px 44px rgba(0, 0, 0, 0.45);
+  align-self: center;
+}
+
 .share-audio {
   width: 100%;
   max-width: 560px;

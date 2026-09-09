@@ -741,6 +741,13 @@ function sanitizeBlocks(blocks) {
 // in-app browser.
 const SITE_NAME = "BEN 言";
 
+// Shared cover art for music / recording share pages (/music/:id, /recording/:id).
+// Those tracks carry no uploaded artwork, and WeChat / QQ link previews drop
+// their cover image entirely when og:image is missing — so every shared track
+// link falls back to this generated "Rec" vinyl cover. Served statically from
+// public/ so scrapers (and the page itself) fetch it without any auth.
+const SHARE_REC_COVER = "/share-rec.png";
+
 function escHtml(s) {
   return String(s)
     .replace(/&/g, "&amp;")
@@ -923,7 +930,7 @@ function renderTrackSharePage(req, kind, track, latest, urlPath) {
     id: track.id,
     title: `${track.title} · ${sourceLabel}${versionLabel ? ` · ${versionLabel}` : ""}`,
     description: `${track.title} (${sourceLabel}) — a recording from ${SITE_NAME}.`,
-    image: "",
+    image: SHARE_REC_COVER,
     type: "music.song",
     url: urlPath,
   });
@@ -967,6 +974,7 @@ function renderTrackSharePage(req, kind, track, latest, urlPath) {
     `      <span class="share-meta">Recording · ▶ ${Number(track.play_count) || 0} plays</span>\n` +
     "    </header>\n" +
     '    <section class="share-track">\n' +
+    '      <img class="share-cover" src="/share-rec.png" alt="Rec" width="300" height="300" />\n' +
     `      <h1 class="share-title">${escHtml(track.title)} <span class="share-source${track.source_type === "cover" ? " share-source-cover" : ""}">${sourceLabel}</span>${versionLabel ? ` <span class="share-version">${versionLabel}</span>` : ""}</h1>\n` +
     audioHtml +
     "    </section>\n" +
