@@ -2913,27 +2913,24 @@ function openRecordSetup() {
     return;
   }
   const repoId = hub.checkedOut.repoId;
-  let commit = (hub.commits.get(repoId) || []).find((c) => c.id === hub.checkedOut.commitId);
+  const commit = (hub.commits.get(repoId) || []).find((c) => c.id === hub.checkedOut.commitId);
   if (!commit) return;
-  // Record Take expects to STACK: the new take becomes a child of the commit it
-  // is recorded over, so the repo's history stays one linear chain (root →
-  // take1 → take2 → …) and playing the newest take mixes every layer. If the ✓
-  // still sits on an OLDER commit, recording there would fork a sibling branch
-  // that never plays with the newer takes — warn about that and offer to
-  // re-target the newest take (the head) instead, which is what was meant in
-  // almost every case.
+  // Record Take ALWAYS honors the commit the user has checked out — the ✓ in the
+  // list decides where the new take stacks, never the newest commit. The one
+  // real trap worth surfacing: recording over an OLDER take while newer takes
+  // exist forks the history — the new take layers onto that older commit (and
+  // only that commit's own ancestor chain) and will NOT play together with the
+  // newer takes on the other branch. Warn about exactly what will be mixed, then
+  // proceed over the user's chosen commit; Cancel aborts and leaves the ✓ where
+  // it is so they can re-pick a base. It must NEVER silently re-target the
+  // newest take — that would override the commit the user just chose.
   const cs = hub.commits.get(repoId) || [];
   const head = cs.reduce((m, x) => (!m || x.id > m.id ? x : m), null);
   if (head && head.id !== commit.id) {
-    const toHead = window.confirm(
-      `● Record Take is about to layer the new take over ${commitHash(commit.id)} (${commit.message}), but the newest take in this recording is ${commitHash(head.id)} (${head.message}). Recorded this way the new take would NOT play together with that newer take — it becomes a separate branch. Layer the new take over ${commitHash(head.id)} (the newest) instead?`
+    const proceed = window.confirm(
+      `● Record Take will layer the new take over ${commitHash(commit.id)} (${commit.message}). The newest take in this recording is ${commitHash(head.id)} (${head.message}): a take recorded here will NOT play together with it — the session mix stays ${commitHash(commit.id)} and that commit's own earlier chain only. Record over ${commitHash(commit.id)} anyway?`
     );
-    if (toHead) {
-      hub.checkedOut = { repoId, commitId: head.id };
-      commit = head;
-      updateStudioBar();
-      renderRepos(); // move the ✓ onto the newest take
-    }
+    if (!proceed) return; // keep the ✓ untouched — the user can re-check-out the commit they meant
   }
   // The dialog's song transport always shows: the checked-out chain plays from
   // the top right away so the singer can drag the progress bar to where the take
