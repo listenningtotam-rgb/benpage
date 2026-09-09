@@ -542,6 +542,16 @@ function updateRecordingRepoUrl(id, url) {
   return getRecordingRepo(id);
 }
 
+/* Publish (or unpublish) a band recording's public share page. Banded repos
+   are private by default (share_public = 0): only a band member / admin may
+   flip this, and until it's set the /recording/:id page and its raw audio
+   stay band-only. Once shared, the page is public and plays the latest
+   tagged version — same as legacy recordings (which are always public). */
+function setRecordingRepoShared(id, shared) {
+  db.prepare("UPDATE recording_repos SET share_public = ? WHERE id = ?").run(shared ? 1 : 0, id);
+  return getRecordingRepo(id);
+}
+
 function listRecordingCommits(repoId) {
   return db
     .prepare(
@@ -1052,6 +1062,7 @@ module.exports = {
   createRecordingRepo,
   deleteRecordingRepo,
   updateRecordingRepoUrl,
+  setRecordingRepoShared,
   canEditRepo,
   findRepoForAudioUrl,
   listRecordingCommits,

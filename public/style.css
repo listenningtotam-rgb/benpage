@@ -2383,6 +2383,15 @@ body.app-standalone #app-detail {
   border: 1px solid rgba(126, 224, 200, 0.3);
 }
 
+/* A band recording whose share link is live (share_public) — the /recording/:id
+   page is a public web page that plays the latest tagged version. Orange reads
+   "published/live" and sits after the teal band badge on the header line. */
+.rc-badge-share {
+  color: #ffb454;
+  background: rgba(255, 180, 84, 0.12);
+  border: 1px solid rgba(255, 180, 84, 0.35);
+}
+
 .rc-commit-meta {
   display: flex;
   align-items: center;

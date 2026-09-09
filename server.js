@@ -1976,13 +1976,14 @@ async function handleApi(req, res, urlPath) {
   }
 
   // Play-count increment — public (visitors bump it), host-gated + rate-limited.
-  // Banded repos are private: only their members / admin may bump them.
+  // Banded repos are private unless a member published them (share_public);
+  // published ones count plays from the public share page, like legacy repos.
   const recordingPlayMatch = urlPath.match(/^\/api\/recordings\/(\d+)\/play$/);
   if (recordingPlayMatch && req.method === "POST") {
     if (!checkCountRate(req)) return json(res, 429, { error: "Rate limit exceeded" });
     const repo = db.getRecordingRepo(Number(recordingPlayMatch[1]));
     if (!repo) return json(res, 404, { error: "Recording not found" });
-    if (repo.band_id != null && !db.canEditRepo(authUser, repo)) {
+    if (repo.band_id != null && !repo.share_public && !db.canEditRepo(authUser, repo)) {
       return json(res, 403, { error: "This recording is private to its band" });
     }
     const updated = db.incrementRecordingRepoPlay(repo.id);
@@ -2105,6 +2106,26 @@ async function handleApi(req, res, urlPath) {
     const commit = db.tagRecordingCommit(commitId);
     if (!commit) return json(res, 404, { error: "Commit not found" });
     return json(res, 200, { commit });
+  }
+
+  // Publish/unpublish a band recording's public share page (band members /
+  // admin only). Banded repos are private until shared: share_public makes the
+  // /recording/:id page and its audio publicly reachable, so anyone with the
+  // link can listen (the page plays the latest tagged version). Legacy repos
+  // (band_id NULL) are already public and reject this.
+  const repoShareMatch = urlPath.match(/^\/api\/recordings\/(\d+)\/share$/);
+  if (repoShareMatch && req.method === "POST") {
+    if (!requireProfile()) return;
+    const repoId = Number(repoShareMatch[1]);
+    const repo = db.getRecordingRepo(repoId);
+    if (!repo) return json(res, 404, { error: "Recording not found" });
+    if (repo.band_id == null) return json(res, 400, { error: "This recording is already public" });
+    if (!db.canEditRepo(authUser, repo)) {
+      return json(res, 403, { error: "You are not a member of this recording's band" });
+    }
+    const body = await readBody(req);
+    const updated = db.setRecordingRepoShared(repoId, body && body.public === true);
+    return json(res, 200, { ok: true, repo: updated });
   }
 
   const repoDeleteMatch = urlPath.match(/^\/api\/recordings\/(\d+)$/);
@@ -2711,13 +2732,15 @@ const server = http.createServer((req, res) => {
   // Streamed with HTTP Range support so <audio> can seek on larger files.
   if (urlPath.startsWith(RECORDING_URL_PREFIX)) {
     // Banded recordings are private: their raw audio files are only served to
-    // band members / admin. The native <audio> element can't send the
-    // Authorization header, so the hub appends ?token=<JWT> when playing a
-    // banded file (playNativeTrack / decodeLayer). Legacy public files are
-    // unaffected. token= is accepted for <audio> playback only — it is the
-    // user's own short-lived JWT, never shared with other pages.
+    // band members / admin unless the repo was published (share_public) — the
+    // public share page's <audio> and overlay-mix chain then load them without
+    // auth. The native <audio> element can't send the Authorization header, so
+    // the hub appends ?token=<JWT> when playing a private banded file
+    // (playNativeTrack / decodeLayer). Legacy public files are unaffected.
+    // token= is accepted for <audio> playback only — it is the user's own
+    // short-lived JWT, never shared with other pages.
     const fileRepo = db.findRepoForAudioUrl(urlPath);
-    if (fileRepo && fileRepo.band_id != null) {
+    if (fileRepo && fileRepo.band_id != null && !fileRepo.share_public) {
       let viewer = getAuthUser(req);
       if (!viewer) {
         const q = new URL(req.url, "http://localhost");
@@ -2817,8 +2840,10 @@ const server = http.createServer((req, res) => {
       res.end("Not Found");
       return;
     }
-    // Banded recordings are private to their band — no public share page.
-    if (repo.band_id != null) {
+    // Banded recordings are private to their band unless a member published
+    // them (share_public): the shared page is then a normal public web page
+    // that plays the latest tagged version, exactly like a legacy recording.
+    if (repo.band_id != null && !repo.share_public) {
       const viewer = getAuthUser(req);
       const allowed = viewer && db.canEditRepo(viewer, repo);
       if (!allowed) {

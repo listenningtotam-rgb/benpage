@@ -125,7 +125,12 @@ function detectBaselineVersion(db) {
     version = Math.max(version, commitVer);
   }
   // 011_separate_recording_repos.sql → recording_repos (hub's own table)
-  if (tableExists(db, "recording_repos")) version = Math.max(version, 11);
+  if (tableExists(db, "recording_repos")) {
+    const cols = db.prepare("PRAGMA table_info(recording_repos)").all().map((c) => c.name);
+    version = Math.max(version, 11);
+    // 016_add_recording_share_public.sql → recording_repos.share_public
+    if (cols.includes("share_public")) version = Math.max(version, 16);
+  }
   // 012_add_vinyl_records.sql → vinyl_records (黑胶档案 seeded albums)
   if (tableExists(db, "vinyl_records")) version = Math.max(version, 12);
   // 014_add_bands_invites.sql → bands (band-based REC HUB membership)

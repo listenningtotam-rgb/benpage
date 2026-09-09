@@ -296,6 +296,16 @@ function renderRepoCard(repo) {
   const head = commits[commits.length - 1] || null;
   const expanded = hub.expanded === repo.id;
   const canEdit = !!repo.can_edit;
+  const isBand = !!repo.band_id;
+  const isSharedPublic = !!repo.share_public;
+  // The ↗ button opens the /recording/:id page, which plays the latest tagged
+  // version. Banded songs are private until a member publishes them
+  // (share_public) — for those, pressing ↗ IS the publish step.
+  const shareTitle = isBand
+    ? isSharedPublic
+      ? "Share as a public web page (plays the latest tagged version)"
+      : "Share publicly — publish a public web page for this band recording"
+    : "Share as a public web page (plays the latest tagged version)";
   // The export button downloads the current public version — the highest tag,
   // exactly the commit the share button's /recording/:id page plays.
   const latest = latestTaggedCommit(repo);
@@ -315,14 +325,15 @@ function renderRepoCard(repo) {
         <div class="rc-repo-title">${scEscapeHTML(repo.title)}</div>
         <div class="rc-repo-meta">
           ${sourceBadge(repo.source_type)}
-          ${repo.band_name ? `<span class="rc-badge rc-badge-band" title="Private to this band">🎸 ${scEscapeHTML(repo.band_name)}</span>` : ""}
+          ${repo.band_name ? `<span class="rc-badge rc-badge-band" title="${isSharedPublic ? "This band recording — the public share link is live" : "Private to this band"}">🎸 ${scEscapeHTML(repo.band_name)}</span>` : ""}
+          ${isBand && isSharedPublic ? `<span class="rc-badge rc-badge-share" title="Public — anyone with the link can listen (the page plays the latest tagged version)">public ↗</span>` : ""}
           ${commits.length} commit${commits.length === 1 ? "" : "s"}
           ${head ? ` · HEAD ${commitHash(head.id)} ${scEscapeHTML(head.message)}` : ""}
           · ${Number(repo.play_count) || 0} plays
         </div>
       </div>
       <div class="rc-repo-actions">
-        ${repo.band_id ? "" : `<button type="button" class="rc-icon-btn" data-action="share-repo" data-repo="${repo.id}" title="Share">↗</button>`}
+        ${isBand && !canEdit ? "" : `<button type="button" class="rc-icon-btn" data-action="share-repo" data-repo="${repo.id}" title="${shareTitle}">↗</button>`}
         <button type="button" class="rc-icon-btn" data-action="export-repo" data-repo="${repo.id}" title="${exportTitle}">⬇</button>
         <button type="button" class="rc-icon-btn rc-repo-toggle" data-action="toggle-repo" data-repo="${repo.id}" title="Commit history" aria-expanded="${expanded ? "true" : "false"}">${expanded ? "▾" : "▸"}</button>
         ${
@@ -512,9 +523,40 @@ function attachRepoListEvents() {
       hub.expanded = hub.expanded === repoId ? null : repoId;
       renderRepos();
     } else if (action === "share-repo") {
-      if (repo && typeof window.openShareDialog === "function") {
-        window.openShareDialog({ title: repo.title, path: `/recording/${repoId}` });
+      if (!repo || typeof window.openShareDialog !== "function") return;
+      const openShare = () => window.openShareDialog({ title: repo.title, path: `/recording/${repoId}` });
+      // Public recordings (and band songs that are already shared) open
+      // straight into the QR / copy-link / short-link dialog. A private band
+      // song publishes on first share — after it, /recording/:id and its audio
+      // are public and play the latest tagged version, like the legacy pages.
+      if (repo.band_id && !repo.share_public) {
+        if (!canEdit) return; // band members (and admin) can publish; others never see one
+        const latest = latestTaggedCommit(repo);
+        const whatPlays =
+          latest && latest.version != null
+            ? `the page plays the latest tagged version v${latest.version}.0`
+            : "the page plays the latest commit";
+        const bandLabel = repo.band_name ? ` — ${repo.band_name}` : "";
+        if (
+          !window.confirm(
+            `"${repo.title}" is private to its band${bandLabel}. Sharing publishes a public web page where anyone with the link can listen (${whatPlays}). Publish and share?`
+          )
+        )
+          return;
+        hubApi(`/api/recordings/${repoId}/share`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ public: true }),
+        })
+          .then((data) => {
+            if (data && data.repo) Object.assign(repo, data.repo);
+            renderRepos();
+            openShare();
+          })
+          .catch((err) => alert(err.message));
+        return;
       }
+      openShare();
     } else if (action === "export-repo") {
       if (repo) exportRepo(repo);
     } else if (action === "play-commit") {
