@@ -394,13 +394,25 @@ async function exportRepo(repo) {
   const version = c.version != null ? ` v${c.version}.0` : "";
   const base = safeFileName(repo.title);
   if (c.mode === "overlay") {
-    setStudioStatus("⏳ rendering the layered mix for export…");
+    // A lone-commit overlay (repo root exported before any take) IS its own
+    // file — rendering it would just re-encode the same audio and could fail
+    // for nothing on a phone. Download the file directly like the single case.
+    if (buildChain(c).length === 1) {
+      downloadFile(c.url, `${base}${version}.${fileExt(c.url)}`);
+      setStudioStatus(`✔ exporting ${base}${version}.${fileExt(c.url)}`);
+      return;
+    }
+    setStudioStatus("⏳ rendering the layered mix for export…", false);
     let blob;
     try {
-      blob = await Promise.race([
-        renderIOSMixBlob(c),
-        new Promise((_, rej) => setTimeout(() => rej(new Error("render timed out")), 30000)),
-      ]);
+      // Desktop export keeps the full 44.1 kHz quality (lowMemory:false); the
+      // deadline aborts a stuck render instead of letting it burn in the
+      // background, and the fallback below still hands over the take's file.
+      blob = await mixRenderJob(c, null, 0, {
+        ms: 60000,
+        lowMemory: false,
+        onStage: (s) => setStudioStatus("⏳ " + s, false),
+      });
     } catch (err) {
       // Render failed — still hand over the take's own file rather than nothing.
       setStudioStatus(`⚠ could not render the mix (${err.message}) — exporting the take file alone.`, true);
@@ -657,8 +669,44 @@ const audioEngine = {
 
 /* Decoded AudioBuffers are not AudioContext-bound, so cache them by URL: a take
    session re-plays the same backing chain repeatedly, and re-fetching + re-decoding
-   it every time (0.5-3 s) used to swallow the count-in's lead time. */
-const bufferCache = new Map(); // url → AudioBuffer
+   it every time (0.5-3 s) used to swallow the count-in's lead time.
+
+   The cache is LRU-bounded by raw-PCM bytes: an AudioBuffer is Float32 at the
+   file's own rate (a 5-minute song ≈ 100 MB), and an uncapped cache made phones
+   accumulate every layer ever played until the tab ran out of memory and the
+   next mix render / playback silently died. Evicted layers just re-decode on
+   the next play — a second or two — far cheaper than a crashed tab. */
+const bufferCache = new Map(); // url → AudioBuffer (LRU)
+const BUFFER_CACHE_BUDGET = 200 * 1024 * 1024; // decoded-PCM ceiling for this page
+let bufferCacheBytes = 0;
+
+function audioBufferBytes(b) {
+  if (!b) return 0;
+  return Math.max(0, (Number(b.duration) || 0) * (Number(b.sampleRate) || 1) * Math.max(1, Number(b.numberOfChannels) || 1) * 4);
+}
+
+function cacheBufferPut(url, buffer) {
+  const old = bufferCache.get(url); // a racing parallel decode may have stored it first
+  if (old) bufferCacheBytes -= audioBufferBytes(old);
+  bufferCache.delete(url);
+  bufferCache.set(url, buffer);
+  bufferCacheBytes += audioBufferBytes(buffer);
+  while (bufferCacheBytes > BUFFER_CACHE_BUDGET && bufferCache.size > 1) {
+    const oldestUrl = bufferCache.keys().next().value;
+    if (oldestUrl == null) break;
+    const oldest = bufferCache.get(oldestUrl);
+    bufferCache.delete(oldestUrl);
+    if (oldest) bufferCacheBytes -= audioBufferBytes(oldest);
+  }
+}
+
+/* The offline renders carry a deadline (see mixRenderJob): once it passes, the
+   job is aborted so a too-slow phone render stops instead of keeping burning
+   CPU / WebKit contexts in the background. Decode, mix and encode all surface
+   this same message so every caller reports one reason. */
+function mixCancelError() {
+  return new Error("mixing took too long");
+}
 
 /* Promise.allSettled with a tiny fallback for old iOS (< 12.1): without it,
    playCommit silently dies on those devices while recording still works. */
@@ -724,20 +772,32 @@ async function ensureCtxRunning(ctx) {
   return !!ctx && ctx.state === "running";
 }
 
-/* Decode one audio layer for playback → an AudioBuffer (cached by URL).
-   Every recording in the library is WAV (and backings are WAV or MP3), and
-   decodeAudioData accepts WAV and MP3 on every browser — including iOS
-   Safari — so this is the single, deterministic playback path. */
-async function decodeLayer(ctx, url) {
+/* Decode one audio layer for playback → an AudioBuffer (cached by URL with an
+   LRU byte budget). Every recording in the library is WAV (and backings are WAV
+   or MP3), and decodeAudioData accepts WAV and MP3 on every browser — including
+   iOS Safari — so this is the single, deterministic playback path. The optional
+   `signal` aborts the network fetch when the offline-mix deadline passes. */
+async function decodeLayer(ctx, url, signal) {
   const hit = bufferCache.get(url);
-  if (hit) return { kind: "buffer", buffer: hit };
+  if (hit) {
+    bufferCache.delete(url); // LRU touch — refresh the hit's recency
+    bufferCache.set(url, hit);
+    return { kind: "buffer", buffer: hit };
+  }
+  if (signal && signal.aborted) throw mixCancelError();
   // blob: URLs ignore cache mode and Safari rejects the cache option on them.
   // Banded files need the session JWT — appended by audioUrl() (see above).
-  const res = await fetch(audioUrl(url), url.indexOf("blob:") === 0 ? {} : { cache: "no-cache" });
+  const isBlob = url.indexOf("blob:") === 0;
+  const init = {};
+  if (!isBlob) init.cache = "no-cache";
+  if (signal) init.signal = signal;
+  const res = await fetch(audioUrl(url), init);
   if (!res.ok) throw new Error("Could not load audio: " + url);
   const ab = await res.arrayBuffer();
+  if (signal && signal.aborted) throw mixCancelError(); // don't cache wasted work
   const buffer = await decodeAudioCompat(ctx, ab);
-  bufferCache.set(url, buffer);
+  if (signal && signal.aborted) throw mixCancelError(); // decode finished after the deadline
+  cacheBufferPut(url, buffer);
   return { kind: "buffer", buffer };
 }
 
@@ -750,6 +810,14 @@ function closeAudio() {
   // silent. Session audio is closed only by cleanupTakeMedia(), which every
   // complete/cancel/error path reaches with studio.recording already false.
   if (studio.recording) return;
+  // A full-chain mix render still decoding/encoding is now superseded by
+  // whatever this close is for (a new row play, a take audition, a modal
+  // preview) — abort it so a late blob can't mount an <audio> element behind
+  // the audio that replaces it.
+  if (iosMixActiveJob) {
+    try { iosMixActiveJob.abort(); } catch (_) {}
+    iosMixActiveJob = null;
+  }
   if (audioEngine.ctx) {
     audioEngine.sources.forEach((s) => {
       try { s.stop(); } catch (_) {}
@@ -1279,13 +1347,25 @@ async function desktopSetupAudition(commit, F, seq) {
    gesture and iOS blocks it the first time — arm again on the next touch. */
 async function iosSetupAudition(commit, F, seq) {
   setSetupAuditionUI(true, F > 0.05 ? "mixing from " + fmtStartTime(F) + "…" : "mixing the song…");
+  const fromPref = F > 0.05 ? "Mixing from " + fmtStartTime(F) + "… " : "Mixing the song… ";
+  // Register the cancel hook from the very first moment: “■ Stop” can be
+  // pressed while the mix is still rendering, and the old code left that render
+  // burning the phone's CPU for the whole timeout before the seq guard finally
+  // dropped the result. Now Stop aborts the render immediately.
+  const job = mixRenderJob(commit, null, F, {
+    ms: 40000,
+    onStage: (s) => {
+      if (setupAudition && setupAudition.seq === seq) setSetupAuditionUI(true, fromPref + s);
+    },
+  });
+  const holder = setupAudition && setupAudition.seq === seq ? setupAudition : null;
+  if (holder) holder.teardown = () => { try { job.abort(); } catch (_) {} };
   let blob = null;
   try {
-    blob = await Promise.race([
-      renderIOSMixBlob(commit, null, F),
-      new Promise((_, rej) => setTimeout(() => rej(new Error("mixing took too long")), 40000)),
-    ]);
+    blob = await job;
   } catch (err) {
+    // Stopped or superseded while rendering — nothing to announce.
+    if (!setupAudition || setupAudition.seq !== seq) return;
     finishSetupAudition(seq, false, "couldn't audition from that point: " + err.message);
     return;
   }
@@ -1503,12 +1583,17 @@ function renderOffline(mix) {
   });
 }
 
-/* Stereo 16-bit PCM WAV encoder for the rendered iOS mix. The render is already
-   at the target sample rate, so no resampling — a straight two-channel write.
-   (encodeWav above stays mono + resampling for the take recorder.) */
-function encodeWavStereo(ch0, ch1, rate) {
+/* Stereo 16-bit PCM WAV encoder for the rendered mix, written in chunks that
+   yield to the UI between passes. A full-length mix can be tens of MB — the old
+   single blocking loop of millions of setInt16 calls froze the page for the
+   whole encode and could NOT be abandoned when the caller's deadline passed (the
+   zombie encode then kept jamming the phone's only JS thread while the fallback
+   tried to play). Each chunk now checks the abort signal, yields, and reports
+   progress so the UI can say “encoding the mix… 45%”. Returns a WAV Blob. */
+async function encodeWavStereo(ch0, ch1, rate, opts) {
   const n = Math.min(ch0.length, ch1.length);
   if (!n) return null;
+  const CHUNK = 65536; // samples per pass — a UI yield roughly every 0.3-0.6 s on a phone
   const dataBytes = n * 4; // 2 channels × 2 bytes
   const buf = new ArrayBuffer(44 + dataBytes);
   const dv = new DataView(buf);
@@ -1527,10 +1612,18 @@ function encodeWavStereo(ch0, ch1, rate) {
   dv.setUint16(34, 16, true);
   ascii(36, "data");
   dv.setUint32(40, dataBytes, true);
-  let o = 44;
-  for (let i = 0; i < n; i++) {
-    dv.setInt16(o, pcm(ch0[i] * 32767), true); o += 2;
-    dv.setInt16(o, pcm(ch1[i] * 32767), true); o += 2;
+  for (let base = 0; base < n; base += CHUNK) {
+    if (opts && opts.signal && opts.signal.aborted) throw mixCancelError();
+    const end = Math.min(n, base + CHUNK);
+    let o = 44 + base * 4;
+    for (let i = base; i < end; i++) {
+      dv.setInt16(o, pcm(ch0[i] * 32767), true); o += 2;
+      dv.setInt16(o, pcm(ch1[i] * 32767), true); o += 2;
+    }
+    if (opts && opts.onProgress && end < n) {
+      try { opts.onProgress(Math.min(1, end / n)); } catch (_) {}
+    }
+    if (end < n) await new Promise((resolve) => setTimeout(resolve, 0));
   }
   return new Blob([buf], { type: "audio/wav" });
 }
@@ -1543,22 +1636,46 @@ function encodeWavStereo(ch0, ch1, rate) {
    the PC browser. Falls back to the commit's own file if the render fails. */
 async function playIOSMix(commit, extra) {
   closeAudio();
+  // Any in-flight render is now superseded, whatever path this attempt takes
+  // (fast-path native playback included) — stop it instead of letting a late
+  // blob mount an <audio> element behind the new playback.
+  if (iosMixActiveJob) {
+    try { iosMixActiveJob.abort(); } catch (_) {}
+    iosMixActiveJob = null;
+  }
   if (!commit || !commit.url) {
     playNativeTrack(commit, null, "no audio file");
     return;
   }
-  setStudioStatus("▶ mixing…");
+  // Fast path: a lone-commit chain (a plain recording, or the repo root) IS its
+  // own file — an offline render would re-encode identical audio while costing
+  // the phone the mix's full memory and latency. Skip straight to native playback.
+  if (!extra && buildChain(commit).length === 1) {
+    playNativeTrack(commit, null, null);
+    return;
+  }
+  setStudioStatus("▶ mixing…", false);
+  const token = ++iosMixPlaySeq;
   let blob = null;
+  let job = null;
   try {
-    blob = await Promise.race([
-      renderIOSMixBlob(commit, extra),
-      new Promise((_, rej) => setTimeout(() => rej(new Error("render timed out")), 30000)),
-    ]);
+    // mixRenderJob aborts a stuck/superseded render instead of leaving it to
+    // burn phone CPU behind the fallback, and reports live encode progress.
+    job = mixRenderJob(commit, extra, 0, {
+      ms: 45000,
+      onStage: (s) => { if (iosMixPlaySeq === token) setStudioStatus("▶ mixing… " + s, false); },
+    });
+    iosMixActiveJob = job;
+    blob = await job;
   } catch (err) {
+    if (iosMixActiveJob === job) iosMixActiveJob = null;
+    if (token !== iosMixPlaySeq) return; // superseded while rendering
     setStudioStatus(`⚠ couldn't render the layered mix on this phone (${err.message}) — playing the commit alone.`, true);
     playNativeTrack(commit, extra, "mix render failed");
     return;
   }
+  if (token !== iosMixPlaySeq) return; // superseded — its own attempt owns the UI now
+  if (iosMixActiveJob === job) iosMixActiveJob = null;
   const mixUrl = URL.createObjectURL(blob);
   const row = document.querySelector(`.rc-commit[data-commit="${commit.id}"]`);
   const el = new Audio();
@@ -1658,18 +1775,53 @@ async function playIOSMix(commit, extra) {
    the finally below). */
 let iosMixDecoder = null;
 
+/* Cancellation bookkeeping for playIOSMix: an iOS full-chain render can be in
+   flight while the user re-taps another commit (or the same one) — the new
+   attempt aborts the old job (see mixRenderJob) and the seq guard drops a blob
+   that arrives for a superseded attempt, so no stale <audio> element is ever
+   mounted behind the current playback. */
+let iosMixPlaySeq = 0;      // incremented by every playIOSMix attempt
+let iosMixActiveJob = null; // the in-flight mixRenderJob, if any
+
 /* Decode every chain layer, render the mix offline, and return a WAV Blob.
    fromRoot (> 0) renders only the tail from that root position — used by the
    record-setup "Listen from here" audition so the singer hears the same
-   mid-song backing the take will start with. */
-async function renderIOSMixBlob(commit, extra, fromRoot) {
-  const RATE = 44100;
+   mid-song backing the take will start with. opts: { signal (aborts decode /
+   render / encode at the next safe stage), onStage(msg), lowMemory (adaptive
+   mix rate for phone previews), rate (explicit sample rate override) }. Called
+   through mixRenderJob — every caller runs under its deadline. */
+async function renderIOSMixBlob(commit, extra, fromRoot, opts) {
+  opts = opts || {};
+  const signal = opts.signal || null;
   const OAC = window.OfflineAudioContext || window.webkitOfflineAudioContext;
-  const dec = iosMixDecoder || (iosMixDecoder = new OAC(2, 1, RATE)); // decoder only — its length is irrelevant
+  const dec = iosMixDecoder || (iosMixDecoder = new OAC(2, 1, 44100)); // decoder only — its length is irrelevant
   const F = Math.max(0, Number(fromRoot) || 0);
+  const stage = (msg) => { if (opts.onStage) { try { opts.onStage(msg); } catch (_) {} } };
+  const aborted = () => !!(signal && signal.aborted);
+  const abortCheck = () => { if (aborted()) throw mixCancelError(); };
   const layers = [];
-  for (const { commit: c } of buildChain(commit)) {
-    const layer = await decodeLayer(dec, c.url);
+  // Decode the chain layers in PARALLEL (the old serial fetch + decode added the
+  // phone's full network latency for every layer) and cancel the whole job the
+  // moment the caller's deadline passes (see mixRenderJob) so a slow render stops
+  // instead of keeping burning CPU / WebKit contexts behind the fallback.
+  const chain = buildChain(commit);
+  const chainRes = await allSettled(
+    chain.map(({ commit: c }) => decodeLayer(dec, c.url, signal).then((layer) => ({ c, layer })))
+  );
+  abortCheck();
+  // The requested commit (the last entry — buildChain walks it up to the root)
+  // must itself decode; without it there is nothing new to hear and the caller
+  // falls back to that commit's own file. Ancestors that won't decode are
+  // skipped, mirroring the desktop mix.
+  const head = chain[chain.length - 1];
+  for (let i = 0; i < chainRes.length; i++) {
+    const r = chainRes[i];
+    const c = chain[i].commit;
+    if (r.status === "rejected") {
+      if (c.id === head.id || chain.length === 1) throw r.reason instanceof Error ? r.reason : mixCancelError();
+      continue;
+    }
+    const layer = r.value.layer;
     const win = layerReadWindow(c, layer.buffer.duration, F);
     if (!win) continue; // this layer finished before fromRoot
     layers.push({
@@ -1681,10 +1833,16 @@ async function renderIOSMixBlob(commit, extra, fromRoot) {
     });
   }
   if (extra && extra.url) {
-    const layer = await decodeLayer(dec, extra.url);
     // The "with original" preview overlay is just another chain layer to read:
     // its take content spans [start_time, start_time + duration] on the root
     // timeline (a finite duration; without one it plays the buffer's tail).
+    let layer;
+    try {
+      layer = await decodeLayer(dec, extra.url, signal);
+    } catch (err) {
+      throw err instanceof Error ? err : mixCancelError();
+    }
+    abortCheck();
     const preview = {
       lead: Math.max(0, Number(extra.lead) || 0),
       start_time: Math.max(0, Number(extra.start_time) || 0),
@@ -1710,10 +1868,26 @@ async function renderIOSMixBlob(commit, extra, fromRoot) {
     const readDur = l.dur != null ? l.dur : Math.max(0.05, bufDur - readOff);
     total = Math.max(total, l.offset + readDur);
   }
-  const len = Math.min(600, Math.max(1, total)) * RATE; // ≤ 10 min safety cap
-  const mix = new OAC(2, Math.ceil(len), RATE);
+  abortCheck();
+  stage("rendering the layered mix…");
+  // Phone renderers are memory-starved: a 5-minute song at 44.1 kHz stereo is
+  // ~100 MB of offline output alone and the WAV encode doubles that — enough to
+  // kill the mix on an older phone. Long renders therefore mix at 22.05 kHz:
+  // half the samples, the same stereo image, and roughly half the peak memory
+  // and encode time — inaudible for a voice-over-music audition. Desktop export
+  // passes lowMemory:false and keeps the full 44.1 kHz.
+  const fullRate = 44100;
+  const mixRate =
+    opts.rate && opts.rate > 0
+      ? opts.rate
+      : opts.lowMemory && total > 90
+        ? 22050
+        : fullRate;
+  const len = Math.min(600, Math.max(1, total)) * mixRate; // ≤ 10 min safety cap
+  const mix = new OAC(2, Math.ceil(len), mixRate);
   try {
     for (const l of layers) {
+      abortCheck();
       const bufDur = l.buffer.duration || 0;
       const readOff = l.readOff >= bufDur ? Math.max(0, bufDur - 0.001) : l.readOff;
       const readDur = l.dur != null ? l.dur : Math.max(0.05, bufDur - readOff);
@@ -1725,10 +1899,22 @@ async function renderIOSMixBlob(commit, extra, fromRoot) {
       g.connect(mix.destination);
       src.start(l.offset, readOff, readDur);
     }
+    abortCheck(); // deadline passed before the render began — don't start it
     const rendered = await renderOffline(mix);
+    abortCheck(); // deadline passed during the render — skip the expensive encode
+    stage("encoding the mix…");
     const ch0 = rendered.getChannelData(0);
     const ch1 = rendered.numberOfChannels > 1 ? rendered.getChannelData(1) : ch0;
-    const blob = encodeWavStereo(ch0, ch1, RATE);
+    let lastPct = 0;
+    const blob = await encodeWavStereo(ch0, ch1, mixRate, {
+      signal,
+      onProgress: (pct) => {
+        if (opts.onStage && pct - lastPct >= 0.1) {
+          lastPct = pct;
+          stage("encoding the mix… " + Math.round(pct * 100) + "%");
+        }
+      },
+    });
     if (!blob) throw new Error("mix encode produced nothing");
     return blob;
   } finally {
@@ -1740,6 +1926,40 @@ async function renderIOSMixBlob(commit, extra, fromRoot) {
     try { if (typeof mix.close === "function") mix.close().catch(() => {}); } catch (_) {}
   }
 }
+/* A cancellable offline mix with a hard deadline. Returns a Promise for the WAV
+   Blob plus an `.abort()` method: calling abort() (or the deadline elapsing)
+   stops the decode / render / encode through the shared AbortController, so a
+   superseded or too-slow render actually stops instead of keeping burning the
+   phone's CPU and WebKit contexts behind whatever fallback the caller showed.
+   The caller still awaits the returned promise — the race below resolves it at
+   deadline + 1.5 s so an abort that lands mid-OfflineAudioContext (which can't
+   be interrupted) still settles — and reads `err.message` from the same
+   mixCancelError() every stage throws. Stage messages ("rendering the layered
+   mix…", "encoding the mix… 40%") arrive via opts.onStage when the caller wants
+   live progress in its UI. lowMemory:false (export) keeps the 44.1 kHz output;
+   audition/preview defaults to the phone-friendly adaptive rate. */
+function mixRenderJob(commit, extra, F, opts) {
+  opts = opts || {};
+  const ctl = new AbortController();
+  const ms = opts.ms || 45000;
+  const hard = setTimeout(() => { try { ctl.abort(); } catch (_) {} }, ms);
+  const job = Promise.race([
+    renderIOSMixBlob(commit, extra, F, {
+      signal: ctl.signal,
+      onStage: opts.onStage,
+      lowMemory: opts.lowMemory !== false,
+      rate: opts.rate,
+    }),
+    new Promise((_, reject) => setTimeout(() => reject(mixCancelError()), ms + 1500)),
+  ]).then(
+    (blob) => { clearTimeout(hard); return blob; },
+    (err) => { clearTimeout(hard); throw err; }
+  );
+  job.abort = () => { try { ctl.abort(); } catch (_) {} };
+  return job;
+}
+
+
 
 /* "Take only" preview. Native <audio> with a blob: URL is unreliable on iOS
    Safari, so if the element can't start quickly, decode the in-memory blob
@@ -3681,14 +3901,36 @@ async function reviewMixWAEngine(seq, F, commit, extra) {
    again on the next touch (iosSetupAudition does the same). */
 async function reviewMixIOSEngine(seq, F, commit, extra) {
   const from = Number(F) > 0.05 ? fmtStartTime(F) : "the top";
+  // Register the cancel hook immediately so “■ Stop” pressed while the mix is
+  // still rendering aborts it — the old code let the render keep running out its
+  // whole timeout before the reviewLive guard discarded the result, wasting the
+  // phone's only JS thread on every stopped preview.
+  const job = mixRenderJob(commit, extra, F, {
+    ms: 40000,
+    onStage: (s) => { if (reviewLive(seq)) reviewSetNote(s); },
+  });
+  if (reviewPreview && reviewPreview.seq === seq) {
+    const prevTeardown = reviewPreview.teardown;
+    reviewPreview.teardown = () => {
+      try { job.abort(); } catch (_) {}
+      if (prevTeardown) prevTeardown();
+    };
+  }
   let blob = null;
   try {
-    blob = await Promise.race([
-      renderIOSMixBlob(commit, extra, F),
-      new Promise((_, rej) => setTimeout(() => rej(new Error("mixing took too long")), 40000)),
-    ]);
+    blob = await job;
   } catch (err) {
-    reviewFinish(seq, "couldn't render the layered mix on this phone (" + err.message + ") — press “▶ With original” again");
+    if (!reviewLive(seq)) return; // stopped or superseded while rendering
+    // Never leave the take silent: the layered render failed (deadline, decode,
+    // or phone memory), but the fresh take itself is always playable — fall back
+    // to the take-only preview with a clear note. reviewBegin tears this preview
+    // down and restarts it as kind "take", which is what the transport shows.
+    const why = (err && err.message) || err;
+    // Start the take at its own audible start — exactly what the "Take-only
+    // preview" button would play — not at the mix's F (the take has no backing
+    // around it anymore).
+    reviewBegin("take", reviewStartRoot("take"), false);
+    reviewSetNote("⚠ couldn't render the layered mix on this phone (" + why + ") — playing the take alone so you can still hear the new recording.");
     return;
   }
   if (!reviewLive(seq)) return; // superseded while rendering
