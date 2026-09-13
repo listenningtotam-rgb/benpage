@@ -1317,8 +1317,10 @@ async function desktopSetupAudition(commit, F, seq) {
   try { ctx = new (window.AudioContext || window.webkitAudioContext)(); } catch (_) { ctx = null; }
   if (!ctx) { finishSetupAudition(seq, false, "Web Audio is unavailable on this device"); return; }
   audioEngine.ctx = ctx;
-  await routeCtxToOutput(ctx);
-  const running = await ensureCtxRunning(ctx);
+  // Resume inside the gesture, then route to the chosen output and let the
+  // stream settle before anything is scheduled (see preparePlaybackContext).
+  const running = await preparePlaybackContext(ctx);
+  if (audioEngine.ctx !== ctx) return; // stopped while the output settled
   if (!running) {
     // The browser held the context back (the dialog-open click gesture has
     // expired by the time the decode finished) — surface it as a message; the
@@ -1484,12 +1486,19 @@ async function playCommit(commit, extra) {
     return;
   }
   audioEngine.ctx = ctx;
-  // Same output routing as a take session — if the user picked headphones,
-  // the mix plays there, not through the room speakers.
-  await routeCtxToOutput(ctx);
-  // First resume inside the user gesture, then decode every layer, then resume
-  // again (awaited) so the clock is running before any source is scheduled.
-  await ensureCtxRunning(ctx);
+  setStudioStatus("▶ mixing…", false);
+  // Resume inside the user gesture, then route to the same output the takes use
+  // (headphones, when picked — not the room speakers) and wait for that stream
+  // to settle before decoding/scheduling: a source scheduled while the device
+  // is still switching is dropped silently even though ctx.state reads
+  // "running". See preparePlaybackContext.
+  const ready = await preparePlaybackContext(ctx);
+  if (audioEngine.ctx !== ctx) return; // stopped while the output settled
+  if (!ready) {
+    setStudioStatus("");
+    playNativeTrack(commit, null, "the audio output wouldn't start");
+    return;
+  }
   const chain = buildChain(commit);
   const jobs = chain.map(async ({ commit: c, offset }) => ({
     c,
@@ -1508,16 +1517,20 @@ async function playCommit(commit, extra) {
     );
   }
   const results = await allSettled(jobs);
-  if (!audioEngine.ctx) return; // stopped while loading
+  if (audioEngine.ctx !== ctx) return; // stopped or superseded while loading
   // The commit clicked is jobs[0]; if its own file won't decode, the mix is
   // pointless — fall back to the same native <audio> path the share page uses.
   if (results[0] && results[0].status === "rejected") {
+    setStudioStatus("");
     playNativeTrack(commit, null, (results[0].reason && results[0].reason.message) || "audio would not decode");
     return;
   }
+  // Resume again (awaited) so the clock is definitely running before any source
+  // is scheduled — decoding may have taken seconds.
   const running = await ensureCtxRunning(ctx);
-  if (!audioEngine.ctx) return; // stopped while resuming
+  if (audioEngine.ctx !== ctx) return; // stopped while resuming
   if (!running) {
+    setStudioStatus("");
     playNativeTrack(commit, null, "the audio context would not start");
     return;
   }
@@ -1543,6 +1556,20 @@ async function playCommit(commit, extra) {
     } catch (err) {
       failed.push(new Error(commitHash(c.id) + ": " + err.message));
     }
+  }
+  // The mix is scheduled — but only claim it once the context has actually
+  // started (clock past the scheduled start). A browser-held-back context
+  // accepts every source and stays silent; the old code marked the row blue and
+  // said “▶ playing” anyway, which needed a ■ Stop + second play to recover.
+  const mixStarted = await confirmMixStarted(ctx, startAt);
+  if (audioEngine.ctx !== ctx) return; // stopped or superseded while verifying
+  if (!mixStarted) {
+    // Still nothing audible — play the commit's own file through the native
+    // <audio> element so this first press makes sound (closeAudio() inside
+    // playNativeTrack() tears the silent mix down).
+    setStudioStatus("");
+    playNativeTrack(commit, null, "the Web Audio mix wouldn't start");
+    return;
   }
   const row = document.querySelector(`.rc-commit[data-commit="${commit.id}"]`);
   if (row) row.classList.add("playing");
@@ -1724,20 +1751,43 @@ async function playIOSMix(commit, extra) {
   el.preload = "auto";
   routeElToOutput(el); // keep the rendered mix on the chosen output device
   el._mixUrl = mixUrl; // revoked in closeAudio
-  let started = false; // terminal: actually sounding, or gave up / fell back
-  let attempt = 0;     // play() attempts for this blob
+  let started = false;   // terminal: gave up / fell back
+  let confirmed = false; // playback verified — the playhead actually advanced
+  let attempt = 0;       // play() attempts for this blob
+  let stallCheck = null; // watchdog for a "playing" element that never advances
   // Still the active attempt? false once playing, or after closeAudio()/giveUp()
   // superseded this element (e.g. the user re-tapped play on another commit).
   const live = () => !started && el._mixUrl === mixUrl;
+  const stopWatchdog = () => { if (stallCheck) { clearTimeout(stallCheck); stallCheck = null; } };
+  const release = () => {
+    stopWatchdog();
+    try { URL.revokeObjectURL(mixUrl); } catch (_) {}
+    el._mixUrl = null;
+  };
   const giveUp = (why) => {
     if (!live()) return;
     started = true;
-    try { URL.revokeObjectURL(mixUrl); } catch (_) {}
-    el._mixUrl = null;
+    release();
     // The commit's own file over a server URL is the proven iOS playback path —
     // better than leaving the user stuck on "mixing…".
     setStudioStatus(`⚠ couldn't play the rendered mix (${why}) — playing the recording alone.`, true);
     playNativeTrack(commit, extra, "rendered mix didn't start");
+  };
+  /* The row may only go blue once the element is demonstrably advancing. iOS
+     fires "playing" even when nothing actually comes out (a previous element
+     still holding the audio focus, or a media session stalled right after a
+     recording), which is exactly the "shows playing, no sound" report that then
+     needed ■ Stop + a second play to release it. */
+  const markPlaying = () => {
+    if (confirmed || el._mixUrl !== mixUrl) return;
+    confirmed = true;
+    started = true; // this element's lifecycle is settled
+    stopWatchdog(); // keep _mixUrl — closeAudio() revokes it with the element
+    if (row) row.classList.add("playing");
+    hub.playing = { repoId: commit.repo_id, commitId: commit.id };
+    syncPlayState();
+    setStudioStatus(`▶ playing ${commitHash(commit.id)} (rendered mix)`);
+    if (commit.repo_id) countRepoPlay(commit.repo_id);
   };
   const tryPlay = () => {
     if (!live()) return;
@@ -1772,11 +1822,24 @@ async function playIOSMix(commit, extra) {
   el.onerror = () => { if (live()) giveUp("load failed"); };
   el.onplaying = () => {
     if (!live()) return;
-    started = true; // audio is actually sounding — only now may the row go blue
-    if (row) row.classList.add("playing");
-    hub.playing = { repoId: commit.repo_id, commitId: commit.id };
-    syncPlayState();
-    setStudioStatus(`▶ playing ${commitHash(commit.id)} (rendered mix)`);
+    started = true; // the element reports playback — but that alone isn't proof
+    if (stallCheck) clearTimeout(stallCheck);
+    // A fresh element that "plays" silently would otherwise leave a blue row
+    // over nothing. Give the playhead a moment to move; when it never does, fall
+    // back to the commit's own file (closeAudio() inside playNativeTrack()
+    // unloads this element and starts a new one — the same release the user
+    // used to get by hand).
+    stallCheck = setTimeout(() => {
+      if (confirmed || el._mixUrl !== mixUrl) return;
+      confirmed = true; // a late timeupdate must not claim it now
+      release();
+      setStudioStatus("⚠ the rendered mix started silently — playing the recording alone.", true);
+      playNativeTrack(commit, extra, "rendered mix was silent");
+    }, 1500);
+    if ((el.currentTime || 0) > 0) markPlaying(); // some engines jump straight past 0
+  };
+  el.ontimeupdate = () => {
+    if ((el.currentTime || 0) > 0) markPlaying();
   };
   el.onended = () => { if (started) stopPlayback(); };
   // Don't call play() until the blob URL is actually loadable — on iOS, play()
@@ -1799,7 +1862,7 @@ async function playIOSMix(commit, extra) {
     setTimeout(() => { if (live()) giveUp("timed out"); }, 4000);
   }, 8000);
   audioEngine.elements.push(el);
-  if (commit.repo_id) countRepoPlay(commit.repo_id);
+  // The play is counted by markPlaying() — only once the mix is really sounding.
 }
 
 /* One OfflineAudioContext reused for decode-only work across every iOS render.
@@ -2042,9 +2105,8 @@ async function playBlobViaWebAudio(url, start) {
     return;
   }
   audioEngine.ctx = ctx;
-  await routeCtxToOutput(ctx);
-  if (!(await ensureCtxRunning(ctx))) {
-    audioEngine.ctx = null;
+  if (!(await preparePlaybackContext(ctx))) {
+    if (audioEngine.ctx === ctx) audioEngine.ctx = null;
     try { ctx.close().catch(() => {}); } catch (_) {}
     setStudioStatus("⚠ this browser can't preview the take.", true);
     return;
@@ -2224,6 +2286,52 @@ async function routeCtxToOutput(ctx) {
   } catch (_) {
     return false;
   }
+}
+
+/* Bring a freshly created playback context into an audible state BEFORE
+   anything is scheduled into it: resume it (the click's gesture is still live),
+   route it to the chosen output device, then wait until the context really is
+   running with its clock advancing.
+
+   Both steps matter. Resuming inside the gesture satisfies the browser's
+   autoplay policy — the take session does the same (resume first, then route) —
+   and routing calls AudioContext.setSinkId(), which switches the context's
+   output device and re-creates its stream. A source scheduled while that
+   hand-off is still in flight can be dropped silently, leaving the hub row
+   “playing” over silence until the user presses ■ Stop and plays again (that
+   second context starts on an output that has already settled). Waiting for a
+   running context whose clock advances keeps the schedule out of that window.
+   Returns the context when ready, null when the browser won't start it — the
+   caller then plays through a native <audio> element instead. */
+async function preparePlaybackContext(ctx) {
+  if (!ctx) return null;
+  if (!(await ensureCtxRunning(ctx))) return null;
+  await routeCtxToOutput(ctx); // may restart the output stream
+  for (let i = 0; i < 12; i++) {
+    if (ctx.state !== "running" && !(await ensureCtxRunning(ctx))) break;
+    const t0 = ctx.currentTime;
+    await new Promise((r) => setTimeout(r, 40));
+    if (ctx.state === "running" && ctx.currentTime > t0) return ctx;
+  }
+  return null;
+}
+
+/* “Scheduled” is not “audible”: a context the browser holds back (suspended by
+   the autoplay policy, or still settling onto a re-created output stream)
+   accepts the schedule and never advances. The old code then turned the hub row
+   blue and said “▶ playing” over silence, and only ■ Stop + a second play made
+   sound. Confirm the mix really started (context still ours, running, clock
+   past the scheduled start) before claiming playback: the caller falls back to
+   the commit's own file on a native <audio> element when this returns false, so
+   the very first press makes sound. */
+async function confirmMixStarted(ctx, startAt) {
+  for (let i = 0; i < 12; i++) {
+    if (!ctx || ctx !== audioEngine.ctx || ctx.state === "closed") return false;
+    if (ctx.state === "running" && ctx.currentTime >= startAt + 0.05) return true;
+    if (ctx.state !== "running" && !(await ensureCtxRunning(ctx))) break;
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  return !!ctx && ctx === audioEngine.ctx && ctx.state === "running" && ctx.currentTime >= startAt + 0.05;
 }
 
 /* Same best-effort routing for the native <audio> fallback path
@@ -3723,9 +3831,8 @@ async function reviewTakeWAEngine(seq, F) {
     return;
   }
   audioEngine.ctx = ctx;
-  await routeCtxToOutput(ctx);
-  if (!(await ensureCtxRunning(ctx))) {
-    audioEngine.ctx = null;
+  if (!(await preparePlaybackContext(ctx))) {
+    if (audioEngine.ctx === ctx) audioEngine.ctx = null;
     try { if (ctx && typeof ctx.close === "function") ctx.close().catch(() => {}); } catch (_) {}
     reviewFinish(seq, "the browser held the playback back — press “▶ Take only” again to start it");
     return;
@@ -3850,9 +3957,8 @@ async function reviewMixWAEngine(seq, F, commit, extra) {
     return;
   }
   audioEngine.ctx = ctx;
-  await routeCtxToOutput(ctx);
-  if (!(await ensureCtxRunning(ctx))) {
-    audioEngine.ctx = null;
+  if (!(await preparePlaybackContext(ctx))) {
+    if (audioEngine.ctx === ctx) audioEngine.ctx = null;
     try { if (ctx && typeof ctx.close === "function") ctx.close().catch(() => {}); } catch (_) {}
     reviewFinish(seq, "the browser held the playback back — press “▶ With original” again to start it");
     return;
