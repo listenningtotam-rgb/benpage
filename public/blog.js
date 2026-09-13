@@ -10,7 +10,7 @@ let BLOG_POSTS = []; // loaded from /api/blog
 
 /* Show only this many posts by default; the rest are revealed by a
    "Show more" button. Kept in sync with music.js's INITIAL_TRACKS. */
-const INITIAL_POSTS = 5;
+const INITIAL_POSTS = 3;
 
 /* ── DOM helpers ────────────────────────────────────────── */
 const blogGrid = document.getElementById("blog-grid");

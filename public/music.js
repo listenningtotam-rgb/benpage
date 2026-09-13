@@ -10,7 +10,7 @@ let MUSIC_TRACKS = []; // loaded from /api/music (kept so counters update in pla
 
 /* Show only this many tracks by default; the rest are revealed by a
    "Show more" button. Kept in sync with blog.js's INITIAL_POSTS. */
-const INITIAL_TRACKS = 5;
+const INITIAL_TRACKS = 3;
 
 /* A single shared audio element → only one track plays at a time. */
 const musicState = {
