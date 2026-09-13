@@ -9,9 +9,10 @@ const jpeg = require("jpeg-js");
 const PORT = process.env.PORT || 3000;
 const publicDir = path.join(__dirname, "public");
 
-// App direct-access paths — every app in the Apps gallery gets a clean
-// /{path} route (https://<domain>/<path>) based on its name. All apps live
-// in the single-page index.html shell; public/apps.js (APP_PATHS) opens the
+// Direct-access paths — every app in the Apps gallery and every game in the
+// Game gallery gets a clean /{path} route (https://<domain>/<path>) based on
+// its name. All of them live in the single-page index.html shell;
+// public/apps.js (APP_PATHS) and public/games.js (GAME_PATHS) open the
 // matching panel for the current pathname. /admin serves the same standalone
 // console as /admin.html, just at a cleaner URL.
 const APP_PATHS = {
@@ -19,18 +20,21 @@ const APP_PATHS = {
   "/fx": "index.html",       // FX Market Watch
   "/rec-hub": "index.html",  // REC HUB
   "/vinyl": "index.html",    // Vinyl Archive — exact path only; /vinyl/:slug stays a share page
+  "/24-game": "index.html",  // 24 点 · 24 Game (Game gallery)
   "/admin": "admin.html",    // Admin console
 };
 
-// Apps that expose a WeChat-scan QR (GET /api/app-qr/:key).  Key names mirror
-// the app panel ids in public/index.html / apps.js.  Each QR encodes a stable
-// same-site short link (/s/<code>) that redirects to the app's canonical
-// path — retargeting an app later never invalidates printed codes.
+// Apps/games that expose a WeChat-scan QR (GET /api/app-qr/:key).  Key names
+// mirror the panel ids in public/index.html / apps.js / games.js.  Each QR
+// encodes a stable same-site short link (/s/<code>) that redirects to the
+// app's canonical path — retargeting an app later never invalidates printed
+// codes.
 const APP_QR_TARGETS = {
   calendar: "/calendar",
   fx: "/fx",
   rechub: "/rec-hub",
   vinyl: "/vinyl",
+  game24: "/24-game",
 };
 
 // Hosts/domain that are allowed to call the API.

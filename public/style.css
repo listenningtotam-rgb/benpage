@@ -856,8 +856,9 @@ body {
   .blog-detail-inner { padding: 1.5rem 1.2rem 1.8rem; }
 }
 
-/* ── Apps Section ──────────────────────────────────────── */
-.apps-caption {
+/* ── Apps / Game Section ───────────────────────────────── */
+.apps-caption,
+.game-caption {
   max-width: 640px;
   text-align: center;
   color: rgba(255,255,255,0.55);
@@ -867,7 +868,8 @@ body {
   margin: -1.5rem 0 2rem;
 }
 
-#apps-gallery {
+#apps-gallery,
+#game-gallery {
   width: 100%;
   max-width: 860px;
   display: grid;
@@ -1036,6 +1038,52 @@ body {
   50%      { height: 30px; }
 }
 
+/* 24 Game — four cards that add up to 24 */
+.thumb-24 {
+  gap: 0.45rem;
+  padding: 0.7rem 0.6rem;
+}
+
+.thumb-24-row {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 0.3rem;
+}
+
+.thumb-24-row span {
+  width: 24px;
+  height: 32px;
+  border-radius: 5px;
+  background: rgba(126,200,227,0.10);
+  border: 1px solid rgba(126,200,227,0.35);
+  color: #d4e0e8;
+  font-size: 0.72rem;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* the last card floats, so the tile reads as something you can play */
+.thumb-24-row span:nth-child(4) {
+  background: rgba(255,85,0,0.16);
+  border-color: rgba(255,85,0,0.55);
+  color: #ffb37a;
+  animation: thumb24Float 1.8s ease-in-out infinite;
+}
+
+@keyframes thumb24Float {
+  0%, 100% { transform: translateY(0); box-shadow: 0 0 0 rgba(255,85,0,0); }
+  50%      { transform: translateY(-3px); box-shadow: 0 6px 14px rgba(255,85,0,0.35); }
+}
+
+.thumb-24-eq {
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  color: #7ec8e3;
+}
+
 .app-body {
   padding: 1.1rem 1.25rem 1.3rem;
   display: flex;
@@ -1101,8 +1149,9 @@ body {
   color: #7ec8e3;
 }
 
-/* App detail panel */
-#app-detail {
+/* App / game detail panel */
+#app-detail,
+#game-detail {
   width: 100%;
   max-width: 760px;
   background: rgba(6,10,30,0.85);
@@ -1212,6 +1261,29 @@ body.app-standalone #apps {
 }
 
 body.app-standalone #app-detail {
+  max-width: 980px;
+}
+
+/* Direct game URLs (https://<domain>/24-game) — same idea for the Game
+   section: only that game is shown, as a standalone page. */
+body.game-standalone .section:not(#game) {
+  display: none;
+}
+
+body.game-standalone #nav-links,
+body.game-standalone #hint,
+body.game-standalone .scroll-indicator {
+  display: none;
+}
+
+body.game-standalone #game {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+
+body.game-standalone #game-detail {
   max-width: 980px;
 }
 
@@ -1538,6 +1610,204 @@ body.app-standalone #app-detail {
   border-color: #7ec8e3;
 }
 
+/* ── 24 点 · 24 Game ───────────────────────────────────── */
+.g24-board {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.g24-cards {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 0.7rem;
+  min-height: 112px;
+}
+
+.g24-card {
+  width: 78px;
+  height: 108px;
+  border-radius: 12px;
+  background: linear-gradient(160deg, rgba(24,34,68,0.95), rgba(10,16,40,0.95));
+  border: 1px solid rgba(126,200,227,0.28);
+  box-shadow: 0 4px 20px rgba(0,0,0,0.5);
+  color: #eaf3f9;
+  font-family: "SF Mono", "Menlo", monospace;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.3rem;
+  cursor: pointer;
+  transition: transform 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.g24-card:hover {
+  transform: translateY(-4px);
+  border-color: rgba(126,200,227,0.6);
+}
+
+.g24-card-value {
+  font-size: 1.55rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.g24-card-suit {
+  font-size: 0.8rem;
+  color: rgba(255,255,255,0.4);
+}
+
+/* Merged cards carry the arithmetic that produced them. */
+.g24-card-expr {
+  max-width: 70px;
+  font-size: 0.6rem;
+  line-height: 1.25;
+  text-align: center;
+  word-break: break-all;
+  color: rgba(126,200,227,0.85);
+}
+
+.g24-selected {
+  border-color: #ffd479;
+  box-shadow: 0 0 0 2px rgba(255,212,121,0.35), 0 6px 24px rgba(255,212,121,0.28);
+  transform: translateY(-4px);
+}
+
+/* Last card on the table — bigger, so the payoff reads at a glance. */
+.g24-single {
+  width: 96px;
+  height: 126px;
+  border-color: rgba(155,226,155,0.55);
+}
+
+.g24-ops {
+  display: flex;
+  justify-content: center;
+  gap: 0.6rem;
+}
+
+.g24-op {
+  width: 54px;
+  height: 44px;
+  border-radius: 10px;
+  background: rgba(255,255,255,0.05);
+  border: 1px solid rgba(255,255,255,0.14);
+  color: rgba(255,255,255,0.8);
+  font-size: 1.25rem;
+  font-weight: 700;
+  line-height: 1;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease, transform 0.1s ease;
+}
+
+.g24-op:hover {
+  background: rgba(126,200,227,0.16);
+  border-color: rgba(126,200,227,0.5);
+  color: #7ec8e3;
+}
+
+.g24-op:active { transform: scale(0.95); }
+
+.g24-op-active {
+  background: rgba(255,212,121,0.18);
+  border-color: rgba(255,212,121,0.7);
+  color: #ffd479;
+}
+
+.g24-status {
+  min-height: 1.4em;
+  padding: 0.5rem 0.75rem;
+  border-radius: 10px;
+  background: rgba(255,255,255,0.03);
+  border: 1px solid rgba(255,255,255,0.06);
+  text-align: center;
+  font-size: 0.85rem;
+  line-height: 1.6;
+  color: rgba(255,255,255,0.6);
+}
+
+.g24-win  { color: #9be29b; border-color: rgba(155,226,155,0.45); background: rgba(155,226,155,0.08); }
+.g24-hint { color: #7ec8e3; border-color: rgba(126,200,227,0.45); background: rgba(126,200,227,0.08); }
+.g24-warn { color: #ffb37a; border-color: rgba(255,179,122,0.45); background: rgba(255,179,122,0.08); }
+
+.g24-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 0.6rem;
+}
+
+.g24-btn {
+  padding: 0.5rem 0.95rem;
+  border-radius: 999px;
+  background: rgba(255,255,255,0.05);
+  border: 1px solid rgba(255,255,255,0.16);
+  color: rgba(255,255,255,0.78);
+  font-size: 0.8rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+  transition: background 0.2s ease, border-color 0.2s ease, color 0.2s ease, transform 0.1s ease;
+}
+
+.g24-btn:hover {
+  background: rgba(126,200,227,0.16);
+  border-color: rgba(126,200,227,0.45);
+  color: #7ec8e3;
+}
+
+.g24-btn:active { transform: scale(0.96); }
+
+.g24-btn:disabled {
+  background: rgba(255,255,255,0.04);
+  border-color: rgba(255,255,255,0.1);
+  color: rgba(255,255,255,0.35);
+  opacity: 0.6;
+  cursor: default;
+  transform: none;
+}
+
+.g24-primary {
+  background: rgba(126,200,227,0.14);
+  border-color: rgba(126,200,227,0.5);
+  color: #7ec8e3;
+}
+
+.g24-primary:hover {
+  background: rgba(126,200,227,0.26);
+  box-shadow: 0 0 18px rgba(126,200,227,0.25);
+}
+
+.g24-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 0.9rem;
+  font-size: 0.75rem;
+  color: rgba(255,255,255,0.45);
+}
+
+.g24-timer {
+  font-family: "SF Mono", "Menlo", monospace;
+  font-size: 0.95rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: #7ec8e3;
+}
+
+.g24-stats { letter-spacing: 0.04em; }
+
+.g24-keys {
+  flex: 1 1 100%;
+  text-align: center;
+  font-size: 0.7rem;
+  color: rgba(255,255,255,0.3);
+}
+
 /* ── Responsive: Mobile ────────────────────────────────── */
 @media (max-width: 600px) {
   .section {
@@ -1598,8 +1868,9 @@ body.app-standalone #app-detail {
     padding: 0.8rem 0.9rem;
   }
 
-  /* Apps mobile */
-  #apps-gallery {
+  /* Apps / Game mobile */
+  #apps-gallery,
+  #game-gallery {
     grid-template-columns: 1fr;
   }
 
@@ -1607,7 +1878,19 @@ body.app-standalone #app-detail {
     height: 140px;
   }
 
-  #app-detail {
+  /* 24 点 · 24 Game mobile */
+  .g24-card {
+    width: 64px;
+    height: 92px;
+  }
+
+  .g24-card-value { font-size: 1.25rem; }
+  .g24-card-expr { max-width: 56px; font-size: 0.55rem; }
+  .g24-op { width: 46px; height: 40px; font-size: 1.1rem; }
+  .g24-keys { display: none; } /* phones have no hardware keyboard */
+
+  #app-detail,
+  #game-detail {
     padding: 1.2rem 1.1rem 1.5rem;
   }
 

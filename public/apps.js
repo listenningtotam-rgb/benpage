@@ -36,7 +36,9 @@ function openApp(target, opts = {}) {
   }
 }
 
-document.querySelectorAll(".app-open").forEach((btn) => {
+// Only the cards in the Apps gallery open apps — the Game section (games.js)
+// and in-panel buttons that merely reuse .app-open are left alone.
+document.querySelectorAll("#apps-gallery .app-open").forEach((btn) => {
   btn.addEventListener("click", () => {
     const target = btn.dataset.target;
     // Buttons that reuse .app-open purely for styling (e.g. in-app actions)
