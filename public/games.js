@@ -9,6 +9,7 @@ const gameGalleryEl = document.getElementById("game-gallery");
 const gameDetailEl = document.getElementById("game-detail");
 const gamePanels = {
   game24: document.getElementById("app-24"),
+  sea: document.getElementById("app-sea"),
 };
 
 // Direct-access URLs — every game also lives at https://<domain>/{path}
@@ -16,6 +17,7 @@ const gamePanels = {
 // Visiting one auto-opens that game as a standalone page.
 const GAME_PATHS = {
   "/24-game": { key: "game24", title: "24 点 · 24 Game" },
+  "/sea-battle": { key: "sea", title: "怒海战舰 · Naval Fury" },
 };
 
 // Which game panel is open right now — switching games stops the old one first
@@ -30,6 +32,7 @@ function openGame(target, opts = {}) {
 
   // Games start when opened (and are paused again by closeGame / stopGame).
   if (target === "game24") window.Game24 && window.Game24.init();
+  if (target === "sea") window.SeaBattle && window.SeaBattle.init();
   currentGame = target;
 
   if (opts.standalone) {
@@ -44,6 +47,7 @@ function openGame(target, opts = {}) {
 function stopGame() {
   currentGame = null;
   if (window.Game24) window.Game24.stop();
+  if (window.SeaBattle) window.SeaBattle.stop();
 }
 
 // Only the cards in the Game gallery open games.

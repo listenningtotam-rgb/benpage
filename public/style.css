@@ -1077,6 +1077,104 @@ body {
   50%      { transform: translateY(-3px); box-shadow: 0 6px 14px rgba(255,85,0,0.35); }
 }
 
+/* 怒海战舰 — a warship, a target and a crosshair on open water */
+.thumb-sea {
+  position: relative;
+  overflow: hidden;
+  padding: 0;
+  gap: 0;
+  background: linear-gradient(180deg, #0a1b28 0%, #071019 100%);
+}
+
+.thumb-sea-swell {
+  position: absolute;
+  inset: 0;
+  background-image: repeating-linear-gradient(
+    180deg,
+    rgba(126,200,227,0.13) 0 1px,
+    transparent 1px 13px
+  );
+  animation: thumbSeaSwell 5s linear infinite;
+}
+
+@keyframes thumbSeaSwell {
+  from { background-position: 0 0; }
+  to   { background-position: 0 13px; }
+}
+
+.thumb-sea-ship,
+.thumb-sea-foe,
+.thumb-sea-cross { position: absolute; }
+
+.thumb-sea-ship {
+  left: 22%;
+  top: 50%;
+  width: 46px;
+  height: 15px;
+  background: #4d5f6d;
+  clip-path: polygon(100% 50%, 62% 0, 0 0, 0 100%, 62% 100%);
+  animation: thumbSeaShip 2.6s ease-in-out infinite;
+}
+
+@keyframes thumbSeaShip {
+  0%, 100% { transform: translateY(-50%) rotate(-2deg); }
+  50%      { transform: translateY(-58%) rotate(2deg); }
+}
+
+.thumb-sea-foe {
+  right: 17%;
+  top: 26%;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: rgba(255,85,102,0.85);
+  box-shadow: 0 0 10px rgba(255,85,102,0.6);
+  animation: thumbSeaFoe 1.4s ease-in-out infinite;
+}
+
+@keyframes thumbSeaFoe {
+  0%, 100% { opacity: 0.55; transform: scale(0.85); }
+  50%      { opacity: 1; transform: scale(1.1); }
+}
+
+.thumb-sea-cross {
+  right: 30%;
+  bottom: 24%;
+  width: 22px;
+  height: 22px;
+  border: 2px solid rgba(255,212,121,0.85);
+  border-radius: 50%;
+  animation: thumbSeaCross 1.8s ease-in-out infinite;
+}
+
+.thumb-sea-cross::before,
+.thumb-sea-cross::after {
+  content: "";
+  position: absolute;
+  background: rgba(255,212,121,0.85);
+}
+
+.thumb-sea-cross::before {
+  left: 50%;
+  top: -5px;
+  width: 2px;
+  height: 30px;
+  margin-left: -1px;
+}
+
+.thumb-sea-cross::after {
+  top: 50%;
+  left: -5px;
+  height: 2px;
+  width: 30px;
+  margin-top: -1px;
+}
+
+@keyframes thumbSeaCross {
+  0%, 100% { transform: scale(0.88); opacity: 0.7; }
+  50%      { transform: scale(1.05); opacity: 1; }
+}
+
 .thumb-24-eq {
   font-size: 0.68rem;
   font-weight: 700;
@@ -1808,6 +1906,113 @@ body.game-standalone #game-detail {
   color: rgba(255,255,255,0.3);
 }
 
+/* ── 怒海战舰 · Naval Fury ─────────────────────────────── */
+.sb-board {
+  display: flex;
+  flex-direction: column;
+  gap: 0.7rem;
+}
+
+/* the canvas and its overlays share one positioning context */
+.sb-stage {
+  position: relative;
+  border-radius: 14px;
+  overflow: hidden;
+  border: 1px solid rgba(126,200,227,0.22);
+  background: #071019;
+  box-shadow: 0 10px 34px rgba(0,0,0,0.45);
+}
+
+.sb-canvas {
+  display: block;
+  width: 100%;
+  height: auto;
+  aspect-ratio: 8 / 5;
+  cursor: crosshair;
+  touch-action: none;
+}
+
+.sb-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.7rem;
+  padding: 1.2rem;
+  text-align: center;
+  background: rgba(4,12,18,0.72);
+}
+
+.sb-overlay-title {
+  font-size: 1.25rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  color: #fff;
+}
+
+.sb-overlay-text {
+  max-width: 460px;
+  font-size: 0.8rem;
+  line-height: 1.75;
+  color: rgba(255,255,255,0.6);
+}
+
+/* phone / tablet: the game is keyboard + mouse only (see sbIsDesktop) */
+.sb-desktop-only {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.6rem;
+  padding: 1.4rem;
+  text-align: center;
+  background: rgba(4,12,18,0.92);
+}
+
+.sb-desktop-title {
+  font-size: 1.05rem;
+  font-weight: 700;
+  color: #ffb37a;
+}
+
+.sb-desktop-text {
+  max-width: 420px;
+  font-size: 0.82rem;
+  line-height: 1.75;
+  color: rgba(255,255,255,0.6);
+}
+
+.sb-hud {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 1.1rem;
+  padding: 0.6rem 0.85rem;
+  border-radius: 10px;
+  background: rgba(255,255,255,0.03);
+  border: 1px solid rgba(255,255,255,0.08);
+  font-size: 0.78rem;
+  color: rgba(255,255,255,0.55);
+}
+
+.sb-hud-item b {
+  font-weight: 700;
+  color: #9be29b;
+}
+
+.sb-timer {
+  font-family: "SF Mono", "Menlo", monospace;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: #7ec8e3;
+}
+
+.sb-keys-row { margin-top: 0.9rem; }
+
 /* ── Responsive: Mobile ────────────────────────────────── */
 @media (max-width: 600px) {
   .section {
@@ -1888,6 +2093,14 @@ body.game-standalone #game-detail {
   .g24-card-expr { max-width: 56px; font-size: 0.55rem; }
   .g24-op { width: 46px; height: 40px; font-size: 1.1rem; }
   .g24-keys { display: none; } /* phones have no hardware keyboard */
+
+  /* 怒海战舰 is desktop-only; phones get the notice, so keep it compact */
+  .sb-overlay { padding: 0.9rem; }
+  .sb-overlay-title { font-size: 1.05rem; }
+  .sb-overlay-text { font-size: 0.72rem; }
+  .sb-desktop-title { font-size: 0.95rem; }
+  .sb-desktop-text { font-size: 0.74rem; }
+  .sb-hud { gap: 0.35rem 0.7rem; font-size: 0.7rem; }
 
   #app-detail,
   #game-detail {

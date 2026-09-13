@@ -21,6 +21,7 @@ const APP_PATHS = {
   "/rec-hub": "index.html",  // REC HUB
   "/vinyl": "index.html",    // Vinyl Archive — exact path only; /vinyl/:slug stays a share page
   "/24-game": "index.html",  // 24 点 · 24 Game (Game gallery)
+  "/sea-battle": "index.html", // 怒海战舰 · Naval Fury (Game gallery)
   "/admin": "admin.html",    // Admin console
 };
 
@@ -35,6 +36,7 @@ const APP_QR_TARGETS = {
   rechub: "/rec-hub",
   vinyl: "/vinyl",
   game24: "/24-game",
+  "sea-battle": "/sea-battle",
 };
 
 // Hosts/domain that are allowed to call the API.

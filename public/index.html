@@ -223,6 +223,17 @@
           </div>
         </article>
 
+        <article class="app-card">
+          <div class="app-thumb"><div class="thumb-widget thumb-sea"><div class="thumb-sea-swell"></div><div class="thumb-sea-foe"></div><div class="thumb-sea-ship"></div><div class="thumb-sea-cross"></div></div></div>
+          <div class="app-body">
+            <h3 class="app-title">怒海战舰 · Naval Fury</h3>
+            <p class="app-desc">俯视海战：WASD / 方向键 转舵前进，鼠标瞄准，按住左键齐射。岛屿能挡炮弹，敌舰会拉开距离跟你对轰 —— 三波舰队全部击沉就赢，血条清零则战沉。</p>
+            <div class="app-actions">
+              <button type="button" class="app-open" data-target="sea">Open Game</button>
+              <a class="app-direct" href="/sea-battle">/sea-battle ↗</a>
+            </div>
+          </div>
+        </article>
       </div>
 
       <div id="game-detail" hidden>
@@ -266,6 +277,47 @@
           </div>
         </div>
 
+        <!-- Game 2 — 怒海战舰 · Naval Fury (public/sea-battle.js) -->
+        <div id="app-sea" class="app-panel" hidden>
+          <h3 class="app-panel-title">怒海战舰 · Naval Fury</h3>
+
+          <div class="app-intro">
+            <p class="cal-caption app-intro-text">俯视海战：WASD / 方向键 转舵前进（S 倒车、Shift 冲刺），鼠标瞄准，按住左键连射，P / Esc 暂停，R 重开。岛屿会挡下炮弹，也能挡住敌舰的射界 —— 三波敌舰全部击沉即通关，血条清零则战沉。</p>
+            <div class="app-qr">
+              <img class="app-qr-img" src="/api/app-qr/sea-battle" alt="微信扫码 · 打开怒海战舰" width="116" height="116" loading="lazy" decoding="async" />
+              <span class="app-qr-hint">微信扫码 · 用电脑打开</span>
+            </div>
+          </div>
+
+          <div class="sb-board">
+            <div class="sb-stage">
+              <canvas id="sb-canvas" class="sb-canvas" width="960" height="600"></canvas>
+
+              <div id="sb-desktop-only" class="sb-desktop-only" hidden>
+                <p class="sb-desktop-title">请用电脑玩 · Desktop only</p>
+                <p class="sb-desktop-text">怒海战舰需要键盘（WASD / 方向键）和鼠标瞄准，手机端没有触屏适配。换成电脑打开 /sea-battle 就能开打。</p>
+              </div>
+
+              <div id="sb-overlay" class="sb-overlay">
+                <h4 class="sb-overlay-title" id="sb-overlay-title">怒海战舰 · Naval Fury</h4>
+                <p class="sb-overlay-text" id="sb-overlay-text">WASD / 方向键 转舵前进 · 鼠标瞄准 · 按住左键开火 · Shift 冲刺 · P 暂停</p>
+                <button type="button" id="sb-overlay-btn" class="g24-btn g24-primary">开始战斗 · Start</button>
+              </div>
+            </div>
+
+            <div class="sb-hud" id="sb-hud">
+              <span class="sb-hud-item">装甲 <b id="sb-hp-text">100 / 100</b></span>
+              <span class="sb-hud-item" id="sb-wave">第 1 / 3 波</span>
+              <span class="sb-hud-item" id="sb-kills">击沉 0 / 15</span>
+              <span class="sb-hud-item sb-timer" id="sb-timer">00:00</span>
+              <span class="sb-hud-item" id="sb-acc">命中 0%</span>
+            </div>
+          </div>
+
+          <div class="g24-meta sb-keys-row">
+            <span class="g24-keys">WASD / 方向键 转舵 · 鼠标瞄准 · 按住左键开火 · Shift 冲刺 · P 暂停 · R 重来</span>
+          </div>
+        </div>
       </div>
     </section>
 
@@ -308,6 +360,7 @@
   <script src="apps.js"></script>
   <script src="games.js"></script>
   <script src="game24.js"></script>
+  <script src="sea-battle.js"></script>
   <script src="vinyl.js"></script>
   <script src="music.js"></script>
   <script src="rechub.js"></script>
