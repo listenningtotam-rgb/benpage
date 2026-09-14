@@ -1002,6 +1002,85 @@ function isIOS() {
   );
 }
 
+/* ── Native media unlock (iOS + the browsers phones actually use) ──────────
+
+   WebKit — iOS Safari, and every browser on an iPhone/iPad (Chrome included,
+   plus the in-app browsers phones get links through) — refuses play() calls
+   made OUTSIDE a user gesture until the page has played media from a real tap.
+   Every playback path here is asynchronous (fetch + decodeAudioData, or a full
+   offline render that takes seconds on a phone), so play() always lands after
+   the tap that asked for it: the song opened silently while the UI cheerfully
+   said it was playing, and only a second tap made any sound.
+
+   Two things fix that. Starting a momentary silent clip on the page's FIRST
+   tap unlocks the page for the rest of the session, and handing that same
+   element to the playback path lets it reuse an element WebKit has already
+   seen play inside a gesture — the strongest form of the same unlock. */
+let nativeUnlockEl = null;    // the element the first tap started (silent clip)
+let nativeUnlockTried = false;
+let silentClipUrl = null;
+
+/* 50 ms of digital silence as a WAV blob, built by hand so this costs no asset
+   and no data: URL (the CSP allows media-src blob: but not data:). */
+function silentClipBlobUrl() {
+  if (silentClipUrl) return silentClipUrl;
+  const rate = 8000;
+  const frames = 400;
+  const bytes = new Uint8Array(44 + frames);
+  const dv = new DataView(bytes.buffer);
+  const ascii = (off, s) => { for (let i = 0; i < s.length; i++) dv.setUint8(off + i, s.charCodeAt(i)); };
+  ascii(0, "RIFF");
+  dv.setUint32(4, 36 + frames, true);
+  ascii(8, "WAVE");
+  ascii(12, "fmt ");
+  dv.setUint32(16, 16, true);
+  dv.setUint16(20, 1, true);  // PCM
+  dv.setUint16(22, 1, true);  // mono
+  dv.setUint32(24, rate, true);
+  dv.setUint32(28, rate, true); // byte rate — 1 byte per sample at 8-bit
+  dv.setUint16(32, 1, true);
+  dv.setUint16(34, 8, true);
+  ascii(36, "data");
+  dv.setUint32(40, frames, true);
+  bytes.fill(128, 44); // 128 = silence in unsigned 8-bit PCM
+  silentClipUrl = URL.createObjectURL(new Blob([bytes], { type: "audio/wav" }));
+  return silentClipUrl;
+}
+
+/* Call SYNCHRONOUSLY inside a user event handler (a click/tap listener) — the
+   whole point is to be in the gesture. The first call starts the silent clip;
+   every later call is a no-op. Returns the unlocked element (or null). */
+function unlockNativeAudio() {
+  if (nativeUnlockTried) return nativeUnlockEl;
+  nativeUnlockTried = true;
+  try {
+    const el = new Audio();
+    el.preload = "auto";
+    el.src = silentClipBlobUrl();
+    const p = el.play();
+    if (p && typeof p.catch === "function") p.catch(() => {}); // a refusal just leaves the page locked
+    nativeUnlockEl = el;
+  } catch (_) {
+    nativeUnlockEl = null;
+  }
+  return nativeUnlockEl;
+}
+
+/* The media element the page has already started from a real tap, or null.
+   Async playback paths prefer it: WebKit lets an element that played inside a
+   gesture play again later without one. Falls back to a fresh element (the
+   engine may not need the unlock at all — Chrome/Edge on a laptop don't). */
+function unlockedMediaElement() {
+  return nativeUnlockEl;
+}
+
+/* A phone's link can land anywhere in the page, so unlock on the first gesture
+   of any kind. pointerdown covers every modern engine; touchend is the older
+   iOS fallback and click the last resort. */
+["pointerdown", "touchend", "click"].forEach((type) => {
+  document.addEventListener(type, () => { unlockNativeAudio(); }, { once: true, capture: true });
+});
+
 /* ── Backing chain length (the record-setup slider's range) ────────────────
 
    The "start point in the song" slider spans the ROOT-timeline length of the
@@ -1322,12 +1401,15 @@ async function desktopSetupAudition(commit, F, seq) {
   const running = await preparePlaybackContext(ctx);
   if (audioEngine.ctx !== ctx) return; // stopped while the output settled
   if (!running) {
-    // The browser held the context back (the dialog-open click gesture has
-    // expired by the time the decode finished) — surface it as a message; the
-    // next press of “▶ Listen from here” IS a fresh gesture and starts it.
+    // The browser held the live context back: the dialog-open click's gesture
+    // has expired by the time the decode finished, or this device blocks Web
+    // Audio altogether. Rather than open the recording page silent, render the
+    // mix offline and play it through a native <audio> element — the path iOS
+    // always takes. An element with a real source does make sound where a
+    // suspended context can't.
     audioEngine.ctx = null;
     try { if (ctx && typeof ctx.close === "function") ctx.close().catch(() => {}); } catch (_) {}
-    finishSetupAudition(seq, false, "the browser held the playback back — press “▶ Listen from here” to start it");
+    iosSetupAudition(commit, F, seq);
     return;
   }
   const layers = [];
@@ -1387,8 +1469,10 @@ async function desktopSetupAudition(commit, F, seq) {
 /* Audition on iOS: render the chain's tail from F through the shared offline
    pipeline, then play it like playIOSMix does (native <audio>, routed to the
    chosen output), reporting the playhead so the dialog readout follows the
-   song. Because the render is async, play() happens outside the original tap's
-   gesture and iOS blocks it the first time — arm again on the next touch. */
+   song. The render is async, so this play() lands well after the tap that
+   opened the dialog — the tap unlocked native playback (unlockNativeAudio) and
+   this reuses that element, so the mix starts by itself. The tap-once retry
+   below still covers an engine that refuses anyway. */
 async function iosSetupAudition(commit, F, seq) {
   setSetupAuditionUI(true, F > 0.05 ? "mixing from " + fmtStartTime(F) + "…" : "mixing the song…");
   const fromPref = F > 0.05 ? "Mixing from " + fmtStartTime(F) + "… " : "Mixing the song… ";
@@ -1415,13 +1499,20 @@ async function iosSetupAudition(commit, F, seq) {
   }
   if (!setupAudition || setupAudition.seq !== seq) return; // superseded
   const url = URL.createObjectURL(blob);
-  const el = new Audio();
+  // Prefer the element the page's first tap already started (unlockNativeAudio):
+  // this play() happens seconds after that tap, once the render is done, and
+  // WebKit only lets an element play outside a gesture when it has played
+  // inside one. A fresh element is the fallback for engines that don't care.
+  const el = unlockedMediaElement() || new Audio();
   el.preload = "auto";
   routeElToOutput(el); // keep the audition on the chosen output device
-  el._mixUrl = url;    // revoked in closeAudio()
   const session = { seq, rootFrom: F, el };
+  let started = false;
+  // Bail out only if playback never started: while the song IS playing this
+  // must not fire (a song longer than the timer was cut off and announced as
+  // "playback didn't start" mid-phrase).
   const bailTimer = setTimeout(() => {
-    if (setupAudition === session) finishSetupAudition(seq, false, "playback didn't start — try again");
+    if (setupAudition === session && !started) finishSetupAudition(seq, false, "playback didn't start — try again");
   }, 25000);
   session.teardown = () => {
     clearTimeout(bailTimer);
@@ -1429,7 +1520,6 @@ async function iosSetupAudition(commit, F, seq) {
   };
   setupAudition = session;
   audioEngine.elements.push(el);
-  let started = false;
   const live = () => setupAudition === session;
   const playingNote = () => setSetupAuditionUI(true, setupPlayingStatus(F));
   el.addEventListener("timeupdate", () => {
@@ -1438,7 +1528,11 @@ async function iosSetupAudition(commit, F, seq) {
   el.onended = () => { if (live() && started) finishSetupAudition(seq, true, ""); };
   const play = () =>
     el.play()
-      .then(() => { started = true; playingNote(); })
+      .then(() => {
+        started = true;
+        clearTimeout(bailTimer); // playing — the bail-out is moot from here on
+        playingNote();
+      })
       .catch((e) => {
         if (!live()) return;
         if (e && e.name === "NotAllowedError") {
@@ -1448,7 +1542,7 @@ async function iosSetupAudition(commit, F, seq) {
             window.removeEventListener("touchend", retry);
             window.removeEventListener("click", retry);
             if (!live() || started) return;
-            el.play().then(() => { started = true; playingNote(); }).catch((e2) => {
+            el.play().then(() => { started = true; clearTimeout(bailTimer); playingNote(); }).catch((e2) => {
               if (e2 && e2.name === "AbortError") return;
               if (live()) finishSetupAudition(seq, false, "the browser blocked playback — press “▶ Listen from here” again");
             });
@@ -1462,6 +1556,12 @@ async function iosSetupAudition(commit, F, seq) {
       });
   el.addEventListener("loadedmetadata", play, { once: true });
   el.addEventListener("canplay", play, { once: true });
+  el._mixUrl = url; // revoked in closeAudio()
+  // Assigning the source is what makes the two events above fire at all — with
+  // no source neither ever does, so the audition sat at "mixing done — starting
+  // playback…" and stayed silent (then the bail-out above reported it as a
+  // failure). That was the phone showing no sound at all.
+  el.src = url;
   setSetupAuditionUI(true, "mixing done — starting playback…");
 }
 async function playCommit(commit, extra) {
@@ -1747,7 +1847,10 @@ async function playIOSMix(commit, extra) {
   if (iosMixActiveJob === job) iosMixActiveJob = null;
   const mixUrl = URL.createObjectURL(blob);
   const row = document.querySelector(`.rc-commit[data-commit="${commit.id}"]`);
-  const el = new Audio();
+  // Reuse the element the page's first tap unlocked (see unlockNativeAudio) —
+  // the render above took long enough that a fresh element's play() would be
+  // refused on iOS/WebKit. Falls back to a new element everywhere else.
+  const el = unlockedMediaElement() || new Audio();
   el.preload = "auto";
   routeElToOutput(el); // keep the rendered mix on the chosen output device
   el._mixUrl = mixUrl; // revoked in closeAudio
@@ -2290,30 +2393,38 @@ async function routeCtxToOutput(ctx) {
 
 /* Bring a freshly created playback context into an audible state BEFORE
    anything is scheduled into it: resume it (the click's gesture is still live),
-   route it to the chosen output device, then wait until the context really is
-   running with its clock advancing.
+   route it to the chosen output device, then confirm the clock is really
+   running.
 
-   Both steps matter. Resuming inside the gesture satisfies the browser's
+   Each step matters. Resuming inside the gesture satisfies the browser's
    autoplay policy — the take session does the same (resume first, then route) —
    and routing calls AudioContext.setSinkId(), which switches the context's
    output device and re-creates its stream. A source scheduled while that
    hand-off is still in flight can be dropped silently, leaving the hub row
    “playing” over silence until the user presses ■ Stop and plays again (that
-   second context starts on an output that has already settled). Waiting for a
-   running context whose clock advances keeps the schedule out of that window.
+   second context starts on an output that has already settled). So an output
+   switch is followed by “wait until the clock advances”, which keeps the
+   schedule out of that window.
+
+   With NO output switch there is nothing to settle, and a running context is
+   enough: hard-failing there would turn a phone's slow first audio start into
+   permanent silence, which is exactly the bug this helper is meant to prevent.
    Returns the context when ready, null when the browser won't start it — the
    caller then plays through a native <audio> element instead. */
 async function preparePlaybackContext(ctx) {
   if (!ctx) return null;
   if (!(await ensureCtxRunning(ctx))) return null;
-  await routeCtxToOutput(ctx); // may restart the output stream
-  for (let i = 0; i < 12; i++) {
-    if (ctx.state !== "running" && !(await ensureCtxRunning(ctx))) break;
+  const rerouted = await routeCtxToOutput(ctx); // may restart the output stream
+  // 50 ms polls: a short confirmation after a sink switch, a longer grace
+  // period when the clock is all we have to go on.
+  const tries = rerouted ? 40 : 4;
+  for (let i = 0; i < tries; i++) {
+    if (ctx.state !== "running" && !(await ensureCtxRunning(ctx))) return null;
     const t0 = ctx.currentTime;
-    await new Promise((r) => setTimeout(r, 40));
-    if (ctx.state === "running" && ctx.currentTime > t0) return ctx;
+    await new Promise((r) => setTimeout(r, 50));
+    if (ctx.currentTime > t0) return ctx;
   }
-  return null;
+  return rerouted ? null : ctx; // unproven clock after a sink switch, never with a plain start
 }
 
 /* “Scheduled” is not “audible”: a context the browser holds back (suspended by
@@ -3278,6 +3389,11 @@ function analyzeTake(blob) {
    (new recording → Record from mic) keeps working with the last-used values. */
 function openRecordSetup() {
   if (studio.recording || !hub.checkedOut) return;
+  // Unlock native playback inside this click: the dialog's song auto-play
+  // finishes asynchronously (a render on phones), so its play() lands outside
+  // any gesture and WebKit would refuse it — the recorded page then opened with
+  // no sound at all until the singer tapped again.
+  unlockNativeAudio();
   if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
     startTakeRecording(); // surfaces the HTTPS/blocked error directly
     return;
@@ -3721,6 +3837,9 @@ function reviewStart(kind) {
    F. keepRange is set by a scrub release / the reset button: the measured bar
    span stays put (no re-measure flicker) while the engine starts fresh at F. */
 function reviewBegin(kind, F, keepRange) {
+  // The preview buttons start the mix render, whose play() also lands outside
+  // this tap — unlock native playback while the gesture is still live.
+  unlockNativeAudio();
   stopReviewPreview();
   // A preview is now the page's only audio: silence anything else that was
   // sounding (a hub-row play, a leftover fallback context) so the two can't
@@ -3960,7 +4079,10 @@ async function reviewMixWAEngine(seq, F, commit, extra) {
   if (!(await preparePlaybackContext(ctx))) {
     if (audioEngine.ctx === ctx) audioEngine.ctx = null;
     try { if (ctx && typeof ctx.close === "function") ctx.close().catch(() => {}); } catch (_) {}
-    reviewFinish(seq, "the browser held the playback back — press “▶ With original” again to start it");
+    // Live Web Audio is held back on this device — render the mix offline and
+    // play it through a native <audio> element (the iOS path) rather than leave
+    // the preview silent.
+    reviewMixIOSEngine(seq, F, commit, extra);
     return;
   }
   // Decode the whole chain + this take's blob (cached per URL, so a reseek is
@@ -4083,7 +4205,10 @@ async function reviewMixIOSEngine(seq, F, commit, extra) {
   }
   if (!reviewLive(seq)) return; // superseded while rendering
   const url = URL.createObjectURL(blob);
-  const el = new Audio();
+  // Same native unlock as the record-setup audition: the tap that asked for
+  // this preview is long gone by the time the render finishes, so reuse the
+  // element the page's first tap started (fresh element when there is none).
+  const el = unlockedMediaElement() || new Audio();
   el.preload = "auto";
   routeElToOutput(el); // keep the rendered mix on the chosen output device
   el._mixUrl = url;    // revoked in closeAudio()
@@ -4163,6 +4288,10 @@ async function reviewMixIOSEngine(seq, F, commit, extra) {
   };
   el.addEventListener("loadedmetadata", tryPlay, { once: true });
   el.addEventListener("canplay", tryPlay, { once: true });
+  // The source assignment is what makes those two events fire — without it the
+  // element never loads, play() is never attempted, and the preview silently
+  // never sounds (the phone showed no sound at all).
+  el.src = url;
 }
 
 function openTakePreview() {
