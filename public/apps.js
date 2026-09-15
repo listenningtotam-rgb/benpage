@@ -6,15 +6,20 @@ const $ = (id) => document.getElementById(id);
 // ─── Gallery open / close ─────────────────────────────────
 const gallery = $("apps-gallery");
 const detail = $("app-detail");
-const panels = { calendar: $("app-calendar"), fx: $("app-fx"), rechub: $("app-rechub"), vinyl: $("app-vinyl") };
+const panels = { calendar: $("app-calendar"), fx: $("app-fx"), rechub: $("app-rechub"), vinyl: $("app-vinyl"), busking: $("app-busking") };
 
 // Direct-access URLs — every app also lives at https://<domain>/{path}
 // (server serves the single-page index.html shell; see server.js APP_PATHS).
 // Visiting one auto-opens that app as a standalone page.
+// FX Market Watch is switched off for now (not in use at the moment): its
+// gallery card is hidden in index.html and it gets no entry here, so /fx just
+// shows the apps gallery instead of opening the app. The server route still
+// resolves on purpose, so old QR codes / short links don't 404. To bring the
+// app back: unhide the card in index.html and re-add the "/fx" line below.
 const APP_PATHS = {
   "/calendar": { key: "calendar", title: "FX Holiday Calendar" },
-  "/fx":       { key: "fx",       title: "FX Market Watch" },
   "/rec-hub":  { key: "rechub",   title: "REC HUB" },
+  "/busking":  { key: "busking",  title: "路演" },
   "/vinyl":    { key: "vinyl",    title: "黑胶档案 · Vinyl Archive" },
 };
 
@@ -26,6 +31,7 @@ function openApp(target, opts = {}) {
   if (target === "calendar") initCalendar();
   if (target === "fx") initFx();
   if (target === "vinyl") window.VinylArchive && window.VinylArchive.init();
+  if (target === "busking") window.BuskingApp && window.BuskingApp.init();
 
   if (opts.standalone) {
     document.body.classList.add("app-standalone");

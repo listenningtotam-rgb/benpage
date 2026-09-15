@@ -180,7 +180,9 @@ function findUserByUsername(username) {
 /* Shape of a user object the rest of the app sees. Always carries the
    membership list (bands the user joined) so the UI can render band badges
    without an extra request. `is_admin`/`profile_complete`/`nickname`/`email`
-   come from migration 014 (NULL/0 on legacy rows until the profile is set). */
+   come from migration 014 (NULL/0 on legacy rows until the profile is set);
+   `instrument` (擅长的乐器) comes from migration 017 and stays "" until the
+   member fills in the busking profile. */
 function toPublicUser(row) {
   if (!row) return null;
   const bands = db
@@ -197,6 +199,7 @@ function toPublicUser(row) {
     username: row.username,
     nickname: row.nickname,
     email: row.email,
+    instrument: row.instrument || "",
     is_admin: !!row.is_admin,
     profile_complete: !!row.profile_complete,
     must_change_password: !!row.must_change_password,
@@ -1023,6 +1026,326 @@ function ensureAppQr(key, url) {
   return getAppQr(key);
 }
 
+/* ── Busking (路演) ────────────────────────────────────── */
+/* Migration 017. One busking_events row is one street-gig activity the admin
+   creates and publishes: 主题 / 风格 / 人数 (capacity) / 时间段 / 地点. Once
+   published it is public — anyone can browse it and 喜欢 (like) it, members
+   (accounts created from a busking_invite_codes code) can 我要加入 while
+   seats are left, and both the participant list (with the instrument each
+   member is responsible for) and the highlight photos added after the event
+   are public as well.
+
+   Deletes: the connection runs without PRAGMA foreign_keys, so child rows are
+   removed explicitly instead of relying on ON DELETE CASCADE. */
+
+const BUSKING_STATUSES = ["draft", "published", "finished"];
+
+function cleanBuskingStatus(status, fallback = "draft") {
+  return BUSKING_STATUSES.includes(status) ? status : fallback;
+}
+
+function cleanBuskingCapacity(v, fallback = 1) {
+  const n = Math.floor(Number(v));
+  if (!Number.isFinite(n)) return fallback;
+  return Math.min(Math.max(n, 1), 200);
+}
+
+/* Event row plus the three derived values every client view needs: how many
+   members joined, how many 喜欢, and the cover thumbnail (first photo). */
+const BUSKING_EVENT_SELECT = `
+  SELECT e.*,
+         (SELECT COUNT(*) FROM busking_joins j WHERE j.event_id = e.id) AS join_count,
+         (SELECT COUNT(*) FROM busking_likes l WHERE l.event_id = e.id) AS like_count,
+         (SELECT p.url FROM busking_photos p
+           WHERE p.event_id = e.id
+           ORDER BY p.sort_order ASC, p.id ASC LIMIT 1) AS cover_url
+    FROM busking_events e`;
+
+/* Public board: published first (what people came for), then drafts, then the
+   finished ones that stay online as highlights. Drafts only for the admin. */
+function listBuskingEvents({ includeDrafts = false } = {}) {
+  const where = includeDrafts ? "" : "WHERE e.status != 'draft'";
+  return db
+    .prepare(
+      `${BUSKING_EVENT_SELECT}
+       ${where}
+       ORDER BY CASE e.status WHEN 'published' THEN 0 WHEN 'draft' THEN 1 ELSE 2 END ASC,
+                e.id DESC`
+    )
+    .all();
+}
+
+function getBuskingEvent(id) {
+  return db.prepare(`${BUSKING_EVENT_SELECT} WHERE e.id = ?`).get(id) || null;
+}
+
+function createBuskingEvent({ title, style, capacity, time_slot, location, status, created_by }) {
+  const info = db
+    .prepare(
+      `INSERT INTO busking_events
+         (title, style, capacity, time_slot, location, status, created_by, published_at)
+       VALUES (@title, @style, @capacity, @time_slot, @location, @status, @created_by,
+               CASE WHEN @status = 'published' THEN datetime('now') ELSE NULL END)`
+    )
+    .run({
+      title,
+      style: style || "",
+      capacity: cleanBuskingCapacity(capacity),
+      time_slot: time_slot || "",
+      location: location || "",
+      status: cleanBuskingStatus(status),
+      created_by: created_by || null,
+    });
+  return getBuskingEvent(info.lastInsertRowid);
+}
+
+function updateBuskingEvent(id, { title, style, capacity, time_slot, location, status }) {
+  const existing = db.prepare("SELECT * FROM busking_events WHERE id = ?").get(id);
+  if (!existing) return null;
+  db.prepare(
+    `UPDATE busking_events
+        SET title = @title, style = @style, capacity = @capacity,
+            time_slot = @time_slot, location = @location, status = @status,
+            published_at = CASE WHEN @status = 'published' AND published_at IS NULL
+                                THEN datetime('now') ELSE published_at END,
+            updated_at = datetime('now')
+      WHERE id = @id`
+  ).run({
+    id,
+    title,
+    style: style || "",
+    capacity: cleanBuskingCapacity(capacity, existing.capacity),
+    time_slot: time_slot || "",
+    location: location || "",
+    status: cleanBuskingStatus(status, existing.status),
+  });
+  return getBuskingEvent(id);
+}
+
+/* Publish / finish / re-open without touching the other fields. */
+function setBuskingEventStatus(id, status) {
+  const existing = db.prepare("SELECT * FROM busking_events WHERE id = ?").get(id);
+  if (!existing) return null;
+  return updateBuskingEvent(id, {
+    title: existing.title,
+    style: existing.style,
+    capacity: existing.capacity,
+    time_slot: existing.time_slot,
+    location: existing.location,
+    status,
+  });
+}
+
+function deleteBuskingEvent(id) {
+  db.prepare("DELETE FROM busking_joins WHERE event_id = ?").run(id);
+  db.prepare("DELETE FROM busking_likes WHERE event_id = ?").run(id);
+  db.prepare("DELETE FROM busking_photos WHERE event_id = ?").run(id);
+  db.prepare("DELETE FROM busking_events WHERE id = ?").run(id);
+}
+
+/* ── Busking participants (我要加入) ───────────────────── */
+/* The participant list is public but only ever exposes the display name and
+   the instrument — never the contact email. */
+
+function buskingJoinCount(eventId) {
+  return db.prepare("SELECT COUNT(*) AS n FROM busking_joins WHERE event_id = ?").get(eventId).n;
+}
+
+function getBuskingJoin(eventId, userId) {
+  return (
+    db
+      .prepare("SELECT * FROM busking_joins WHERE event_id = ? AND user_id = ?")
+      .get(eventId, userId) || null
+  );
+}
+
+function addBuskingJoin(eventId, userId, instrument) {
+  db.prepare(
+    "INSERT OR IGNORE INTO busking_joins (event_id, user_id, instrument) VALUES (?, ?, ?)"
+  ).run(eventId, userId, instrument || "");
+  return getBuskingJoin(eventId, userId);
+}
+
+function updateBuskingJoinInstrument(eventId, userId, instrument) {
+  db.prepare("UPDATE busking_joins SET instrument = ? WHERE event_id = ? AND user_id = ?").run(
+    instrument || "",
+    eventId,
+    userId
+  );
+}
+
+function removeBuskingJoin(eventId, userId) {
+  db.prepare("DELETE FROM busking_joins WHERE event_id = ? AND user_id = ?").run(eventId, userId);
+}
+
+function listBuskingParticipants(eventId) {
+  return db
+    .prepare(
+      `SELECT j.user_id, j.instrument, j.created_at,
+              u.nickname, u.username, u.instrument AS profile_instrument,
+              u.profile_complete
+         FROM busking_joins j
+         JOIN users u ON u.id = j.user_id
+        WHERE j.event_id = ?
+        ORDER BY j.id ASC`
+    )
+    .all(eventId);
+}
+
+function listBuskingJoinedEventIds(userId) {
+  if (!userId) return [];
+  return db
+    .prepare("SELECT event_id FROM busking_joins WHERE user_id = ?")
+    .all(userId)
+    .map((r) => r.event_id);
+}
+
+/* ── Busking likes (喜欢) ──────────────────────────────── */
+/* Anonymous: a visitor is identified by 'u<id>' when signed in, otherwise by
+   an id the browser keeps in localStorage. Calling this toggles the like. */
+
+function buskingLikeCount(eventId) {
+  return db.prepare("SELECT COUNT(*) AS n FROM busking_likes WHERE event_id = ?").get(eventId).n;
+}
+
+function hasBuskingLike(eventId, visitor) {
+  if (!visitor) return false;
+  return !!db
+    .prepare("SELECT 1 FROM busking_likes WHERE event_id = ? AND visitor = ?")
+    .get(eventId, visitor);
+}
+
+function toggleBuskingLike(eventId, visitor) {
+  const liked = hasBuskingLike(eventId, visitor);
+  if (liked) {
+    db.prepare("DELETE FROM busking_likes WHERE event_id = ? AND visitor = ?").run(
+      eventId,
+      visitor
+    );
+  } else {
+    db.prepare("INSERT OR IGNORE INTO busking_likes (event_id, visitor) VALUES (?, ?)").run(
+      eventId,
+      visitor
+    );
+  }
+  return { liked: !liked, like_count: buskingLikeCount(eventId) };
+}
+
+/* Which events this visitor already liked (one query for the whole board). */
+function listBuskingLikedEventIds(visitor) {
+  if (!visitor) return [];
+  return db
+    .prepare("SELECT event_id FROM busking_likes WHERE visitor = ?")
+    .all(visitor)
+    .map((r) => r.event_id);
+}
+
+/* ── Busking highlight photos (精彩回顾) ───────────────── */
+/* Plain /photo/… uploads pinned to an event, shown publicly once the event is
+   over (the admin adds them right after the gig). */
+
+function listBuskingPhotos(eventId) {
+  return db
+    .prepare(
+      `SELECT * FROM busking_photos
+        WHERE event_id = ?
+        ORDER BY sort_order ASC, id ASC`
+    )
+    .all(eventId);
+}
+
+function getBuskingPhoto(id) {
+  return db.prepare("SELECT * FROM busking_photos WHERE id = ?").get(id) || null;
+}
+
+function addBuskingPhoto({ event_id, url, caption }) {
+  const next = db
+    .prepare(
+      "SELECT COALESCE(MAX(sort_order), 0) + 1 AS n FROM busking_photos WHERE event_id = ?"
+    )
+    .get(event_id).n;
+  const info = db
+    .prepare("INSERT INTO busking_photos (event_id, url, caption, sort_order) VALUES (?, ?, ?, ?)")
+    .run(event_id, url, caption || "", next);
+  return getBuskingPhoto(info.lastInsertRowid);
+}
+
+function deleteBuskingPhoto(id) {
+  db.prepare("DELETE FROM busking_photos WHERE id = ?").run(id);
+}
+
+/* ── Busking invite codes (成员登录) ───────────────────── */
+/* Same idea as the band invite codes (migration 014): the code IS the login
+   credential — there is no password. First use creates the member account and
+   binds it to the code; the same code logs it back in later. Only accounts
+   bound to a code from this table may 我要加入 a busking event. */
+
+function listBuskingInviteCodes() {
+  return db
+    .prepare(
+      `SELECT ic.*, u.nickname AS used_nickname, u.username AS used_username
+         FROM busking_invite_codes ic
+         LEFT JOIN users u ON u.id = ic.used_by
+        ORDER BY ic.id DESC`
+    )
+    .all();
+}
+
+function getBuskingInviteCode(id) {
+  return db.prepare("SELECT * FROM busking_invite_codes WHERE id = ?").get(id) || null;
+}
+
+function getBuskingInviteByCode(code) {
+  return db.prepare("SELECT * FROM busking_invite_codes WHERE code = ?").get(code) || null;
+}
+
+function createBuskingInviteCode({ code, created_by }) {
+  const info = db
+    .prepare("INSERT INTO busking_invite_codes (code, created_by) VALUES (?, ?)")
+    .run(code, created_by || null);
+  return getBuskingInviteCode(info.lastInsertRowid);
+}
+
+function deleteBuskingInviteCode(id) {
+  db.prepare("DELETE FROM busking_invite_codes WHERE id = ?").run(id);
+}
+
+function claimBuskingInvite(inviteId, userId) {
+  db.prepare(
+    "UPDATE busking_invite_codes SET used_by = ?, used_at = datetime('now') WHERE id = ?"
+  ).run(userId, inviteId);
+}
+
+/* True when the account was created by a busking invite code — the only
+   accounts allowed to 我要加入. (The admin may join anything.) */
+function isBuskingMember(userId) {
+  return !!db.prepare("SELECT 1 FROM busking_invite_codes WHERE used_by = ? LIMIT 1").get(userId);
+}
+
+function listBuskingMembers() {
+  return db
+    .prepare(
+      `SELECT u.id, u.username, u.nickname, u.email, u.instrument,
+              u.profile_complete, ic.code, ic.used_at,
+              (SELECT COUNT(*) FROM busking_joins j WHERE j.user_id = u.id) AS join_count
+         FROM busking_invite_codes ic
+         JOIN users u ON u.id = ic.used_by
+        WHERE ic.used_by IS NOT NULL
+        ORDER BY ic.used_at DESC, ic.id DESC`
+    )
+    .all();
+}
+
+/* Busking member profile: 名字 / 邮箱 / 擅长的乐器. Kept apart from
+   setUserProfile (REC HUB) because a busking member belongs to no band and
+   the instrument is what the participant list shows. */
+function setBuskingProfile(userId, { nickname, email, instrument }) {
+  db.prepare(
+    "UPDATE users SET nickname = ?, email = ?, instrument = ?, profile_complete = 1 WHERE id = ?"
+  ).run(nickname, email, instrument, userId);
+  return getUserAuth(userId);
+}
+
 /* ── Init ──────────────────────────────────────────────── */
 ensureAdmin();
 
@@ -1097,4 +1420,34 @@ module.exports = {
   getAppQr,
   retargetAppQr,
   ensureAppQr,
+  listBuskingEvents,
+  getBuskingEvent,
+  createBuskingEvent,
+  updateBuskingEvent,
+  setBuskingEventStatus,
+  deleteBuskingEvent,
+  buskingJoinCount,
+  getBuskingJoin,
+  addBuskingJoin,
+  updateBuskingJoinInstrument,
+  removeBuskingJoin,
+  listBuskingParticipants,
+  listBuskingJoinedEventIds,
+  buskingLikeCount,
+  hasBuskingLike,
+  toggleBuskingLike,
+  listBuskingLikedEventIds,
+  listBuskingPhotos,
+  getBuskingPhoto,
+  addBuskingPhoto,
+  deleteBuskingPhoto,
+  listBuskingInviteCodes,
+  getBuskingInviteCode,
+  getBuskingInviteByCode,
+  createBuskingInviteCode,
+  deleteBuskingInviteCode,
+  claimBuskingInvite,
+  isBuskingMember,
+  listBuskingMembers,
+  setBuskingProfile,
 };

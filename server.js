@@ -17,8 +17,13 @@ const publicDir = path.join(__dirname, "public");
 // console as /admin.html, just at a cleaner URL.
 const APP_PATHS = {
   "/calendar": "index.html", // FX Holiday Calendar
-  "/fx": "index.html",       // FX Market Watch
+  "/fx": "index.html",       // FX Market Watch — app switched off for now (card hidden
+                             // in index.html, no /fx entry in public/apps.js), so this
+                             // path lands on the apps gallery; the route stays live so
+                             // old QR codes / short links don't 404
   "/rec-hub": "index.html",  // REC HUB
+  "/busking": "index.html",  // 路演 — exact path only; /busking/:id stays a
+                             // share page (one activity, see renderBuskingSharePage)
   "/vinyl": "index.html",    // Vinyl Archive — exact path only; /vinyl/:slug stays a share page
   "/24-game": "index.html",  // 24 点 · 24 Game (Game gallery)
   "/sea-battle": "index.html", // 怒海战舰 · Naval Fury (Game gallery)
@@ -32,8 +37,9 @@ const APP_PATHS = {
 // codes.
 const APP_QR_TARGETS = {
   calendar: "/calendar",
-  fx: "/fx",
+  fx: "/fx", // switched-off app — entry kept so its existing short code / printed QR stays valid
   rechub: "/rec-hub",
+  busking: "/busking",
   vinyl: "/vinyl",
   game24: "/24-game",
   "sea-battle": "/sea-battle",
@@ -1004,6 +1010,118 @@ function renderRecordingSharePage(req, repo, latest) {
   return renderTrackSharePage(req, "recording", repo, latest, "/recording/" + repo.id);
 }
 
+/* ── 路演 share page (one activity) ─────────────────────────────────────
+   Every activity entry on the board has its own public page at /busking/:id
+   (the 分享 ↗ button in public/busking.js hands this path to the share
+   dialog).  Same contract as the other share pages: complete HTML without
+   JavaScript and og: tags for the WeChat preview card.  Drafts never render —
+   the route 404s them, so an activity is shareable only once it is published.
+
+   og:image is the first 精彩回顾 photo (the same cover the board card uses);
+   an activity that has no photo yet shares as a text-only card, exactly like
+   a blog post without a cover.  The CTA points back into the app at
+   /busking?e=<id> — busking.js opens straight on that activity. */
+function renderBuskingSharePage(req, event) {
+  const joined = Number(event.join_count) || 0;
+  const capacity = Number(event.capacity) || 0;
+  const seats = capacity > 0 ? `${joined} / ${capacity} 人` : "不限人数";
+  const seatsLeft = capacity > 0 ? capacity - joined : 0;
+  const isFull = capacity > 0 && seatsLeft <= 0;
+  const statusText =
+    event.status === "published" ? "报名中" : event.status === "finished" ? "已收官" : "草稿";
+  const style = String(event.style || "").trim();
+  const timeSlot = String(event.time_slot || "").trim() || "待定";
+  const venue = String(event.location || "").trim() || "待定";
+  const title = `路演 · ${event.title}`;
+  const description =
+    [style, timeSlot, venue, seats].filter(Boolean).join(" · ") || "路演招募板 · 一起上台，街头见 🎶";
+
+  const photos = db.listBuskingPhotos(event.id);
+  const hero = photos[0] || null; // also the og:image / board-card cover
+  const gallery = photos.slice(1);
+  const participants = db.listBuskingParticipants(event.id).map((p) => ({
+    name: String(p.nickname || p.username || "").trim(),
+    instrument: String(p.instrument || p.profile_instrument || "").trim(),
+  }));
+
+  const head = renderSharePageHead({
+    req,
+    kind: "busking",
+    id: event.id,
+    title,
+    description,
+    image: hero ? hero.url : "",
+    type: "article",
+    url: "/busking/" + event.id,
+  });
+
+  const people = participants
+    .map(
+      (p) =>
+        `        <li class="busk-share-person"><span class="busk-share-who">${escHtml(p.name)}</span>` +
+        (p.instrument ? `<span class="busk-share-inst">${escHtml(p.instrument)}</span>` : "") +
+        "</li>"
+    )
+    .join("\n");
+
+  const galleryHtml = gallery
+    .map(
+      (p) =>
+        `        <figure class="busk-share-photo"><img src="${escHtml(p.url)}" alt="${escHtml(
+          p.caption || event.title
+        )}" loading="lazy" />` +
+        (p.caption ? `<figcaption>${escHtml(p.caption)}</figcaption>` : "") +
+        "</figure>"
+    )
+    .join("\n");
+
+  return (
+    head +
+    '  <div class="share-page share-page-busk">\n' +
+    "    <header class=\"share-head\">\n" +
+    `      <a class="share-brand" href="/">${SITE_NAME}</a>\n` +
+    `      <span class="share-meta">路演 · <span class="busk-share-likes">♥ ${Number(event.like_count) || 0}</span></span>\n` +
+    "    </header>\n" +
+    '    <article class="busk-share-card">\n' +
+    (hero
+      ? `      <img class="busk-share-cover" src="${escHtml(hero.url)}" alt="${escHtml(
+          hero.caption || event.title
+        )}" />\n`
+      : "") +
+    `      <h1 class="share-title">${escHtml(event.title)}</h1>\n` +
+    '      <p class="busk-share-badges">' +
+    `<span class="busk-share-badge busk-share-badge-${escHtml(event.status)}">${escHtml(statusText)}</span>` +
+    (isFull ? '<span class="busk-share-badge busk-share-badge-full">已满员</span>' : "") +
+    (style ? `<span class="busk-share-style">${escHtml(style)}</span>` : "") +
+    "</p>\n" +
+    '      <ul class="busk-share-meta">\n' +
+    `        <li><b>时间段</b><span>${escHtml(timeSlot)}</span></li>\n` +
+    `        <li><b>地点</b><span>${escHtml(venue)}</span></li>\n` +
+    `        <li><b>人数</b><span>${escHtml(seats)}${
+      isFull ? "（已满）" : capacity > 0 ? `（还差 ${seatsLeft} 位）` : ""
+    }</span></li>\n` +
+    "      </ul>\n" +
+    (people
+      ? '      <h2 class="busk-share-subtitle">演出名单 · Participants</h2>\n' +
+        `      <ul class="busk-share-people">\n${people}\n      </ul>\n`
+      : "") +
+    (galleryHtml
+      ? '      <h2 class="busk-share-subtitle">精彩回顾 · Highlights</h2>\n' +
+        `      <div class="busk-share-gallery">\n${galleryHtml}\n      </div>\n`
+      : "") +
+    `      <a class="busk-share-cta" href="/busking?e=${event.id}">打开路演看详情 / 我要加入 →</a>\n` +
+    '      <p class="busk-share-note">想上台？在 App 里用邀请码登录，登记名字和擅长的乐器后就能报名 🎶</p>\n' +
+    "    </article>\n" +
+    "    <footer class=\"share-foot\">\n" +
+    `      <span class="share-stat">路演 · ${escHtml(statusText)}</span>\n` +
+    `      <span class="share-from">from <a href="/">${escHtml(siteHost(req))}</a></span>\n` +
+    `      <a href="/">返回 ${SITE_NAME} →</a>\n` +
+    "    </footer>\n" +
+    "  </div>\n" +
+    "</body>\n</html>\n"
+  );
+}
+
 // ─── Vinyl Archive (黑胶档案) ─────────────────────────────────────────
 /* Normalized public shape for a vinyl_records row (parses tracks_json). */
 function publicVinylRow(row) {
@@ -1469,7 +1587,9 @@ function makeInviteCode() {
     for (let i = 0; i < 8; i++) {
       code += INVITE_ALPHABET[crypto.randomInt(INVITE_ALPHABET.length)];
     }
-    if (!db.getInviteByCode(code)) return code;
+    // Both invite tables derive the member username from the code, so a new
+    // code must be free in either of them (band invites + busking invites).
+    if (!db.getInviteByCode(code) && !db.getBuskingInviteByCode(code)) return code;
   }
   throw new Error("Could not generate a unique invite code");
 }
@@ -1547,6 +1667,46 @@ async function handleApi(req, res, urlPath) {
       user,
       first_login: firstLogin,
     });
+  }
+
+  // Busking member login (路演) — same invite-code-is-the-credential
+  // idea, but scoped to `busking_invite_codes` and bound to no band: the code
+  // only grants the right to 我要加入 busking activities. The profile form
+  // (名字 / 邮箱 / 擅长的乐器) follows via POST /api/busking/profile.
+  if (urlPath === "/api/busking/invite-login" && req.method === "POST") {
+    const body = await readBody(req);
+    const code = cleanText(body.code, 64);
+    if (!code) {
+      return json(res, 400, { error: "邀请码不能为空（Invite code is required）" });
+    }
+    const key = loginKey(req, "busking:" + code);
+    const lim = checkLoginRate(key);
+    if (!lim.ok) {
+      const minutes = Math.ceil(lim.retryAfter / 60) || 1;
+      return json(res, 429, {
+        error: `尝试次数太多啦，请 ${minutes} 分钟后再试 🎶`,
+      });
+    }
+    const invite = db.getBuskingInviteByCode(code);
+    if (!invite) {
+      recordLoginFailure(key);
+      return json(res, 401, { error: "这个邀请码无效，找管理员确认一下哦 🎶" });
+    }
+    let user;
+    let firstLogin = false;
+    if (invite.used_by) {
+      user = db.getUserAuth(invite.used_by);
+      if (!user) {
+        recordLoginFailure(key);
+        return json(res, 401, { error: "这个邀请码已经失效了 🎶" });
+      }
+    } else {
+      firstLogin = true;
+      user = db.getUserAuth(db.createUserFromInvite(code).id);
+      db.claimBuskingInvite(invite.id, user.id);
+      user = db.getUserAuth(user.id);
+    }
+    return json(res, 200, { token: signToken(user), user, first_login: firstLogin });
   }
 
   if (urlPath === "/api/auth/me" && req.method === "GET") {
@@ -1712,6 +1872,311 @@ async function handleApi(req, res, urlPath) {
     if (!requireAdmin()) return;
     const users = db.listUsers().map((u) => ({ ...u, bands: db.listUserBands(u.id) }));
     return json(res, 200, { users });
+  }
+
+  // ── 路演 (Apps → 路演) ─────────────────────────────────
+  // A public street-gig board. The admin creates an activity (主题 / 风格 /
+  // 人数 / 时间段 / 地点) and publishes it; from then on anybody can read it
+  // and 喜欢 (like) it — likes are anonymous and deduped per visitor. 我要加入
+  // (join) needs a member account created from a Busking invite code and stops
+  // at the capacity with a polite "full" reply instead of a harsh error. The
+  // participant list (name + instrument) and the post-event highlight photos
+  // stay public.
+  const buskingStatusOf = (v) => (["draft", "published", "finished"].includes(v) ? v : "draft");
+
+  // Who is liking: the account itself when signed in ('u<id>', stable across
+  // devices), otherwise an opaque per-browser id the app keeps locally.
+  const buskingVisitorOf = (body, url) => {
+    if (authUser) return "u" + authUser.id;
+    const raw = body ? body.visitor : url ? url.searchParams.get("visitor") : "";
+    return cleanText(raw, 64);
+  };
+
+  const buskingIsAdmin = () => !!(authUser && authUser.is_admin && !authUser.must_change_password);
+
+  // One event, shaped for the caller: counts, whether they joined, the public
+  // participant list (name + instrument — never the email) and the photos.
+  const buskingPayload = (event, visitor) => ({
+    event: {
+      ...event,
+      is_full: event.capacity > 0 && event.join_count >= event.capacity,
+      joined: authUser ? !!db.getBuskingJoin(event.id, authUser.id) : false,
+    },
+    participants: db.listBuskingParticipants(event.id).map((p) => ({
+      user_id: p.user_id,
+      name: p.nickname || p.username,
+      instrument: p.instrument || p.profile_instrument || "",
+    })),
+    photos: db.listBuskingPhotos(event.id),
+    liked: visitor ? db.hasBuskingLike(event.id, visitor) : false,
+    like_count: event.like_count,
+    is_admin: buskingIsAdmin(),
+    is_member: authUser ? db.isBuskingMember(authUser.id) : false,
+  });
+
+  // The board. Drafts only show up for the admin (who edits them).
+  if (urlPath === "/api/busking/events" && req.method === "GET") {
+    const url = new URL(req.url, "http://localhost");
+    const visitor = buskingVisitorOf(null, url);
+    const joinedIds = new Set(authUser ? db.listBuskingJoinedEventIds(authUser.id) : []);
+    const likedIds = new Set(db.listBuskingLikedEventIds(visitor));
+    const events = db.listBuskingEvents({ includeDrafts: buskingIsAdmin() }).map((e) => ({
+      ...e,
+      is_full: e.capacity > 0 && e.join_count >= e.capacity,
+      joined: joinedIds.has(e.id),
+      liked: likedIds.has(e.id),
+    }));
+    return json(res, 200, {
+      events,
+      is_admin: buskingIsAdmin(),
+      is_member: authUser ? db.isBuskingMember(authUser.id) : false,
+    });
+  }
+
+  // Who am I, for this app? (guest / member / admin) — the app's boot call.
+  if (urlPath === "/api/busking/me" && req.method === "GET") {
+    if (!requireAuth()) return;
+    return json(res, 200, {
+      user: authUser,
+      is_admin: buskingIsAdmin(),
+      is_member: db.isBuskingMember(authUser.id),
+    });
+  }
+
+
+  // Busking member profile — 名字 / 邮箱 / 擅长的乐器. Required pieces of the
+  // member identity: the instrument is what the public participant list shows.
+  if (urlPath === "/api/busking/profile" && req.method === "POST") {
+    if (!requireAuth()) return;
+    const body = await readBody(req);
+    const nickname = cleanText(body.nickname, 60);
+    const email = String(body.email || "").trim().toLowerCase();
+    const instrument = cleanText(body.instrument, 60);
+    if (!nickname) return json(res, 400, { error: "请写下你的名字（Name）🎶" });
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email)) {
+      return json(res, 400, { error: "请填写有效的邮箱地址（Email）🎶" });
+    }
+    if (!instrument) return json(res, 400, { error: "请写下你擅长的乐器（Instrument）🎶" });
+    const user = db.setBuskingProfile(authUser.id, { nickname, email, instrument });
+    return json(res, 200, { user });
+  }
+
+  // A single event (public once published; drafts are admin-only).
+  const buskingEventMatch = urlPath.match(/^\/api\/busking\/events\/(\d+)$/);
+  if (buskingEventMatch) {
+    const id = Number(buskingEventMatch[1]);
+    const event = db.getBuskingEvent(id);
+    if (!event || (event.status === "draft" && !buskingIsAdmin())) {
+      return json(res, 404, { error: "活动不存在（Activity not found）" });
+    }
+
+    if (req.method === "GET") {
+      const url = new URL(req.url, "http://localhost");
+      return json(res, 200, buskingPayload(event, buskingVisitorOf(null, url)));
+    }
+
+    if (req.method === "PUT" || req.method === "PATCH") {
+      if (!requireAdmin()) return;
+      const body = await readBody(req);
+      const title = cleanText(body.title, 80);
+      if (!title) return json(res, 400, { error: "主题（Title）不能为空" });
+      const updated = db.updateBuskingEvent(id, {
+        title,
+        style: cleanText(body.style, 60),
+        capacity: body.capacity,
+        time_slot: cleanText(body.time_slot, 120),
+        location: cleanText(body.location, 120),
+        status: buskingStatusOf(body.status),
+      });
+      return json(res, 200, { event: updated });
+    }
+
+    if (req.method === "DELETE") {
+      if (!requireAdmin()) return;
+      db.deleteBuskingEvent(id);
+      return json(res, 200, { ok: true });
+    }
+  }
+
+  // Publish / finish / re-open an activity (admin console & app both use it).
+  const buskingStatusMatch = urlPath.match(/^\/api\/busking\/events\/(\d+)\/status$/);
+  if (buskingStatusMatch && req.method === "POST") {
+    if (!requireAdmin()) return;
+    const body = await readBody(req);
+    const event = db.setBuskingEventStatus(
+      Number(buskingStatusMatch[1]),
+      buskingStatusOf(body.status)
+    );
+    if (!event) return json(res, 404, { error: "活动不存在（Activity not found）" });
+    return json(res, 200, { event });
+  }
+
+  // 喜欢 — open to everyone, no login needed (one like per visitor/account).
+  const buskingLikeMatch = urlPath.match(/^\/api\/busking\/events\/(\d+)\/like$/);
+  if (buskingLikeMatch && req.method === "POST") {
+    const event = db.getBuskingEvent(Number(buskingLikeMatch[1]));
+    if (!event || (event.status === "draft" && !buskingIsAdmin())) {
+      return json(res, 404, { error: "活动不存在（Activity not found）" });
+    }
+    const body = await readBody(req);
+    const visitor = buskingVisitorOf(body, null);
+    if (!visitor) return json(res, 400, { error: "Missing visitor id" });
+    return json(res, 200, db.toggleBuskingLike(event.id, visitor));
+  }
+
+  // 我要加入 — members only (invite-code account), capped by the capacity.
+  // Every rejection keeps a friendly, apologetic tone (婉约拒绝).
+  const buskingJoinMatch = urlPath.match(/^\/api\/busking\/events\/(\d+)\/join$/);
+  if (buskingJoinMatch && req.method === "POST") {
+    if (!requireAuth()) return;
+    const event = db.getBuskingEvent(Number(buskingJoinMatch[1]));
+    if (!event) return json(res, 404, { error: "活动不存在（Activity not found）" });
+    if (!buskingIsAdmin() && !db.isBuskingMember(authUser.id)) {
+      return json(res, 403, {
+        code: "BUSKING_MEMBER_REQUIRED",
+        error:
+          "加入这一场需要路演邀请码登录的成员身份哦 —— 找管理员要一个邀请码，" +
+          "我们很想在台上见到你 🎶",
+      });
+    }
+    if (event.status === "finished") {
+      return json(res, 409, {
+        code: "BUSKING_FINISHED",
+        error: "这一场已经顺利收官啦，谢谢你的心意 —— 精彩回顾就在下面 🎶",
+      });
+    }
+    if (event.status !== "published") {
+      return json(res, 409, {
+        code: "BUSKING_NOT_OPEN",
+        error: "这一场还没开始报名，再等我们一下下 🎶",
+      });
+    }
+    const body = await readBody(req);
+    const instrument = cleanText(body.instrument, 60) || cleanText(authUser.instrument, 60);
+    if (!instrument) {
+      return json(res, 400, {
+        code: "BUSKING_INSTRUMENT_REQUIRED",
+        error: "先写下你负责的乐器吧（吉他 / 鼓 / 贝斯 / 主唱…），这样大家才知道谁带哪个声部 🎶",
+      });
+    }
+    const existing = db.getBuskingJoin(event.id, authUser.id);
+    if (!existing) {
+      if (event.capacity > 0 && db.buskingJoinCount(event.id) >= event.capacity) {
+        return json(res, 409, {
+          code: "BUSKING_FULL",
+          error:
+            `抱歉，这一场「${event.title}」的名额已经满啦 —— 谢谢你这么想来，` +
+            "下一场我们一定先给你留个位置 🎶",
+        });
+      }
+      db.addBuskingJoin(event.id, authUser.id, instrument);
+    } else if (existing.instrument !== instrument) {
+      db.updateBuskingJoinInstrument(event.id, authUser.id, instrument);
+    }
+    const payload = buskingPayload(db.getBuskingEvent(event.id), buskingVisitorOf(body, null));
+    return json(res, 200, {
+      ...payload,
+      joined_message: existing
+        ? "你已经在名单里啦，随时可以来排练 🎶"
+        : "欢迎加入！到时候见，记得带上你的乐器 🎶",
+    });
+  }
+
+  // 退出 — a member may always take their name off the list (no hard feelings).
+  const buskingLeaveMatch = urlPath.match(/^\/api\/busking\/events\/(\d+)\/leave$/);
+  if (buskingLeaveMatch && req.method === "POST") {
+    if (!requireAuth()) return;
+    const event = db.getBuskingEvent(Number(buskingLeaveMatch[1]));
+    if (!event) return json(res, 404, { error: "活动不存在（Activity not found）" });
+    db.removeBuskingJoin(event.id, authUser.id);
+    const body = await readBody(req);
+    return json(res, 200, {
+      ...buskingPayload(db.getBuskingEvent(event.id), buskingVisitorOf(body, null)),
+      left_message: "已把名字从名单上拿下来了，下一次再一起 🎶",
+    });
+  }
+
+  // ── Busking admin: activities ─────────────────────────
+  // Create an activity — published straight away, or saved as a draft.
+  if (urlPath === "/api/busking/events" && req.method === "POST") {
+    if (!requireAdmin()) return;
+    const body = await readBody(req);
+    const title = cleanText(body.title, 80);
+    if (!title) return json(res, 400, { error: "主题（Title）不能为空" });
+    const event = db.createBuskingEvent({
+      title,
+      style: cleanText(body.style, 60),
+      capacity: body.capacity,
+      time_slot: cleanText(body.time_slot, 120),
+      location: cleanText(body.location, 120),
+      status: buskingStatusOf(body.status),
+      created_by: authUser.id,
+    });
+    return json(res, 201, { event });
+  }
+
+  // 精彩回顾 — highlight photos of a finished event (uploaded to /photo/…).
+  const buskingPhotoAddMatch = urlPath.match(/^\/api\/busking\/events\/(\d+)\/photos$/);
+  if (buskingPhotoAddMatch && req.method === "POST") {
+    if (!requireAdmin()) return;
+    const event = db.getBuskingEvent(Number(buskingPhotoAddMatch[1]));
+    if (!event) return json(res, 404, { error: "活动不存在（Activity not found）" });
+    const body = await readBody(req);
+    const url = cleanText(body.url, 600);
+    if (!new RegExp("^" + PHOTO_URL_PREFIX + "[A-Za-z0-9._-]+$").test(url)) {
+      return json(res, 400, {
+        error: "请先用上传按钮把图片传到本站（只接受 /photo/ 开头的图片地址）",
+      });
+    }
+    const photo = db.addBuskingPhoto({
+      event_id: event.id,
+      url,
+      caption: cleanText(body.caption, 120),
+    });
+    return json(res, 201, { photo });
+  }
+
+  const buskingPhotoMatch = urlPath.match(/^\/api\/busking\/photos\/(\d+)$/);
+  if (buskingPhotoMatch && req.method === "DELETE") {
+    if (!requireAdmin()) return;
+    const photo = db.getBuskingPhoto(Number(buskingPhotoMatch[1]));
+    if (!photo) return json(res, 404, { error: "Photo not found" });
+    db.deleteBuskingPhoto(photo.id);
+    return json(res, 200, { ok: true });
+  }
+
+  // ── Busking admin: invite codes (成员登录) ─────────────
+  if (urlPath === "/api/admin/busking/invites" && req.method === "GET") {
+    if (!requireAdmin()) return;
+    return json(res, 200, { invites: db.listBuskingInviteCodes() });
+  }
+
+  if (urlPath === "/api/admin/busking/invites" && req.method === "POST") {
+    if (!requireAdmin()) return;
+    const body = await readBody(req);
+    const n = Math.min(Math.max(parseInt(body.count, 10) || 1, 1), 20);
+    const invites = [];
+    for (let i = 0; i < n; i++) {
+      invites.push(
+        db.createBuskingInviteCode({ code: makeInviteCode(), created_by: authUser.id })
+      );
+    }
+    return json(res, 201, { invites });
+  }
+
+  const buskingInviteDeleteMatch = urlPath.match(/^\/api\/admin\/busking\/invites\/(\d+)$/);
+  if (buskingInviteDeleteMatch && req.method === "DELETE") {
+    if (!requireAdmin()) return;
+    const invite = db.getBuskingInviteCode(Number(buskingInviteDeleteMatch[1]));
+    if (!invite) return json(res, 404, { error: "Invite not found" });
+    db.deleteBuskingInviteCode(invite.id);
+    return json(res, 200, { ok: true });
+  }
+
+  // Busking members (the accounts behind the invite codes) + their instrument.
+  if (urlPath === "/api/admin/busking/members" && req.method === "GET") {
+    if (!requireAdmin()) return;
+    return json(res, 200, { members: db.listBuskingMembers() });
   }
 
   // ── Photo upload (raw binary image body) ─────────────
@@ -2643,6 +3108,17 @@ const server = http.createServer((req, res) => {
   // authenticated request. Unauth'd traffic (login, public reads, proxies)
   // still goes through the full host gate.
   if (urlPath.startsWith("/api/")) {
+    // Every rejected API call leaves one line in the log. This is what tells a
+    // browser's bare "Failed to fetch" apart from a request the app itself
+    // turned down: if the call the user made is NOT in this log, it never
+    // reached the process (server stopped/restarted, page opened as a file://
+    // URL, proxy or network dropped it).
+    res.on("finish", () => {
+      if (res.statusCode >= 400) {
+        console.log(`[api] ${req.method} ${urlPath} → ${res.statusCode}`);
+      }
+    });
+
     const authHeader = req.headers.authorization || "";
     const hasValidJwt =
       authHeader.startsWith("Bearer ") && verifyToken(authHeader.slice(7)) !== null;
@@ -2869,6 +3345,23 @@ const server = http.createServer((req, res) => {
     const latest = db.getLatestTaggedCommit(repo.id);
     res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
     res.end(renderRecordingSharePage(req, repo, latest));
+    return;
+  }
+
+  // 路演 share page — one activity at /busking/:id, handed out by the
+  // 分享 ↗ button on every board card / detail (public/busking.js).  Drafts
+  // are not shareable: they have no public page until the admin publishes
+  // them, so they 404 here.  /busking itself stays the app shell (APP_PATHS).
+  const buskShare = urlPath.match(/^\/busking\/(\d+)$/);
+  if (buskShare && req.method === "GET") {
+    const event = db.getBuskingEvent(Number(buskShare[1]));
+    if (!event || event.status === "draft") {
+      res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
+      res.end("Not Found");
+      return;
+    }
+    res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+    res.end(renderBuskingSharePage(req, event));
     return;
   }
 

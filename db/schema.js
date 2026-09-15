@@ -135,6 +135,8 @@ function detectBaselineVersion(db) {
   if (tableExists(db, "vinyl_records")) version = Math.max(version, 12);
   // 014_add_bands_invites.sql → bands (band-based REC HUB membership)
   if (tableExists(db, "bands")) version = Math.max(version, 14);
+  // 017_add_busking.sql → busking_events (路演 board)
+  if (tableExists(db, "busking_events")) version = Math.max(version, 17);
   return version;
 }
 

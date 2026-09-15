@@ -4053,3 +4053,681 @@ body.game-standalone #game-detail {
 }
 
 
+
+/* ── 路演 ───────────────────────────────────────────────── */
+/* The board card thumbnail: a warm street-lamp glow over a guitar case with a
+   small crowd in front of it — 街头演出, not a concert hall. */
+.thumb-busking {
+  position: relative;
+  overflow: hidden;
+  justify-content: flex-end;
+  gap: 0.35rem;
+  background: radial-gradient(circle at 50% 118%, rgba(255, 179, 71, 0.28), rgba(10, 16, 40, 0.95) 70%);
+}
+
+.thumb-busk-lamp {
+  position: absolute;
+  top: -10px;
+  left: 50%;
+  width: 78px;
+  height: 78px;
+  margin-left: -39px;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(255, 213, 140, 0.9) 0%, rgba(255, 179, 71, 0) 70%);
+  animation: buskGlow 3.4s ease-in-out infinite;
+}
+
+.thumb-busk-case {
+  width: 48px;
+  height: 24px;
+  border-radius: 8px 8px 4px 4px;
+  background: linear-gradient(180deg, #8a5a2b, #57351a);
+  border: 1px solid rgba(255, 205, 120, 0.45);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+  z-index: 1;
+}
+
+.thumb-busk-crowd {
+  display: flex;
+  align-items: flex-end;
+  gap: 5px;
+  height: 18px;
+  z-index: 1;
+}
+
+.thumb-busk-crowd i {
+  width: 6px;
+  height: 13px;
+  border-radius: 3px 3px 0 0;
+  background: rgba(255, 255, 255, 0.32);
+}
+
+.thumb-busk-crowd i:nth-child(2) {
+  height: 18px;
+  background: rgba(255, 255, 255, 0.5);
+}
+
+.thumb-busking-label {
+  font-size: 0.56rem;
+  letter-spacing: 0.16em;
+  color: rgba(255, 213, 140, 0.92);
+  z-index: 1;
+}
+
+.thumb-busk-note {
+  position: absolute;
+  top: 24px;
+  left: 24px;
+  font-size: 0.85rem;
+  color: #ffd479;
+  animation: buskFloat 3s ease-in-out infinite;
+}
+
+.thumb-busk-note2 {
+  top: 46px;
+  left: auto;
+  right: 22px;
+  animation-delay: -1.3s;
+}
+
+@keyframes buskGlow {
+  0%, 100% { opacity: 0.55; transform: scale(0.94); }
+  50%      { opacity: 0.95; transform: scale(1.06); }
+}
+
+@keyframes buskFloat {
+  0%, 100% { transform: translateY(0); opacity: 0.5; }
+  50%      { transform: translateY(-6px); opacity: 1; }
+}
+
+.busking-root {
+  color: rgba(255, 255, 255, 0.88);
+  font-size: 0.92rem;
+}
+
+.busk-toolbar {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  margin-bottom: 1.1rem;
+}
+
+.busk-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+}
+
+.busk-bar-title {
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: #ffd479;
+}
+
+.busk-chip {
+  border-radius: 999px;
+  padding: 0.2rem 0.7rem;
+  font-size: 0.75rem;
+  color: rgba(255, 255, 255, 0.75);
+  background: rgba(255, 255, 255, 0.07);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+}
+
+.busk-chip.is-member {
+  color: #ffd479;
+  border-color: rgba(255, 212, 121, 0.45);
+  background: rgba(255, 212, 121, 0.1);
+}
+
+.busk-login {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  flex-wrap: wrap;
+}
+
+.busk-hint {
+  color: rgba(255, 255, 255, 0.55);
+  font-size: 0.82rem;
+  line-height: 1.6;
+  margin: 0;
+}
+
+.busk-hint-inline {
+  color: rgba(255, 255, 255, 0.6);
+  font-size: 0.8rem;
+}
+
+.busk-error {
+  color: #ff8f8a;
+  font-size: 0.82rem;
+  margin: 0 0 0.4rem;
+}
+
+.busk-empty {
+  padding: 1.6rem 0.5rem;
+  text-align: center;
+  color: rgba(255, 255, 255, 0.42);
+  font-size: 0.9rem;
+}
+
+
+.busk-notice {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.6rem;
+  border-radius: 10px;
+  padding: 0.6rem 0.8rem;
+  font-size: 0.85rem;
+  line-height: 1.55;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.busk-notice-ok {
+  border-color: rgba(126, 200, 227, 0.45);
+  background: rgba(126, 200, 227, 0.12);
+}
+
+.busk-notice-warn {
+  border-color: rgba(255, 179, 71, 0.5);
+  background: rgba(255, 179, 71, 0.12);
+  color: #ffd9a6;
+}
+
+.busk-notice-error {
+  border-color: rgba(255, 95, 86, 0.5);
+  background: rgba(255, 95, 86, 0.12);
+  color: #ffb3ae;
+}
+
+.busk-notice-close {
+  margin-left: auto;
+  background: none;
+  border: none;
+  color: inherit;
+  opacity: 0.6;
+  font-size: 1rem;
+  cursor: pointer;
+  line-height: 1;
+}
+
+.busk-notice-close:hover {
+  opacity: 1;
+}
+
+/* ── the recruitment board ─────────────────────────────── */
+.busk-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+  gap: 0.9rem;
+}
+
+.busk-card {
+  display: flex;
+  flex-direction: column;
+  border-radius: 12px;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.045);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  transition: border-color 0.18s ease, transform 0.14s ease;
+}
+
+.busk-card[data-busk-act="open"] {
+  cursor: pointer;
+}
+
+.busk-card[data-busk-act="open"]:hover {
+  border-color: rgba(255, 212, 121, 0.45);
+  transform: translateY(-2px);
+}
+
+.busk-cover {
+  width: 100%;
+  height: 120px;
+  object-fit: cover;
+  display: block;
+}
+
+.busk-cover-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.6rem;
+  color: rgba(255, 212, 121, 0.7);
+  background: radial-gradient(circle at 50% 120%, rgba(255, 179, 71, 0.22), rgba(10, 16, 40, 0.9));
+}
+
+.busk-card-body {
+  padding: 0.7rem 0.8rem 0.8rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  flex: 1;
+}
+
+.busk-card-head {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+}
+
+.busk-card-title {
+  margin: 0;
+  font-size: 0.95rem;
+  color: #fff;
+  flex: 1;
+  min-width: 0;
+}
+
+.busk-card-style {
+  margin: 0;
+  font-size: 0.78rem;
+  color: rgba(255, 212, 121, 0.9);
+}
+
+.busk-card-foot {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: auto;
+}
+
+.busk-badge {
+  font-size: 0.68rem;
+  letter-spacing: 0.06em;
+  border-radius: 999px;
+  padding: 0.12rem 0.5rem;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  color: rgba(255, 255, 255, 0.8);
+  white-space: nowrap;
+}
+
+.busk-badge-published {
+  color: #9be29b;
+  border-color: rgba(155, 226, 155, 0.4);
+  background: rgba(155, 226, 155, 0.1);
+}
+
+.busk-badge-finished {
+  color: #bcd4ff;
+  border-color: rgba(188, 212, 255, 0.35);
+  background: rgba(188, 212, 255, 0.1);
+}
+
+.busk-badge-draft {
+  color: rgba(255, 255, 255, 0.55);
+}
+
+.busk-badge-full {
+  color: #ffb3ae;
+  border-color: rgba(255, 95, 86, 0.45);
+  background: rgba(255, 95, 86, 0.12);
+}
+
+.busk-meta {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  font-size: 0.78rem;
+  color: rgba(255, 255, 255, 0.65);
+}
+
+.busk-meta-lg {
+  font-size: 0.86rem;
+  gap: 0.35rem;
+  margin: 0 0 0.9rem;
+}
+
+.busk-meta-lg b {
+  color: rgba(255, 212, 121, 0.95);
+  font-weight: 600;
+}
+
+
+/* ── like / join / admin actions ───────────────────────── */
+.busk-like {
+  background: transparent;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  color: rgba(255, 255, 255, 0.75);
+  border-radius: 999px;
+  padding: 0.3rem 0.7rem;
+  font-size: 0.8rem;
+  cursor: pointer;
+  transition: color 0.16s ease, border-color 0.16s ease, transform 0.12s ease;
+}
+
+.busk-like:hover {
+  color: #ff9ec4;
+  border-color: rgba(255, 158, 196, 0.5);
+}
+
+.busk-like.is-liked {
+  color: #ff6b9d;
+  border-color: rgba(255, 107, 157, 0.55);
+  background: rgba(255, 107, 157, 0.1);
+}
+
+.busk-like:active {
+  transform: scale(0.96);
+}
+
+.busk-like-lg {
+  font-size: 0.88rem;
+  padding: 0.45rem 1rem;
+}
+
+/* 分享 ↗ — one per activity entry (board card + detail view, see shareEvent in
+   busking.js): opens the site share dialog for the activity's own page
+   /busking/:id. Same pill shape as ♡ 喜欢 so the card foot reads evenly. */
+.busk-share {
+  background: transparent;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  color: rgba(255, 255, 255, 0.75);
+  border-radius: 999px;
+  padding: 0.3rem 0.7rem;
+  font-size: 0.8rem;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: color 0.16s ease, border-color 0.16s ease, transform 0.12s ease;
+}
+
+.busk-share:hover {
+  color: #ffd479;
+  border-color: rgba(255, 212, 121, 0.55);
+}
+
+.busk-share:active {
+  transform: scale(0.96);
+}
+
+.busk-share-lg {
+  font-size: 0.88rem;
+  padding: 0.45rem 1rem;
+}
+
+.busk-joined {
+  font-size: 0.76rem;
+  color: #9be29b;
+}
+
+.busk-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  flex-wrap: wrap;
+  padding: 0.7rem 0;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  margin-bottom: 1rem;
+}
+
+.busk-admin-acts {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  flex-wrap: wrap;
+  margin-left: auto;
+}
+
+.busk-join-inline {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+}
+
+/* The danger button lives here (Busking deletes activities and photos). */
+.rc-btn-danger {
+  background: rgba(224, 36, 94, 0.16);
+  border-color: rgba(255, 95, 86, 0.5);
+  color: #ffb3ae;
+}
+
+.rc-btn-danger:hover {
+  background: rgba(224, 36, 94, 0.3);
+}
+
+.busk-input {
+  background: rgba(10, 16, 40, 0.85);
+  border: 1px solid rgba(126, 200, 227, 0.3);
+  border-radius: 8px;
+  padding: 0.42rem 0.65rem;
+  color: #fff;
+  font-size: 0.85rem;
+  font-family: inherit;
+  min-width: 0;
+}
+
+.busk-input:focus {
+  outline: none;
+  border-color: rgba(255, 212, 121, 0.6);
+}
+
+/* ── one activity in detail ────────────────────────────── */
+.busk-detail {
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.04);
+  padding: 0.9rem 1rem 1.1rem;
+}
+
+.busk-back {
+  background: none;
+  border: none;
+  color: rgba(126, 200, 227, 0.95);
+  font-size: 0.82rem;
+  cursor: pointer;
+  padding: 0 0 0.6rem;
+}
+
+.busk-back:hover {
+  color: #fff;
+}
+
+.busk-detail-head {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.6rem;
+}
+
+.busk-detail-head h4 {
+  margin: 0;
+  font-size: 1.1rem;
+  color: #ffd479;
+}
+
+.busk-badges {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+}
+
+.busk-when {
+  font-size: 0.7rem;
+  color: rgba(255, 255, 255, 0.4);
+}
+
+.busk-subtitle {
+  margin: 0 0 0.5rem;
+  font-size: 0.86rem;
+  letter-spacing: 0.04em;
+  color: rgba(255, 212, 121, 0.95);
+}
+
+
+/* ── 名单 (participants) ───────────────────────────────── */
+.busk-people {
+  list-style: none;
+  margin: 0 0 1.1rem;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 0.4rem;
+}
+
+.busk-people li {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  border-radius: 8px;
+  padding: 0.35rem 0.6rem;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  font-size: 0.84rem;
+}
+
+.busk-people-idx {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.7rem;
+  color: #0a1028;
+  background: rgba(255, 212, 121, 0.9);
+  flex: none;
+}
+
+.busk-people-name {
+  color: #fff;
+}
+
+.busk-people-inst {
+  margin-left: auto;
+  font-size: 0.75rem;
+  color: rgba(126, 200, 227, 0.95);
+}
+
+/* ── 精彩回顾 (highlights) ─────────────────────────────── */
+.busk-gallery {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 0.7rem;
+  margin-bottom: 1rem;
+}
+
+.busk-photo {
+  position: relative;
+  margin: 0;
+  border-radius: 10px;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(0, 0, 0, 0.3);
+}
+
+.busk-photo img {
+  width: 100%;
+  height: 130px;
+  object-fit: cover;
+  display: block;
+}
+
+.busk-photo figcaption {
+  font-size: 0.75rem;
+  color: rgba(255, 255, 255, 0.7);
+  padding: 0.35rem 0.5rem;
+}
+
+.busk-photo-del {
+  position: absolute;
+  top: 5px;
+  right: 5px;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  border: none;
+  cursor: pointer;
+  background: rgba(0, 0, 0, 0.6);
+  color: #ffb3ae;
+  font-size: 0.9rem;
+  line-height: 1;
+}
+
+.busk-photo-del:hover {
+  background: rgba(224, 36, 94, 0.85);
+  color: #fff;
+}
+
+.busk-photo-form {
+  margin-top: 0.6rem;
+  padding-top: 0.8rem;
+  border-top: 1px dashed rgba(255, 255, 255, 0.14);
+}
+
+.busk-photo-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.4rem;
+}
+
+.busk-photo-row input[type="file"] {
+  font-size: 0.78rem;
+  color: rgba(255, 255, 255, 0.7);
+  max-width: 260px;
+}
+
+.busk-photo-row .busk-input {
+  flex: 1;
+  min-width: 160px;
+}
+
+/* ── member profile + the publish form ─────────────────── */
+.busk-card.busk-profile-card,
+.busk-card.busk-new-card {
+  padding: 0.9rem 1rem 1rem;
+  margin-bottom: 1rem;
+  border-color: rgba(255, 212, 121, 0.28);
+}
+
+.busk-profile-card h4,
+.busk-new-card h4 {
+  margin: 0 0 0.5rem;
+  font-size: 0.95rem;
+  color: #ffd479;
+}
+
+.busk-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+  margin-top: 0.6rem;
+}
+
+.busk-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-size: 0.78rem;
+  color: rgba(255, 255, 255, 0.65);
+}
+
+.busk-form-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  margin-top: 0.3rem;
+}
+
+@media (max-width: 520px) {
+  .busk-admin-acts {
+    margin-left: 0;
+  }
+
+  .busk-cover {
+    height: 100px;
+  }
+}
+

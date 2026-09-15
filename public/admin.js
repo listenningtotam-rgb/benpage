@@ -4,6 +4,14 @@
 const TOKEN_KEY = "benpage_admin_token";
 const USER_KEY = "benpage_admin_user";
 
+/* Sessions the other apps on this origin keep in the same localStorage
+   (public/busking.js and public/rechub.js). Logout clears them too — otherwise
+   the console would say "logged out" while the public site still showed this
+   account signed in. REC HUB's own Sign out already clears the console token,
+   so this makes both directions symmetrical. */
+const BUSKING_TOKEN_KEY = "benpage_busking_token";
+const HUB_TOKEN_KEY = "benpage_hub_token";
+
 // Max AUDIO upload size in MB — keep in sync with server.js
 // MAX_AUDIO_UPLOAD_BYTES and nginx client_max_body_size
 // (deploy/nginx-upload.conf). Blog photos have their own 5 MB cap
@@ -16,13 +24,38 @@ const INITIAL_ROWS = 5;
 
 const $ = (sel) => document.querySelector(sel);
 
+/* A request that never got an answer (the server stopped or restarted, the page
+   was opened as a file:// URL, wifi/a proxy dropped the connection) rejects with
+   a bare "Failed to fetch" TypeError, which says nothing about what to do. Turn
+   it into an actionable sentence and keep the raw error + URL in the console. */
+function networkError(err, method, path) {
+  console.error(`[admin] ${method} ${path} got no response:`, err);
+  if (!(err instanceof TypeError)) return err;
+  const why =
+    location.protocol === "file:"
+      ? `本页是用 file:// 直接打开的，API 请求发不出去 —— 请通过服务器打开（如 http://localhost:3000/${location.pathname.split("/").pop() || "admin.html"}，端口见 npm start 的输出）`
+      : typeof navigator !== "undefined" && navigator.onLine === false
+        ? "本机网络已断开，恢复后再试一次"
+        : "后台服务没有响应 —— 确认 npm start 的 server 还在运行（改过代码要重启），然后重试一次";
+  return Object.assign(new Error(`连不上服务器（Failed to fetch）：${why} · ${method} ${path}`), {
+    status: 0,
+    code: "network",
+    cause: err,
+  });
+}
+
 /* ── API helper ────────────────────────────────────────── */
 async function api(path, options = {}) {
   const token = localStorage.getItem(TOKEN_KEY);
   const headers = { "Content-Type": "application/json", ...(options.headers || {}) };
   if (token) headers.Authorization = `Bearer ${token}`;
 
-  const res = await fetch(path, { ...options, headers });
+  let res;
+  try {
+    res = await fetch(path, { ...options, headers });
+  } catch (err) {
+    throw networkError(err, options.method || "GET", path);
+  }
   let data = null;
   try {
     data = await res.json();
@@ -51,6 +84,8 @@ function setSession(token, user) {
 function clearSession() {
   localStorage.removeItem(TOKEN_KEY);
   localStorage.removeItem(USER_KEY);
+  localStorage.removeItem(BUSKING_TOKEN_KEY);
+  localStorage.removeItem(HUB_TOKEN_KEY);
 }
 
 function showLoginView() {
@@ -327,6 +362,209 @@ $("#invite-form").addEventListener("submit", async (e) => {
   }
 });
 
+/* ── Busking (路演) ────────────────────────────────────── */
+/* Activities are the very rows the public board (/busking) reads. The admin
+   sees drafts too; publishing, 收官 and capacity all live on those rows. The
+   invite codes below are app-scoped (a busking member belongs to no band) and
+   are the only way to get the member identity that may 我要加入. */
+async function loadBusking() {
+  const data = await api("/api/busking/events");
+  const list = $("#busking-activity-list");
+  const events = data.events || [];
+  if (!events.length) {
+    list.innerHTML =
+      '<p class="empty-note">还没有活动 —— 点上面的 “+ New Activity” 开一场。发布后 /busking 招募板上所有人都能看到。</p>';
+    return;
+  }
+  list.innerHTML = events
+    .map((e) => {
+      const seats =
+        e.capacity > 0 ? `${e.join_count || 0} / ${e.capacity} 人` : `${e.join_count || 0} 人（不限）`;
+      const sub = [
+        e.style ? escapeHTML(e.style) : "",
+        e.time_slot ? escapeHTML(e.time_slot) : "",
+        e.location ? escapeHTML(e.location) : "",
+      ]
+        .filter(Boolean)
+        .join(" · ");
+      // Only the transitions that make sense for the current status.
+      const statusBtn =
+        e.status === "published"
+          ? `<button type="button" class="btn btn-ghost btn-sm" data-action="finish-busking" data-id="${e.id}">收官</button>`
+          : `<button type="button" class="btn btn-ghost btn-sm" data-action="publish-busking" data-id="${e.id}">${e.status === "draft" ? "发布" : "重新开放"}</button>`;
+      return `
+      <div class="item-card">
+        <div class="item-info">
+          <div class="item-title invite-title">
+            ${escapeHTML(e.title)}
+            <span class="src-badge">${escapeHTML(e.status)}</span>
+          </div>
+          <div class="item-sub">${seats} · ♥ ${e.like_count || 0}${sub ? " · " + sub : ""}</div>
+        </div>
+        <div class="item-actions">
+          ${statusBtn}
+          <button type="button" class="btn btn-ghost btn-sm" data-action="edit-busking" data-id="${e.id}">Edit</button>
+          <button type="button" class="btn btn-danger btn-sm" data-action="delete-busking" data-id="${e.id}">Delete</button>
+        </div>
+      </div>`;
+    })
+    .join("");
+  applyListPager(list, ".item-card");
+}
+
+function showBuskingForm(activity = null) {
+  $("#busking-form-wrap").hidden = false;
+  $("#busking-form-title").textContent = activity ? "Edit Activity" : "New Activity";
+  $("#busking-id").value = activity ? activity.id : "";
+  $("#busking-title").value = activity ? activity.title : "";
+  $("#busking-style").value = activity ? activity.style || "" : "";
+  $("#busking-capacity").value = activity ? activity.capacity : 6;
+  $("#busking-time-slot").value = activity ? activity.time_slot || "" : "";
+  $("#busking-location").value = activity ? activity.location || "" : "";
+  $("#busking-status").value = activity ? activity.status : "draft";
+  setUploadStatus($("#busking-status-msg"), null);
+  $("#busking-title").focus();
+}
+
+function hideBuskingForm() {
+  $("#busking-form-wrap").hidden = true;
+  $("#busking-form").reset();
+}
+
+$("#busking-add-btn").addEventListener("click", () => showBuskingForm());
+
+$("#busking-cancel-btn").addEventListener("click", hideBuskingForm);
+
+$("#busking-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const statusEl = $("#busking-status-msg");
+  const id = $("#busking-id").value;
+  const payload = {
+    title: $("#busking-title").value.trim(),
+    style: $("#busking-style").value.trim(),
+    capacity: Number($("#busking-capacity").value) || 1,
+    time_slot: $("#busking-time-slot").value.trim(),
+    location: $("#busking-location").value.trim(),
+    status: $("#busking-status").value,
+  };
+  setUploadStatus(statusEl, "uploading", "Saving…");
+  try {
+    if (id) {
+      await api(`/api/busking/events/${id}`, { method: "PUT", body: JSON.stringify(payload) });
+    } else {
+      await api("/api/busking/events", { method: "POST", body: JSON.stringify(payload) });
+    }
+    hideBuskingForm();
+    await loadBusking();
+  } catch (err) {
+    setUploadStatus(statusEl, "err", "✗ " + err.message);
+  }
+});
+
+/* Busking invite codes (成员登录) — the code IS the credential. */
+async function loadBuskingInvites() {
+  const data = await api("/api/admin/busking/invites");
+  const list = $("#busking-invite-list");
+  const invites = data.invites || [];
+  if (!invites.length) {
+    list.innerHTML =
+      '<p class="empty-note">还没有路演邀请码 —— 生成一个发给想上台的朋友，对方用它登录后登记 名字 / 邮箱 / 乐器。</p>';
+    return;
+  }
+  list.innerHTML = invites
+    .map((inv) => {
+      const used = inv.used_by
+        ? `used by ${escapeHTML(inv.used_nickname || inv.used_username || "?")}`
+        : "unused";
+      const copyBtn = inv.used_by
+        ? ""
+        : `<button type="button" class="btn btn-ghost btn-sm invite-copy" data-code="${escapeHTML(inv.code)}" title="Copy invite code">Copy</button>`;
+      return `
+      <div class="item-card">
+        <div class="item-info">
+          <div class="item-title invite-title">
+            <code class="invite-code">${escapeHTML(inv.code)}</code>
+            <span class="src-badge">路演</span>
+          </div>
+          <div class="item-sub">${used} · created ${escapeHTML(String(inv.created_at || ""))}</div>
+        </div>
+        <div class="item-actions">
+          ${copyBtn}
+          <button type="button" class="btn btn-danger btn-sm" data-action="delete-busking-invite" data-id="${inv.id}">Delete</button>
+        </div>
+      </div>`;
+    })
+    .join("");
+  applyListPager(list, ".item-card");
+}
+
+/* Members = the accounts behind those codes, with the instrument they claim. */
+async function loadBuskingMembers() {
+  const data = await api("/api/admin/busking/members");
+  const list = $("#busking-member-list");
+  const members = data.members || [];
+  if (!members.length) {
+    list.innerHTML = '<p class="empty-note">还没有成员 —— 邀请码第一次被使用时，账号会在这里出现。</p>';
+    return;
+  }
+  list.innerHTML = members
+    .map((m) => {
+      const name = m.nickname || m.username;
+      const sub = [
+        m.instrument ? `乐器：${escapeHTML(m.instrument)}` : "乐器：未填写",
+        m.email ? escapeHTML(m.email) : "",
+        `${m.join_count || 0} 场已加入`,
+        m.used_at ? `joined ${escapeHTML(String(m.used_at))}` : "",
+      ]
+        .filter(Boolean)
+        .join(" · ");
+      const done = m.profile_complete ? "" : ' <span class="src-badge">资料未完成</span>';
+      return `
+      <div class="item-card">
+        <div class="item-info">
+          <div class="item-title invite-title">${escapeHTML(name)}${done}</div>
+          <div class="item-sub">${sub}</div>
+        </div>
+      </div>`;
+    })
+    .join("");
+  applyListPager(list, ".item-card");
+}
+
+function hideBuskingInviteForm() {
+  $("#busking-invite-form-wrap").hidden = true;
+  $("#busking-invite-form").reset();
+}
+
+$("#busking-invite-add-btn").addEventListener("click", () => {
+  $("#busking-invite-form-wrap").hidden = false;
+  setUploadStatus($("#busking-invite-status"), null);
+  $("#busking-invite-count").focus();
+});
+
+$("#busking-invite-cancel-btn").addEventListener("click", hideBuskingInviteForm);
+
+$("#busking-invite-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const statusEl = $("#busking-invite-status");
+  setUploadStatus(statusEl, "uploading", "Generating…");
+  try {
+    const count = Math.min(Math.max(Number($("#busking-invite-count").value) || 1, 1), 20);
+    const data = await api("/api/admin/busking/invites", {
+      method: "POST",
+      body: JSON.stringify({ count }),
+    });
+    const codes = (data.invites || []).map((i) => i.code).join(", ");
+    setUploadStatus(statusEl, "ok", `✓ 新邀请码：${codes}`);
+    hideBuskingInviteForm();
+    await Promise.all([loadBuskingInvites(), loadBuskingMembers()]);
+  } catch (err) {
+    setUploadStatus(statusEl, "err", "✗ " + err.message);
+  }
+});
+
+
+
 
 /* ── Music CRUD ────────────────────────────────────────── */
 /* Collapse an admin list (#music-list / #blog-list) to the first
@@ -577,11 +815,16 @@ async function uploadAudioBlob(blob, statusEl) {
   }
   setUploadStatus(statusEl, "uploading", "Uploading…");
   const token = localStorage.getItem(TOKEN_KEY);
-  const res = await fetch("/api/music/upload", {
-    method: "POST",
-    headers: { Authorization: `Bearer ${token}` },
-    body: out,
-  });
+  let res;
+  try {
+    res = await fetch("/api/music/upload", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}` },
+      body: out,
+    });
+  } catch (err) {
+    throw networkError(err, "POST", "/api/music/upload");
+  }
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
     throw new Error(uploadErrorMessage(res, data));
@@ -713,11 +956,16 @@ document.querySelector('[data-cancel="music"]').addEventListener("click", hideMu
 /* ── Image upload helpers ─────────────────────────────── */
 async function uploadImageBlob(blob, statusEl) {
   const token = localStorage.getItem(TOKEN_KEY);
-  const res = await fetch("/api/upload", {
-    method: "POST",
-    headers: { Authorization: `Bearer ${token}` },
-    body: blob,
-  });
+  let res;
+  try {
+    res = await fetch("/api/upload", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}` },
+      body: blob,
+    });
+  } catch (err) {
+    throw networkError(err, "POST", "/api/upload");
+  }
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
     throw new Error(uploadErrorMessage(res, data));
@@ -1425,6 +1673,45 @@ listsContainer.addEventListener("click", async (e) => {
     }
   }
 
+  if (action === "edit-busking") {
+    const data = await api("/api/busking/events");
+    const event = (data.events || []).find((e) => String(e.id) === id);
+    if (event) showBuskingForm(event);
+  }
+
+  if (action === "delete-busking") {
+    if (!confirm("Delete this activity? Its participant list, likes and highlight photos go with it.")) return;
+    try {
+      await api(`/api/busking/events/${id}`, { method: "DELETE" });
+      await loadBusking();
+    } catch (err) {
+      alert(err.message);
+    }
+  }
+
+  if (action === "publish-busking" || action === "finish-busking") {
+    const status = action === "publish-busking" ? "published" : "finished";
+    try {
+      await api(`/api/busking/events/${id}/status`, {
+        method: "POST",
+        body: JSON.stringify({ status }),
+      });
+      await loadBusking();
+    } catch (err) {
+      alert(err.message);
+    }
+  }
+
+  if (action === "delete-busking-invite") {
+    if (!confirm("Delete this 路演 invite code? The member account keeps working, but cannot 我要加入 new activities without a fresh code.")) return;
+    try {
+      await api(`/api/admin/busking/invites/${id}`, { method: "DELETE" });
+      await Promise.all([loadBuskingInvites(), loadBuskingMembers()]);
+    } catch (err) {
+      alert(err.message);
+    }
+  }
+
   const copyBtn = e.target.closest(".invite-copy");
   if (copyBtn) {
     try {
@@ -1440,7 +1727,15 @@ listsContainer.addEventListener("click", async (e) => {
 
 /* ── Init ──────────────────────────────────────────────── */
 async function loadAll() {
-  await Promise.all([loadMusic(), loadBlog(), loadBands(), loadInvites()]);
+  await Promise.all([
+    loadMusic(),
+    loadBlog(),
+    loadBands(),
+    loadInvites(),
+    loadBusking(),
+    loadBuskingInvites(),
+    loadBuskingMembers(),
+  ]);
 }
 
 function escapeHTML(str) {

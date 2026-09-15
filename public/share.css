@@ -377,3 +377,184 @@ a:hover {
   }
 }
 
+/* ── 路演 share page (路演 · one activity) ───────────────────────────
+ * One street-gig activity: cover, 主题 / 风格 / 时间段 / 地点 / 人数, the
+ * 演出名单 (name + instrument each player is responsible for) and the
+ * 精彩回顾 photos.  Warm amber accents keep it visibly part of the Busking
+ * app.  The CTA opens the app on this very activity (/busking?e=<id>). */
+.share-page-busk {
+  max-width: 760px;
+}
+
+.busk-share-likes {
+  color: #ff6b9d;
+  font-weight: 700;
+}
+
+.busk-share-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+  animation: shareIn 0.3s ease;
+}
+
+.busk-share-cover {
+  width: 100%;
+  max-height: 380px;
+  object-fit: cover;
+  display: block;
+  border-radius: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  box-shadow: 0 10px 36px rgba(0, 0, 0, 0.45);
+}
+
+.share-page-busk .share-title {
+  margin-bottom: 0;
+}
+
+.busk-share-badges {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.busk-share-badge {
+  font-size: 0.72rem;
+  letter-spacing: 0.06em;
+  border-radius: 999px;
+  padding: 0.16rem 0.6rem;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  color: rgba(255, 255, 255, 0.8);
+  white-space: nowrap;
+}
+
+.busk-share-badge-published {
+  color: #9be29b;
+  border-color: rgba(155, 226, 155, 0.4);
+  background: rgba(155, 226, 155, 0.1);
+}
+
+.busk-share-badge-finished {
+  color: #bcd4ff;
+  border-color: rgba(188, 212, 255, 0.35);
+  background: rgba(188, 212, 255, 0.1);
+}
+
+.busk-share-badge-full {
+  color: #ffb3ae;
+  border-color: rgba(255, 95, 86, 0.45);
+  background: rgba(255, 95, 86, 0.12);
+}
+
+.busk-share-style {
+  font-size: 0.9rem;
+  color: #ffd479;
+  font-weight: 600;
+}
+
+.busk-share-meta {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  font-size: 0.95rem;
+  color: rgba(255, 255, 255, 0.75);
+}
+
+.busk-share-meta li {
+  display: flex;
+  gap: 0.7rem;
+}
+
+.busk-share-meta b {
+  color: rgba(255, 212, 121, 0.95);
+  font-weight: 600;
+  min-width: 4.2em;
+}
+
+.busk-share-subtitle {
+  font-size: 0.8rem;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  color: rgba(255, 255, 255, 0.45);
+  margin-top: 0.5rem;
+}
+
+.busk-share-people {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.busk-share-person {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.45rem;
+  border: 1px solid rgba(255, 212, 121, 0.3);
+  background: rgba(255, 212, 121, 0.08);
+  border-radius: 999px;
+  padding: 0.28rem 0.75rem;
+  font-size: 0.86rem;
+  color: rgba(255, 255, 255, 0.88);
+}
+
+.busk-share-inst {
+  font-size: 0.76rem;
+  color: #ffd479;
+}
+
+.busk-share-gallery {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 0.6rem;
+}
+
+.busk-share-photo {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.busk-share-photo img {
+  width: 100%;
+  aspect-ratio: 1;
+  object-fit: cover;
+  display: block;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.busk-share-photo figcaption {
+  font-size: 0.75rem;
+  color: rgba(255, 255, 255, 0.45);
+  text-align: center;
+}
+
+.busk-share-cta {
+  align-self: flex-start;
+  margin-top: 0.5rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: #08122b;
+  background: linear-gradient(135deg, #ffd479, #ffb347);
+  border-radius: 999px;
+  padding: 0.62rem 1.3rem;
+  box-shadow: 0 6px 22px rgba(255, 179, 71, 0.28);
+}
+
+.busk-share-cta:hover {
+  text-decoration: none;
+  filter: brightness(1.06);
+}
+
+.busk-share-note {
+  font-size: 0.78rem;
+  color: rgba(255, 255, 255, 0.45);
+}
+
